@@ -31,7 +31,7 @@
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.18.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
+    "rxjs": "^7.8.2",
     "sanitize-html": "^2.13.1"
   },
   "devDependencies": {
