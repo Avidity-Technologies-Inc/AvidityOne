@@ -66,6 +66,9 @@ interface TicketMessage {
   authorContact: { firstName: string; lastName: string; email: string } | null;
   attachments: TicketAttachment[];
   attachmentImportFailures: AttachmentImportFailure[];
+  mailDeliveryStatus: "NOT_APPLICABLE" | "ACCEPTED" | "SKIPPED";
+  mailDeliveryAttemptedAt: string | null;
+  mailDeliveryAcceptedAt: string | null;
 }
 
 interface AttachmentImportFailure {
@@ -136,6 +139,9 @@ interface Ticket {
   mergedTickets: MergedTicketReference[];
   mergedAt: string | null;
   mergeReason: string | null;
+  reopenedAt: string | null;
+  closedAt: string | null;
+  createdAt: string;
 }
 
 interface TicketAiAnalysis {
@@ -289,14 +295,39 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
   }, [ticket]);
   const isMergedTicket = ticket?.status === "MERGED";
   const selectedMergeTickets = useMemo(() => selectedMergeIds.map((id) => mergeCandidates.find((candidate) => candidate.id === id)).filter((candidate): candidate is MergeCandidate => Boolean(candidate)), [selectedMergeIds, mergeCandidates]);
+  const conversationMessages = useMemo<TicketMessage[]>(() => {
+    if (!ticket || ticket.messages.length > 0 || !ticket.description?.trim()) {
+      return ticket?.messages ?? [];
+    }
+    return [{
+      id: `legacy-description-${ticket.id}`,
+      direction: "INBOUND",
+      visibility: "PUBLIC",
+      bodyText: ticket.description,
+      sanitizedBodyHtml: null,
+      senderEmail: ticket.senderEmail,
+      ccEmails: [],
+      createdAt: ticket.createdAt,
+      mergedFromTicketId: null,
+      mergedFromTicketNumber: null,
+      mergedFromTicketSubject: null,
+      authorUser: null,
+      authorContact: ticket.contact,
+      attachments: [],
+      attachmentImportFailures: [],
+      mailDeliveryStatus: "NOT_APPLICABLE",
+      mailDeliveryAttemptedAt: null,
+      mailDeliveryAcceptedAt: null
+    }];
+  }, [ticket]);
   const displayedMessages = useMemo(() => {
     const query = messageSearch.trim().toLowerCase();
-    return [...(ticket?.messages ?? [])].reverse().filter((message) => {
+    return [...conversationMessages].reverse().filter((message) => {
       if (!query) return true;
       const author = message.authorUser ? `${message.authorUser.firstName} ${message.authorUser.lastName}` : message.authorContact ? `${message.authorContact.firstName} ${message.authorContact.lastName}` : message.senderEmail ?? "";
       return `${author} ${message.bodyText} ${message.ccEmails.join(" ")}`.toLowerCase().includes(query);
     });
-  }, [messageSearch, ticket?.messages]);
+  }, [conversationMessages, messageSearch]);
 
   async function load() {
     setLoading(true);
@@ -843,6 +874,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             {canUpdate && !isMergedTicket ? <select className={`ticket-header-select ticket-header-priority ${priorityClass(ticket.priority)}`} value={ticket.priority} onChange={(event) => void updateTicketState({ priority: event.target.value })} disabled={toolBusy === "STATE"} aria-label="Ticket priority">
               {["LOW", "NORMAL", "HIGH", "URGENT", "CRITICAL"].map((priority) => <option value={priority} key={priority}>{label(priority)}</option>)}
             </select> : <span className={`status-pill ticket-header-priority ${priorityClass(ticket.priority)}`}>{label(ticket.priority)}</span>}
+            {ticket.reopenedAt && !ticket.closedAt ? <span className="ticket-reopened-badge" title={new Date(ticket.reopenedAt).toLocaleString()}>Reopened {new Date(ticket.reopenedAt).toLocaleDateString()}</span> : null}
           </div>
         </div>
         {canUseAi ? (
@@ -883,7 +915,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           ) : null}
           <div className="panel ticket-conversation-panel">
             <div className="ticket-conversation-heading">
-              <div><h2>Conversation</h2><span>{displayedMessages.length} of {ticket.messages.length}</span></div>
+              <div><h2>Conversation</h2><span>{displayedMessages.length} of {conversationMessages.length}</span></div>
               <div className="ticket-conversation-controls">
                 <label><Search size={14} aria-hidden="true" /><input value={messageSearch} onChange={(event) => setMessageSearch(event.target.value)} placeholder="Search conversation" aria-label="Search conversation" /></label>
                 <button className="button secondary icon-button" type="button" onClick={() => scrollConversation("TOP")} title="Newest message" aria-label="Go to newest message"><ArrowUp size={14} aria-hidden="true" /></button>
@@ -892,8 +924,8 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             </div>
             <div className="ticket-conversation-scroll" ref={conversationRef}>
               <div className="timeline ticket-timeline">
-              {ticket.messages.length === 0 ? <p className="ticket-detail-empty">No messages yet.</p> : null}
-              {ticket.messages.length > 0 && displayedMessages.length === 0 ? <p className="ticket-detail-empty">No messages match this search.</p> : null}
+              {conversationMessages.length === 0 ? <p className="ticket-detail-empty">No messages yet.</p> : null}
+              {conversationMessages.length > 0 && displayedMessages.length === 0 ? <p className="ticket-detail-empty">No messages match this search.</p> : null}
               {displayedMessages.map((message) => (
                 <article className={`message ${message.direction === "INBOUND" ? "inbound" : "outbound"} ${message.visibility === "INTERNAL" ? "internal" : ""}`} key={message.id}>
                   <header className="message-header">
@@ -908,6 +940,11 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
                             : "Technician"}
                       </strong>
                       <span className="muted">{label(message.direction)} - {label(message.visibility)}</span>
+                      {message.direction === "OUTBOUND" && message.visibility === "PUBLIC" ? (
+                        <span className={`ticket-mail-delivery ${message.mailDeliveryStatus.toLowerCase()}`}>
+                          {message.mailDeliveryStatus === "ACCEPTED" ? "Email accepted" : message.mailDeliveryStatus === "SKIPPED" ? "Email not sent" : "Saved"}
+                        </span>
+                      ) : null}
                     </div>
                     <span className="muted">{new Date(message.createdAt).toLocaleString()}</span>
                   </header>
@@ -977,6 +1014,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
               <div><dt>Sender</dt><dd className="ticket-detail-email" title={ticket.senderEmail ?? undefined}>{ticket.senderEmail ?? "Not set"}</dd></div>
               <div><dt>Inline images</dt><dd>{inlineAttachments.length}</dd></div>
               <div><dt>Files</dt><dd>{realAttachments.length}</dd></div>
+              {ticket.reopenedAt && !ticket.closedAt ? <div><dt>Reopened</dt><dd>{new Date(ticket.reopenedAt).toLocaleString()}</dd></div> : null}
               {ticket.mergedAt ? <div><dt>Merged</dt><dd>{new Date(ticket.mergedAt).toLocaleString()}</dd></div> : null}
             </dl>
           {canUpdate ? <form className="ticket-planning-form" onSubmit={savePlanning}>

@@ -37,6 +37,11 @@ export class CreateTicketMessageDto {
   ccUserIds?: string[];
 
   @IsOptional()
+  @IsArray()
+  @IsUUID("4", { each: true })
+  followUserIds?: string[];
+
+  @IsOptional()
   @IsIn(["send", "send_and_close", "save_note", "send_note", "send_note_and_close"])
   action?: "send" | "send_and_close" | "save_note" | "send_note" | "send_note_and_close";
 }

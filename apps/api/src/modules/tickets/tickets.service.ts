@@ -1,5 +1,5 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional } from "@nestjs/common";
-import { MessageDirection, MessageVisibility, Prisma, TicketPriority, TicketSource, TicketStatus, TicketWorkflowTrigger } from "@prisma/client";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from "@nestjs/common";
+import { MailDeliveryStatus, MessageDirection, MessageVisibility, Prisma, TicketPriority, TicketSource, TicketStatus, TicketWorkflowTrigger } from "@prisma/client";
 import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { ContactsService } from "../contacts/contacts.service";
@@ -871,24 +871,93 @@ export class TicketsService {
   }
 
   async create(input: CreateTicketDto, user: AuthenticatedUser) {
-    const defaultStatus = await this.ticketWorkflow?.getDefaultStatus(user.organizationId);
+    const assignedUserIds = this.normalizeAssignedUserIds(input.assignedUserIds ?? []);
+    const includesAssignment = assignedUserIds.length > 0 || Boolean(input.assignedTeamId);
+    if ((includesAssignment || input.statusDefinitionId) && !user.permissions.includes("tickets.assign")) {
+      throw new ForbiddenException("You do not have permission to set the initial ticket assignment or status.");
+    }
+    await this.validateAssignmentTargets(assignedUserIds, input.assignedTeamId, user.organizationId);
+
+    if (input.clientId) {
+      const client = await this.prisma.client.findFirst({
+        where: { id: input.clientId, organizationId: user.organizationId, deletedAt: null },
+        select: { id: true }
+      });
+      if (!client) {
+        throw new BadRequestException("The selected client is not available.");
+      }
+    }
+
+    const contact = input.contactId
+      ? await this.prisma.contact.findFirst({
+          where: {
+            id: input.contactId,
+            deletedAt: null,
+            client: { organizationId: user.organizationId }
+          },
+          select: { id: true, clientId: true, email: true }
+        })
+      : null;
+    if (input.contactId && !contact) {
+      throw new BadRequestException("The selected requester is not available.");
+    }
+    if (contact && input.clientId && contact.clientId !== input.clientId) {
+      throw new BadRequestException("The selected requester does not belong to the selected client.");
+    }
+
+    const requestedStatus = input.statusDefinitionId
+      ? await this.ticketWorkflow?.resolveTarget(user.organizationId, { statusDefinitionId: input.statusDefinitionId })
+      : null;
+    if (input.statusDefinitionId && !requestedStatus) {
+      throw new BadRequestException("The selected ticket status is not available.");
+    }
+    const defaultStatus = requestedStatus ?? await this.ticketWorkflow?.getDefaultStatus(user.organizationId);
+    const description = input.description?.trim() || null;
+    const senderEmail = contact?.email.trim().toLowerCase() ?? null;
     const ticket = await this.prisma.$transaction(async (tx) => {
       const ticketNumber = await this.nextTicketNumber(tx);
-
-      return tx.ticket.create({
+      const createdTicket = await tx.ticket.create({
         data: {
           ticketNumber,
           organizationId: user.organizationId,
-          clientId: input.clientId ?? null,
-          contactId: input.contactId ?? null,
+          clientId: input.clientId ?? contact?.clientId ?? null,
+          contactId: contact?.id ?? null,
+          senderEmail,
+          senderDomain: senderEmail ? this.extractDomain(senderEmail) : null,
           subject: input.subject,
-          description: input.description ?? null,
+          description,
           priority: input.priority ?? TicketPriority.NORMAL,
           source: input.source ?? TicketSource.MANUAL,
           status: defaultStatus?.systemStatus ?? TicketStatus.NEW,
-          ...(defaultStatus ? { statusDefinitionId: defaultStatus.id } : {})
+          ...(defaultStatus ? { statusDefinitionId: defaultStatus.id } : {}),
+          assignedUserId: assignedUserIds[0] ?? null,
+          assignedTeamId: input.assignedTeamId ?? null,
+          ...(description ? { lastCustomerResponseAt: new Date() } : {})
         }
       });
+
+      if (description) {
+        await tx.ticketMessage.create({
+          data: {
+            ticketId: createdTicket.id,
+            authorContactId: contact?.id ?? null,
+            direction: MessageDirection.INBOUND,
+            visibility: MessageVisibility.PUBLIC,
+            bodyText: description,
+            senderEmail,
+            senderDomain: senderEmail ? this.extractDomain(senderEmail) : null
+          }
+        });
+      }
+
+      await Promise.all(
+        assignedUserIds.map((userId) =>
+          tx.ticketAssignee.create({
+            data: { ticketId: createdTicket.id, userId, assignedById: user.id }
+          })
+        )
+      );
+      return createdTicket;
     });
 
     await this.auditLogs.create({
@@ -903,6 +972,17 @@ export class TicketsService {
       ticketId: ticket.id,
       organizationId: user.organizationId
     });
+
+    if (includesAssignment) {
+      await this.notifyTicketParticipants({
+        ticketId: ticket.id,
+        createdById: user.id,
+        reason: "Ticket assigned during creation",
+        title: "Ticket assigned",
+        eventType: "ticketAssignedToMe",
+        excludeUserIds: [user.id]
+      });
+    }
 
     return ticket;
   }
@@ -1051,6 +1131,12 @@ export class TicketsService {
       const mergeOrigin = targetTicket.id === existingTicket.id ? null : existingTicket;
       const shouldReopen = this.shouldReopenFromInbound(targetTicket.status);
       const shouldAwaitTechnician = await this.shouldMarkWaitingOnTechnicianFromInbound(targetTicket.id, targetTicket.status);
+      const nextSystemStatus = shouldReopen
+        ? (shouldAwaitTechnician ? TicketStatus.WAITING_ON_TECHNICIAN : TicketStatus.REOPENED)
+        : (shouldAwaitTechnician ? TicketStatus.WAITING_ON_TECHNICIAN : null);
+      const nextStatusDefinition = nextSystemStatus
+        ? await this.ticketWorkflow?.resolveTarget(input.organizationId, { systemStatus: nextSystemStatus })
+        : null;
       const result = await this.prisma.$transaction(async (tx) => {
         const ticket = await tx.ticket.update({
           where: { id: targetTicket.id },
@@ -1060,13 +1146,19 @@ export class TicketsService {
             lastCustomerResponseAt: new Date(),
             ...(shouldReopen
               ? {
-                  status: shouldAwaitTechnician ? TicketStatus.WAITING_ON_TECHNICIAN : TicketStatus.REOPENED,
+                  status: nextStatusDefinition?.systemStatus ?? nextSystemStatus ?? TicketStatus.REOPENED,
+                  ...(nextStatusDefinition ? { statusDefinitionId: nextStatusDefinition.id } : {}),
                   reopenedAt: new Date(),
                   resolvedAt: null,
                   closedAt: null
                 }
               : {}),
-            ...(!shouldReopen && shouldAwaitTechnician ? { status: TicketStatus.WAITING_ON_TECHNICIAN } : {})
+            ...(!shouldReopen && shouldAwaitTechnician
+              ? {
+                  status: nextStatusDefinition?.systemStatus ?? TicketStatus.WAITING_ON_TECHNICIAN,
+                  ...(nextStatusDefinition ? { statusDefinitionId: nextStatusDefinition.id } : {})
+                }
+              : {})
           }
         });
 
@@ -1118,6 +1210,23 @@ export class TicketsService {
           matchedMergedTicketNumber: mergeOrigin?.ticketNumber ?? null
         }
       });
+
+      await this.notifyTicketParticipants({
+        ticketId: result.ticket.id,
+        createdById: null,
+        reason: `Customer replied to ${result.ticket.ticketNumber}`,
+        title: `Customer replied: ${result.ticket.ticketNumber}`,
+        eventType: "ticketReplyOnAssignedTicket"
+      });
+      if (shouldReopen) {
+        await this.notifyTicketParticipants({
+          ticketId: result.ticket.id,
+          createdById: null,
+          reason: `Customer activity reopened ${result.ticket.ticketNumber}`,
+          title: `Ticket reopened: ${result.ticket.ticketNumber}`,
+          eventType: "ticketReopened"
+        });
+      }
 
       return result;
     }
@@ -1880,6 +1989,7 @@ export class TicketsService {
       ? internalCcUsers.map((ccUser) => ccUser.email.toLowerCase())
       : await this.resolveCcEmails(input.ccEmails ?? [], input.ccUserIds ?? [], user.organizationId);
     const notifiedUserIds = isInternal ? internalCcUsers.map((ccUser) => ccUser.id) : [];
+    const followUsers = await this.resolveInternalCcUsers(input.followUserIds ?? [], user.organizationId);
     const latestInboundMessage = isInternal
       ? null
       : await this.prisma.ticketMessage.findFirst({
@@ -1892,21 +2002,59 @@ export class TicketsService {
           orderBy: { createdAt: "desc" }
         });
     let sendResult = null;
-    if (!isInternal && latestInboundMessage?.senderEmail && (action === "send" || action === "send_and_close")) {
-      sendResult = await this.mailDelivery.sendTicketReply({
-        organizationId: user.organizationId,
-        ticketId: internalTicketId,
-        mailboxId: ticket.mailboxId,
-        to: [latestInboundMessage.senderEmail],
-        cc: ccEmails,
-        subject: ticket.subject.startsWith("Re:") ? ticket.subject : `Re: ${ticket.subject}`,
-        bodyHtml: sanitizedBodyHtml ?? `<p>${this.escapeHtml(input.bodyText).replace(/\n/g, "<br>")}</p>`,
-        bodyText: input.bodyText,
-        inReplyTo: latestInboundMessage.emailInternetMessageId ?? latestInboundMessage.emailMessageId,
-        references: latestInboundMessage.emailReferences ?? latestInboundMessage.emailInternetMessageId ?? null,
-        replyToProviderMessageId: latestInboundMessage.emailMessageId,
-        attachmentIds: input.attachmentIds
-      });
+    const sendsPublicEmail = !isInternal && (action === "send" || action === "send_and_close");
+    const requesterEmail = latestInboundMessage?.senderEmail?.trim().toLowerCase()
+      || ticket.senderEmail?.trim().toLowerCase()
+      || await this.resolveTicketContactEmail(ticket.contactId, user.organizationId);
+    const deliveredCcEmails = requesterEmail ? ccEmails.filter((email) => email !== requesterEmail) : ccEmails;
+    const deliveryAttemptedAt = sendsPublicEmail ? new Date() : null;
+    if (sendsPublicEmail) {
+      if (!requesterEmail) {
+        throw new BadRequestException("A public reply requires a requester email address. Add a requester before sending.");
+      }
+      const hasProviderThread = Boolean(latestInboundMessage?.emailMessageId || latestInboundMessage?.emailInternetMessageId);
+      try {
+        sendResult = await this.mailDelivery.sendTicketReply({
+          organizationId: user.organizationId,
+          ticketId: internalTicketId,
+          mailboxId: ticket.mailboxId,
+          to: [requesterEmail],
+          cc: deliveredCcEmails,
+          subject: ticket.subject.startsWith("Re:")
+            ? ticket.subject
+            : hasProviderThread
+              ? `Re: ${ticket.subject}`
+              : `Re: [${ticket.ticketNumber}] ${ticket.subject}`,
+          bodyHtml: sanitizedBodyHtml ?? `<p>${this.escapeHtml(input.bodyText).replace(/\n/g, "<br>")}</p>`,
+          bodyText: input.bodyText,
+          inReplyTo: latestInboundMessage?.emailInternetMessageId ?? latestInboundMessage?.emailMessageId ?? null,
+          references: latestInboundMessage?.emailReferences ?? latestInboundMessage?.emailInternetMessageId ?? null,
+          replyToProviderMessageId: latestInboundMessage?.emailMessageId ?? null,
+          attachmentIds: input.attachmentIds
+        });
+      } catch (error) {
+        await this.auditLogs.create({
+          userId: user.id,
+          entityType: "Ticket",
+          entityId: internalTicketId,
+          action: "ticket.reply_delivery_failed",
+          metadata: {
+            ticketNumber: ticket.ticketNumber,
+            error: error instanceof Error ? error.message.slice(0, 500) : "Unknown delivery error"
+          }
+        });
+        throw new ServiceUnavailableException("The email could not be delivered. No public reply was saved.");
+      }
+      if (!sendResult) {
+        await this.auditLogs.create({
+          userId: user.id,
+          entityType: "Ticket",
+          entityId: internalTicketId,
+          action: "ticket.reply_delivery_skipped",
+          metadata: { ticketNumber: ticket.ticketNumber, reason: "outbound_delivery_unavailable" }
+        });
+        throw new ServiceUnavailableException("Outbound email delivery is not enabled for this ticket mailbox.");
+      }
     }
 
     const message = await this.prisma.ticketMessage.create({
@@ -1921,8 +2069,11 @@ export class TicketsService {
         emailMessageId: sendResult?.providerMessageId ?? null,
         emailInternetMessageId: sendResult?.internetMessageId ?? null,
         emailConversationId: sendResult?.conversationId ?? latestInboundMessage?.emailConversationId ?? null,
-        ccEmails,
+        ccEmails: deliveredCcEmails,
         notifiedUserIds,
+        mailDeliveryStatus: sendsPublicEmail ? MailDeliveryStatus.ACCEPTED : MailDeliveryStatus.NOT_APPLICABLE,
+        mailDeliveryAttemptedAt: deliveryAttemptedAt,
+        mailDeliveryAcceptedAt: sendsPublicEmail ? new Date() : null,
         hasAttachments: Boolean(input.attachmentIds?.length)
       }
     });
@@ -1975,6 +2126,12 @@ export class TicketsService {
       }
     }
 
+    await Promise.all(
+      followUsers.map((followUser) =>
+        this.addWatcher(internalTicketId, followUser.id, user.id, "Following ticket conversation")
+      )
+    );
+
     const shouldNotifyStaff = !isInternal || action === "send_note" || action === "send_note_and_close";
     if (notifiedUserIds.length) {
       await Promise.all(
@@ -1990,53 +2147,15 @@ export class TicketsService {
         )
       );
     }
-    if (shouldNotifyStaff && ticket.assignedUserId) {
-      await this.addWatcherAndNotify(
-        internalTicketId,
-        ticket.assignedUserId,
-        user.id,
-        isInternal ? "Internal note added to an assigned ticket" : "Customer reply sent on an assigned ticket",
-        isInternal ? "Internal note added" : "Ticket reply sent",
-        isInternal ? "internalNoteOnAssignedTicket" : "ticketReplyOnAssignedTicket"
-      );
-    }
     if (shouldNotifyStaff) {
-      const assignedUsers = await this.prisma.ticketAssignee.findMany({
-        where: { ticketId: internalTicketId },
-        select: { userId: true }
+      await this.notifyTicketParticipants({
+        ticketId: internalTicketId,
+        createdById: user.id,
+        reason: isInternal ? "Internal note added to an assigned ticket" : "Public reply added to an assigned ticket",
+        title: isInternal ? "Internal note added" : "Ticket reply added",
+        eventType: isInternal ? "internalNoteOnAssignedTicket" : "ticketReplyOnAssignedTicket",
+        excludeUserIds: [user.id, ...notifiedUserIds]
       });
-      await Promise.all(
-        assignedUsers
-          .filter((assignment) => assignment.userId !== ticket.assignedUserId)
-          .map((assignment) =>
-            this.addWatcherAndNotify(
-              internalTicketId,
-              assignment.userId,
-              user.id,
-              isInternal ? "Internal note added to an assigned ticket" : "Customer reply sent on an assigned ticket",
-              isInternal ? "Internal note added" : "Ticket reply sent",
-              isInternal ? "internalNoteOnAssignedTicket" : "ticketReplyOnAssignedTicket"
-            )
-          )
-      );
-    }
-    if (shouldNotifyStaff && ticket.assignedTeamId) {
-      await this.notifyTeamMembers(
-        internalTicketId,
-        ticket.assignedTeamId,
-        user.id,
-        isInternal ? "Internal note added to a team ticket" : "Customer reply sent on a team ticket",
-        isInternal ? "Internal note added for your team" : "Ticket reply sent for your team"
-      );
-    }
-    if (shouldNotifyStaff && !ticket.assignedTeamId && ticket.assignedGroupId) {
-      await this.notifyGroupMembers(
-        internalTicketId,
-        ticket.assignedGroupId,
-        user.id,
-        isInternal ? "Internal note added to a legacy group ticket" : "Customer reply sent on a legacy group ticket",
-        isInternal ? "Internal note added for your group" : "Ticket reply sent for your group"
-      );
     }
 
     await this.auditLogs.create({
@@ -2271,6 +2390,17 @@ export class TicketsService {
     });
   }
 
+  private async resolveTicketContactEmail(contactId: string | null, organizationId: string) {
+    if (!contactId) {
+      return null;
+    }
+    const contact = await this.prisma.contact.findFirst({
+      where: { id: contactId, deletedAt: null, client: { organizationId } },
+      select: { email: true }
+    });
+    return contact?.email.trim().toLowerCase() ?? null;
+  }
+
   private async shouldMarkWaitingOnTechnicianFromInbound(ticketId: string, status: TicketStatus) {
     const customerReplyStatuses: TicketStatus[] = [
       TicketStatus.NEW,
@@ -2311,8 +2441,19 @@ export class TicketsService {
     createdById: string | null,
     reason: string,
     title: string,
-    eventType: "ticketAssignedToMe" | "ticketReplyOnAssignedTicket" | "internalNoteOnAssignedTicket" | "internalNoteMention" = "ticketAssignedToMe"
+    eventType: "ticketAssignedToMe" | "ticketReplyOnAssignedTicket" | "internalNoteOnAssignedTicket" | "internalNoteMention" | "ticketReopened" = "ticketAssignedToMe"
   ) {
+    await this.addWatcher(ticketId, userId, createdById, reason);
+    await this.notifications.notifyUser({
+      userId,
+      ticketId,
+      title,
+      body: reason,
+      eventType
+    });
+  }
+
+  private async addWatcher(ticketId: string, userId: string, createdById: string | null, reason: string) {
     await this.prisma.ticketWatcher.upsert({
       where: {
         ticketId_userId: {
@@ -2328,13 +2469,55 @@ export class TicketsService {
         reason
       }
     });
-    await this.notifications.notifyUser({
-      userId,
-      ticketId,
-      title,
-      body: reason,
-      eventType
+  }
+
+  private async notifyTicketParticipants(input: {
+    ticketId: string;
+    createdById: string | null;
+    reason: string;
+    title: string;
+    eventType: "ticketAssignedToMe" | "ticketReplyOnAssignedTicket" | "internalNoteOnAssignedTicket" | "ticketReopened";
+    excludeUserIds?: string[];
+  }) {
+    const ticket = await this.prisma.ticket.findUnique({
+      where: { id: input.ticketId },
+      select: { assignedUserId: true, assignedTeamId: true, assignedGroupId: true }
     });
+    if (!ticket) {
+      return;
+    }
+
+    const [assignees, watchers, teamMembers, groupMembers] = await Promise.all([
+      this.prisma.ticketAssignee.findMany({ where: { ticketId: input.ticketId }, select: { userId: true } }),
+      this.prisma.ticketWatcher.findMany({ where: { ticketId: input.ticketId }, select: { userId: true } }),
+      ticket.assignedTeamId
+        ? this.prisma.ticketTeamMember.findMany({ where: { ticketTeamId: ticket.assignedTeamId }, select: { userId: true } })
+        : Promise.resolve([]),
+      ticket.assignedGroupId
+        ? this.prisma.userGroup.findMany({ where: { groupId: ticket.assignedGroupId }, select: { userId: true } })
+        : Promise.resolve([])
+    ]);
+    const excluded = new Set(input.excludeUserIds ?? []);
+    const recipientIds = new Set<string>([
+      ...(ticket.assignedUserId ? [ticket.assignedUserId] : []),
+      ...assignees.map((item) => item.userId),
+      ...watchers.map((item) => item.userId),
+      ...teamMembers.map((item) => item.userId),
+      ...groupMembers.map((item) => item.userId)
+    ]);
+
+    await Promise.all(
+      [...recipientIds]
+        .filter((userId) => !excluded.has(userId))
+        .map((userId) => this.addWatcherAndNotify(
+          input.ticketId,
+          userId,
+          input.createdById,
+          input.reason,
+          input.title,
+          input.eventType
+        ))
+    );
   }
 
   private async notifyGroupMembers(ticketId: string, groupId: string, createdById: string | null, reason: string, title: string) {

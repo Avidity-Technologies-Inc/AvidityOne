@@ -860,7 +860,7 @@ export function TicketsList() {
     setNewTicketBusy(true);
     setError(null);
     try {
-      const created = await apiFetch<TicketListItem>("/tickets", {
+      await apiFetch<TicketListItem>("/tickets", {
         method: "POST",
         body: JSON.stringify({
           subject: newTicketSubject.trim(),
@@ -868,21 +868,12 @@ export function TicketsList() {
           clientId: newTicketClientId || undefined,
           contactId: newTicketContactId || undefined,
           priority: newTicketPriority,
-          source: "MANUAL"
+          source: "MANUAL",
+          statusDefinitionId: newTicketStatus || undefined,
+          assignedUserIds: newTicketAssignedUserId ? [newTicketAssignedUserId] : [],
+          assignedTeamId: newTicketAssignedTeamId || undefined
         })
       });
-
-      if (newTicketStatus || newTicketAssignedUserId || newTicketAssignedTeamId) {
-        await apiFetch(`/tickets/${created.ticketNumber}/assignment`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            ...(newTicketStatus ? { statusDefinitionId: newTicketStatus } : {}),
-            assignedUserId: newTicketAssignedUserId || null,
-            assignedUserIds: newTicketAssignedUserId ? [newTicketAssignedUserId] : [],
-            assignedTeamId: newTicketAssignedTeamId || null
-          })
-        });
-      }
 
       resetNewTicketForm();
       setShowNewTicketModal(false);

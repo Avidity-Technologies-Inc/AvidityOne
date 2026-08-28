@@ -15426,6 +15426,46 @@ button.operations-summary-card {
   font-size: 11px;
 }
 
+.ticket-reopened-badge,
+.ticket-mail-delivery {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.ticket-reopened-badge {
+  color: var(--pill-reopened-text);
+  background: var(--pill-reopened-bg);
+}
+
+.ticket-mail-delivery.accepted {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--surface-raised));
+}
+
+.ticket-mail-delivery.skipped {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-raised));
+}
+
+.ticket-mail-delivery.not_applicable {
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+}
+
+.ticket-follow-cc-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .ticket-conversation-controls { display: flex; align-items: center; gap: 5px; }
 .ticket-conversation-controls label {
   display: flex;

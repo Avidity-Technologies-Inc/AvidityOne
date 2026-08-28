@@ -1,5 +1,5 @@
 import { TicketPriority, TicketSource } from "@prisma/client";
-import { IsEnum, IsOptional, IsString, IsUUID, MinLength } from "class-validator";
+import { IsArray, IsEnum, IsOptional, IsString, IsUUID, MinLength } from "class-validator";
 
 export class CreateTicketDto {
   @IsString()
@@ -25,4 +25,17 @@ export class CreateTicketDto {
   @IsOptional()
   @IsEnum(TicketSource)
   source?: TicketSource;
+
+  @IsOptional()
+  @IsUUID()
+  statusDefinitionId?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID("4", { each: true })
+  assignedUserIds?: string[];
+
+  @IsOptional()
+  @IsUUID()
+  assignedTeamId?: string;
 }

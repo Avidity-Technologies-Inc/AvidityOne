@@ -86,6 +86,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
   const [ccInput, setCcInput] = useState("");
   const [ccEmails, setCcEmails] = useState<string[]>([]);
   const [ccUserIds, setCcUserIds] = useState<string[]>([]);
+  const [followCcUsers, setFollowCcUsers] = useState(false);
   const [saving, setSaving] = useState(false);
   const [aiBusy, setAiBusy] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
@@ -98,12 +99,13 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
     try {
       const stored = window.localStorage.getItem(`ticket-reply-draft:${ticketId}`);
       if (stored) {
-        const draft = JSON.parse(stored) as { html?: string; mode?: "public" | "internal"; ccEmails?: string[]; ccUserIds?: string[] };
+        const draft = JSON.parse(stored) as { html?: string; mode?: "public" | "internal"; ccEmails?: string[]; ccUserIds?: string[]; followCcUsers?: boolean };
         editorRef.current.innerHTML = draft.html ?? "";
         setDraftText(htmlToText(draft.html ?? ""));
         setMode(draft.mode === "internal" ? "internal" : "public");
         setCcEmails(Array.isArray(draft.ccEmails) ? draft.ccEmails : []);
         setCcUserIds(Array.isArray(draft.ccUserIds) ? draft.ccUserIds : []);
+        setFollowCcUsers(Boolean(draft.followCcUsers));
       }
     } catch {
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
@@ -122,8 +124,8 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
       return;
     }
-    window.localStorage.setItem(`ticket-reply-draft:${ticketId}`, JSON.stringify({ html, mode, ccEmails, ccUserIds }));
-  }, [ccEmails, ccUserIds, draftText, mode, ticketId]);
+    window.localStorage.setItem(`ticket-reply-draft:${ticketId}`, JSON.stringify({ html, mode, ccEmails, ccUserIds, followCcUsers }));
+  }, [ccEmails, ccUserIds, draftText, followCcUsers, mode, ticketId]);
 
   useEffect(() => {
     let mounted = true;
@@ -520,6 +522,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
           attachmentIds: attachments.map((attachment) => attachment.id),
           ccEmails,
           ccUserIds,
+          followUserIds: followCcUsers ? ccUserIds : [],
           action: selectedAction
         })
       });
@@ -530,6 +533,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
       setCcInput("");
       setCcEmails([]);
       setCcUserIds([]);
+      setFollowCcUsers(false);
       setShowActionMenu(false);
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
       await onSaved?.();
@@ -842,6 +846,12 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
                 ) : null;
               })}
             </div>
+            {mode === "public" && ccUserIds.length > 0 ? (
+              <label className="ticket-follow-cc-option">
+                <input type="checkbox" checked={followCcUsers} onChange={(event) => setFollowCcUsers(event.target.checked)} />
+                <span>Keep selected internal users following future ticket activity</span>
+              </label>
+            ) : null}
           </div>
           <div className="grid columns-2 ticket-editor-attachments">
             <AttachmentDropzone ticketId={ticketId} onUploaded={(attachment) => setAttachments((current) => [...current, attachment])} />

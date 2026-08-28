@@ -95,6 +95,12 @@ enum MessageVisibility {
   INTERNAL
 }
 
+enum MailDeliveryStatus {
+  NOT_APPLICABLE
+  ACCEPTED
+  SKIPPED
+}
+
 enum AttachmentSource {
   INBOUND_EMAIL
   OUTBOUND_REPLY
@@ -1296,6 +1302,9 @@ model TicketMessage {
   emailReferences       String?
   ccEmails              String[]          @default([])
   notifiedUserIds       String[]          @default([])
+  mailDeliveryStatus    MailDeliveryStatus @default(NOT_APPLICABLE)
+  mailDeliveryAttemptedAt DateTime?
+  mailDeliveryAcceptedAt DateTime?
   mergedFromTicketId    String?           @db.Uuid
   mergedFromTicketNumber String?
   mergedFromTicketSubject String?

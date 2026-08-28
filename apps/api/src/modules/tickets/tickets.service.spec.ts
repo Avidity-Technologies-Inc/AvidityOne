@@ -162,13 +162,77 @@ describe("TicketsService", () => {
     );
   });
 
+  it("creates a manual ticket, its original request, and its assignment atomically", async () => {
+    const ticket = { id: "ticket-2", ticketNumber: "AIT-100002", assignedUserId: "user-2", assignedTeamId: null, assignedGroupId: null };
+    const tx = {
+      ticketSequence: { upsert: jest.fn().mockResolvedValue({ prefix: "AIT", currentValue: 100002 }) },
+      ticket: { create: jest.fn().mockResolvedValue(ticket) },
+      ticketMessage: { create: jest.fn().mockResolvedValue({ id: "message-1" }) },
+      ticketAssignee: { create: jest.fn().mockResolvedValue({}) }
+    };
+    const prisma = {
+      client: { findFirst: jest.fn().mockResolvedValue({ id: "client-1" }) },
+      contact: { findFirst: jest.fn().mockResolvedValue({ id: "contact-1", clientId: "client-1", email: "requester@example.com" }) },
+      user: { findMany: jest.fn().mockResolvedValue([{ id: "user-2" }]) },
+      ticket: { findUnique: jest.fn().mockResolvedValue(ticket) },
+      ticketAssignee: { findMany: jest.fn().mockResolvedValue([{ userId: "user-2" }]) },
+      ticketWatcher: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() },
+      $transaction: jest.fn((callback: (txClient: typeof tx) => unknown) => callback(tx))
+    };
+    const notifications = { notifyUser: jest.fn(), notifyNewTicketCreated: jest.fn() };
+    const service = new TicketsService(
+      prisma as never,
+      { create: jest.fn() } as never,
+      { sanitize: jest.fn((value: string) => value) } as never,
+      { resolveRequesterFromEmail: jest.fn() } as never,
+      { applyInboundRules: jest.fn() } as never,
+      { sendTicketReply: jest.fn() } as never,
+      notifications as never,
+      { sendForNewInboundTicket: jest.fn() } as never
+    );
+
+    await expect(service.create({
+      subject: "New employee setup",
+      description: "Please prepare the account.",
+      clientId: "client-1",
+      contactId: "contact-1",
+      assignedUserIds: ["user-2"]
+    }, {
+      id: "user-1",
+      organizationId: "org-1",
+      email: "admin@example.com",
+      firstName: "Admin",
+      lastName: "User",
+      forcePasswordChange: false,
+      permissions: ["tickets.assign"]
+    })).resolves.toEqual(ticket);
+
+    expect(tx.ticketMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ticketId: "ticket-2",
+        bodyText: "Please prepare the account.",
+        direction: "INBOUND",
+        visibility: "PUBLIC",
+        senderEmail: "requester@example.com"
+      })
+    });
+    expect(tx.ticketAssignee.create).toHaveBeenCalledWith({
+      data: { ticketId: "ticket-2", userId: "user-2", assignedById: "user-1" }
+    });
+    expect(notifications.notifyUser).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-2", eventType: "ticketAssignedToMe" }));
+  });
+
   it("adds inbound customer replies to the existing thread and reopens closed tickets", async () => {
     const existingTicket = {
       id: "ticket-1",
       ticketNumber: "AIT-100001",
       status: "CLOSED",
       clientId: null,
-      contactId: null
+      contactId: null,
+      assignedUserId: "user-2",
+      assignedTeamId: null,
+      assignedGroupId: null,
+      closedAt: new Date("2026-08-27T12:00:00Z")
     };
     const updatedTicket = {
       ...existingTicket,
@@ -190,11 +254,14 @@ describe("TicketsService", () => {
     };
     const prisma = {
       ticket: {
-        findFirst: jest.fn().mockResolvedValue(existingTicket)
+        findFirst: jest.fn().mockResolvedValue(existingTicket),
+        findUnique: jest.fn().mockResolvedValue(existingTicket)
       },
       ticketMessage: {
         count: jest.fn().mockResolvedValue(0)
       },
+      ticketAssignee: { findMany: jest.fn().mockResolvedValue([{ userId: "user-3" }]) },
+      ticketWatcher: { findMany: jest.fn().mockResolvedValue([{ userId: "user-4" }]), upsert: jest.fn() },
       $transaction: jest.fn((callback: (txClient: typeof tx) => unknown) => callback(tx))
     };
     const auditLogs = { create: jest.fn() };
@@ -264,6 +331,10 @@ describe("TicketsService", () => {
     });
     expect(routing.applyInboundRules).not.toHaveBeenCalled();
     expect(auditLogs.create).toHaveBeenCalledWith(expect.objectContaining({ action: "ticket.reopened_from_customer_reply" }));
+    for (const userId of ["user-2", "user-3", "user-4"]) {
+      expect(notifications.notifyUser).toHaveBeenCalledWith(expect.objectContaining({ userId, eventType: "ticketReplyOnAssignedTicket" }));
+      expect(notifications.notifyUser).toHaveBeenCalledWith(expect.objectContaining({ userId, eventType: "ticketReopened" }));
+    }
   });
 
   it("marks existing tickets as waiting on technician when a customer replies after a public technician response", async () => {
@@ -292,11 +363,14 @@ describe("TicketsService", () => {
     };
     const prisma = {
       ticket: {
-        findFirst: jest.fn().mockResolvedValue(existingTicket)
+        findFirst: jest.fn().mockResolvedValue(existingTicket),
+        findUnique: jest.fn().mockResolvedValue(existingTicket)
       },
       ticketMessage: {
         count: jest.fn().mockResolvedValue(1)
       },
+      ticketAssignee: { findMany: jest.fn().mockResolvedValue([]) },
+      ticketWatcher: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() },
       $transaction: jest.fn((callback: (txClient: typeof tx) => unknown) => callback(tx))
     };
     const auditLogs = { create: jest.fn() };
@@ -368,6 +442,7 @@ describe("TicketsService", () => {
     const prisma = {
       ticket: {
         findFirst: jest.fn().mockResolvedValue(ticket),
+        findUnique: jest.fn().mockResolvedValue(ticket),
         update: jest.fn().mockResolvedValue({ ...ticket, status: "WAITING_ON_CUSTOMER" })
       },
       ticketMessage: {
@@ -385,6 +460,10 @@ describe("TicketsService", () => {
       },
       ticketAssignee: {
         findMany: jest.fn().mockResolvedValue([])
+      },
+      ticketWatcher: {
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn()
       }
     };
     const auditLogs = { create: jest.fn() };
@@ -442,6 +521,89 @@ describe("TicketsService", () => {
         firstResponseAt: expect.any(Date)
       })
     });
+    expect(prisma.ticketMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        mailDeliveryStatus: "ACCEPTED",
+        mailDeliveryAttemptedAt: expect.any(Date),
+        mailDeliveryAcceptedAt: expect.any(Date)
+      })
+    });
+  });
+
+  it("sends a manual ticket reply to the saved requester and includes the ticket number in the subject", async () => {
+    const ticket = {
+      id: "ticket-1",
+      ticketNumber: "AIT-100001",
+      status: "OPEN",
+      subject: "New employee setup",
+      mailboxId: null,
+      contactId: "contact-1",
+      senderEmail: "requester@example.com",
+      firstResponseAt: null,
+      assignedUserId: null,
+      assignedTeamId: null,
+      assignedGroupId: null
+    };
+    const prisma = {
+      ticket: {
+        findFirst: jest.fn().mockResolvedValue(ticket),
+        findUnique: jest.fn().mockResolvedValue(ticket),
+        update: jest.fn().mockResolvedValue(ticket)
+      },
+      ticketMessage: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: "message-1", ticketId: "ticket-1" })
+      },
+      ticketAttachment: { updateMany: jest.fn() },
+      ticketAssignee: { findMany: jest.fn().mockResolvedValue([]) },
+      ticketWatcher: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() }
+    };
+    const mailDelivery = { sendTicketReply: jest.fn().mockResolvedValue({ providerMessageId: "message-1", internetMessageId: null, conversationId: null }) };
+    const service = new TicketsService(
+      prisma as never,
+      { create: jest.fn() } as never,
+      { sanitize: jest.fn((value: string) => value) } as never,
+      { resolveRequesterFromEmail: jest.fn() } as never,
+      { applyInboundRules: jest.fn() } as never,
+      mailDelivery as never,
+      { notifyUser: jest.fn(), notifyNewTicketCreated: jest.fn() } as never,
+      { sendForNewInboundTicket: jest.fn() } as never
+    );
+
+    await service.createMessage("AIT-100001", { visibility: "public", bodyText: "The account is ready.", action: "send" }, {
+      id: "user-1", organizationId: "org-1", email: "tech@example.com", firstName: "Tech", lastName: "User", forcePasswordChange: false, permissions: []
+    });
+
+    expect(mailDelivery.sendTicketReply).toHaveBeenCalledWith(expect.objectContaining({
+      to: ["requester@example.com"],
+      subject: "Re: [AIT-100001] New employee setup"
+    }));
+  });
+
+  it("does not save a public reply when outbound delivery is unavailable", async () => {
+    const ticket = {
+      id: "ticket-1", ticketNumber: "AIT-100001", status: "OPEN", subject: "Printer issue", mailboxId: null,
+      contactId: null, senderEmail: "customer@example.com", firstResponseAt: null, assignedUserId: null, assignedTeamId: null, assignedGroupId: null
+    };
+    const prisma = {
+      ticket: { findFirst: jest.fn().mockResolvedValue(ticket) },
+      ticketMessage: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }
+    };
+    const service = new TicketsService(
+      prisma as never,
+      { create: jest.fn() } as never,
+      { sanitize: jest.fn((value: string) => value) } as never,
+      { resolveRequesterFromEmail: jest.fn() } as never,
+      { applyInboundRules: jest.fn() } as never,
+      { sendTicketReply: jest.fn().mockResolvedValue(null) } as never,
+      { notifyUser: jest.fn(), notifyNewTicketCreated: jest.fn() } as never,
+      { sendForNewInboundTicket: jest.fn() } as never
+    );
+
+    await expect(service.createMessage("AIT-100001", { visibility: "public", bodyText: "Reply", action: "send" }, {
+      id: "user-1", organizationId: "org-1", email: "tech@example.com", firstName: "Tech", lastName: "User", forcePasswordChange: false, permissions: []
+    })).rejects.toThrow("Outbound email delivery is not enabled");
+    expect(prisma.ticketMessage.create).not.toHaveBeenCalled();
   });
 
   it("uses internal note CC as internal watcher notifications without sending email", async () => {
