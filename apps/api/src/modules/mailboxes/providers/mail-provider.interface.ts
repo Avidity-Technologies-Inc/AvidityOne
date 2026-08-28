@@ -74,6 +74,12 @@ export interface GetMessageAttachmentsInput {
   encryptedClientSecretReference?: string | null;
 }
 
+export interface GetInboundMessageInput extends GetMessageAttachmentsInput {
+  publicEmailAddress?: string | null;
+  connectionMode?: string | null;
+  preserveOriginalSenderHeaders?: boolean;
+}
+
 export interface MailAttachment {
   id: string;
   originalFilename: string;
@@ -97,4 +103,5 @@ export interface MailProvider {
   syncInboundMessages(input: SyncInboundMessagesInput): Promise<SyncInboundMessagesResult>;
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   getMessageAttachments(input: GetMessageAttachmentsInput): Promise<MailAttachment[]>;
+  getInboundMessage?(input: GetInboundMessageInput): Promise<InboundMailMessage | null>;
 }

@@ -6,6 +6,7 @@ import { SessionAuthGuard } from "../auth/guards/session-auth.guard";
 import { RequirePermissions } from "../permissions/decorators/require-permissions.decorator";
 import { PermissionsGuard } from "../permissions/guards/permissions.guard";
 import { CreateSpamBlockEntryDto } from "./dto/create-spam-block-entry.dto";
+import { SpamQuarantineQueryDto } from "./dto/spam-quarantine-query.dto";
 import { UpdateSpamBlockEntryDto } from "./dto/update-spam-block-entry.dto";
 import { SpamManagementService } from "./spam-management.service";
 
@@ -18,6 +19,18 @@ export class SpamManagementController {
   @RequirePermissions("spam.view")
   list(@Query("search") search: string | undefined, @Query("type") type: SpamBlockType | undefined, @Query("active") active: string | undefined, @CurrentUser() user: AuthenticatedUser) {
     return this.spamManagement.list(user, { search, type, active });
+  }
+
+  @Get("quarantine")
+  @RequirePermissions("spam.view")
+  listQuarantine(@Query() query: SpamQuarantineQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.spamManagement.listQuarantine(user, query);
+  }
+
+  @Post("quarantine/:entryId/dismiss")
+  @RequirePermissions("spam.manage")
+  dismissQuarantine(@Param("entryId") entryId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.spamManagement.dismissQuarantinedEmail(entryId, user);
   }
 
   @Post()

@@ -84,6 +84,30 @@ enum SpamBlockType {
   DOMAIN
 }
 
+enum SpamRuleAction {
+  BLOCK
+  ALLOW
+}
+
+enum SpamRuleScope {
+  NEW_CONVERSATIONS_ONLY
+  ALL_INBOUND
+}
+
+enum BlockedInboundEmailStatus {
+  QUARANTINED
+  PROCESSING
+  RELEASED
+  DISMISSED
+}
+
+enum SpamReleaseAction {
+  KEEP_RULE
+  DEACTIVATE_RULE
+  ALLOW_SENDER
+  ALLOW_DOMAIN
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -548,6 +572,7 @@ model User {
   reportSchedules     ReportSchedule[]
   performedTicketMerges TicketMerge[]
   createdSpamBlockEntries SpamBlockEntry[] @relation("SpamBlockEntryCreatedBy")
+  resolvedBlockedInboundEmails BlockedInboundEmail[] @relation("BlockedInboundEmailResolvedBy")
   assignedEventServiceRequests EventServiceAssignee[]
   assignedEventServiceTasks EventServiceTask[] @relation("EventServiceTaskAssignedUser")
   ticketExternalSpecialists TicketExternalSpecialist[]
@@ -1084,8 +1109,11 @@ model SpamBlockEntry {
   type            SpamBlockType
   value           String
   normalizedValue String
+  action          SpamRuleAction @default(BLOCK)
+  scope           SpamRuleScope  @default(ALL_INBOUND)
   isActive        Boolean       @default(true)
   notes           String?
+  archivedAt      DateTime?
   createdByUserId String?       @db.Uuid
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -1105,24 +1133,41 @@ model BlockedInboundEmail {
   mailboxId                String?         @db.Uuid
   spamBlockEntryId         String?         @db.Uuid
   senderEmail              String
+  senderName               String?
   senderDomain             String?
   subject                  String
+  bodyText                 String?
+  bodyHtml                 String?
   emailMessageId           String?
   emailInternetMessageId   String?
   emailConversationId      String?
+  inReplyTo                String?
+  emailReferences          String?
+  hasAttachments           Boolean         @default(false)
+  internetMessageHeaders   Json?
   reason                   String
+  status                   BlockedInboundEmailStatus @default(QUARANTINED)
+  resolutionAction         SpamReleaseAction?
+  resolvedAt               DateTime?
+  resolvedByUserId         String?         @db.Uuid
+  releasedTicketId         String?         @db.Uuid
+  releasedMessageId        String?         @db.Uuid
+  releaseFailureReason     String?
   createdAt                DateTime        @default(now())
   organization             Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   mailbox                  Mailbox?        @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
   spamBlockEntry           SpamBlockEntry? @relation(fields: [spamBlockEntryId], references: [id], onDelete: SetNull)
+  resolvedBy               User?           @relation("BlockedInboundEmailResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
+  @@index([organizationId, status, createdAt])
   @@index([mailboxId])
   @@index([spamBlockEntryId])
   @@index([senderEmail])
   @@index([senderDomain])
   @@index([emailMessageId])
   @@index([emailInternetMessageId])
+  @@index([releasedTicketId])
   @@map("blocked_inbound_emails")
 }
 

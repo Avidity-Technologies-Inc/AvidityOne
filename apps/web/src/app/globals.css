@@ -271,6 +271,24 @@
   font-size: 12px;
 }
 
+.settings-detail-row > td { padding: 0 10px 10px; background: var(--surface-subtle); }
+.settings-detail-row .settings-create-panel { display: grid; gap: 10px; margin-top: 0; }
+.quarantine-message-preview {
+  max-height: 240px;
+  margin: 7px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.settings-page .error-text { display: block; max-width: 260px; margin-top: 4px; color: var(--danger); font-size: 11px; }
+
 .notification-toolbar { grid-template-columns: minmax(220px, 1fr) 210px auto; }
 .notification-user-list { display: grid; gap: 7px; }
 .notification-user-card { padding: 0; overflow: hidden; }

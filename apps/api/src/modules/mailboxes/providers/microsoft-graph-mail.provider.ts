@@ -2,6 +2,8 @@ import { Injectable, InternalServerErrorException, NotImplementedException } fro
 import { ConfigService } from "@nestjs/config";
 import {
   GetMessageAttachmentsInput,
+  GetInboundMessageInput,
+  InboundMailMessage,
   MailAttachment,
   MailProvider,
   SendMessageInput,
@@ -24,31 +26,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     return {
       messages: response.value
         .filter((message) => Boolean(message.from?.emailAddress?.address))
-        .map((message) => {
-          const rawFrom = this.toInboundAddress(message.from.emailAddress);
-          const headers = this.toHeaderMap(message.internetMessageHeaders ?? []);
-          const forwardedFrom =
-            input.connectionMode === "GRAPH_FORWARDED_MAILBOX" && input.preserveOriginalSenderHeaders !== false
-              ? this.resolveForwardedSender(headers, rawFrom, message.bodyPreview ?? null, message.body?.content ?? null)
-              : rawFrom;
-
-          return {
-            providerMessageId: message.id,
-            internetMessageId: message.internetMessageId ?? null,
-            conversationId: message.conversationId ?? null,
-            from: forwardedFrom,
-            rawFrom,
-            replyTo: message.replyTo?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
-            to: message.toRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
-            subject: message.subject || "(No subject)",
-            bodyText: message.bodyPreview ?? null,
-            bodyHtml: message.body?.contentType?.toLowerCase() === "html" ? message.body.content : null,
-            inReplyTo: headers["in-reply-to"] ?? null,
-            references: headers.references ?? null,
-            hasAttachments: message.hasAttachments ?? false,
-            internetMessageHeaders: headers
-          };
-        }),
+        .map((message) => this.toInboundMessage(message, input)),
       nextSyncCursor: response["@odata.deltaLink"] ?? response["@odata.nextLink"] ?? null
     };
   }
@@ -210,11 +188,26 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     return attachments;
   }
 
+  async getInboundMessage(input: GetInboundMessageInput): Promise<InboundMailMessage | null> {
+    const token = await this.getAccessToken(input);
+    const user = encodeURIComponent(input.mailboxEmailAddress);
+    const messageId = encodeURIComponent(input.providerMessageId);
+    const select = encodeURIComponent(this.inboundMessageSelect());
+    try {
+      const message = await this.graphFetch<GraphMessage>(
+        `https://graph.microsoft.com/v1.0/users/${user}/messages/${messageId}?$select=${select}`,
+        token
+      );
+      return message.from?.emailAddress?.address ? this.toInboundMessage(message, input) : null;
+    } catch (error) {
+      if (error instanceof Error && /404|not found/i.test(error.message)) return null;
+      throw error;
+    }
+  }
+
   private buildInitialSyncUrl(mailboxEmailAddress: string, initialSyncFrom: Date | null) {
     const user = encodeURIComponent(mailboxEmailAddress);
-    const select = encodeURIComponent(
-      "id,subject,body,bodyPreview,from,toRecipients,replyTo,receivedDateTime,internetMessageId,conversationId,hasAttachments,internetMessageHeaders"
-    );
+    const select = encodeURIComponent(this.inboundMessageSelect());
     const base = `https://graph.microsoft.com/v1.0/users/${user}/mailFolders/inbox/messages/delta?$select=${select}`;
 
     if (!initialSyncFrom) {
@@ -224,7 +217,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     return `${base}&$filter=${encodeURIComponent(`receivedDateTime ge ${initialSyncFrom.toISOString()}`)}`;
   }
 
-  private async getAccessToken(input: SyncInboundMessagesInput) {
+  private async getAccessToken(input: Pick<SyncInboundMessagesInput, "tenantId" | "microsoftClientId" | "encryptedClientSecretReference">) {
     const tenantId = input.tenantId || this.config.get<string>("MICROSOFT_TENANT_ID");
     const clientId = input.microsoftClientId || this.config.get<string>("MICROSOFT_CLIENT_ID");
     const clientSecret = this.resolveSecret(input.encryptedClientSecretReference) || this.config.get<string>("MICROSOFT_CLIENT_SECRET");
@@ -255,6 +248,37 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     }
 
     return token.access_token;
+  }
+
+  private inboundMessageSelect() {
+    return "id,subject,body,bodyPreview,from,toRecipients,replyTo,receivedDateTime,internetMessageId,conversationId,hasAttachments,internetMessageHeaders";
+  }
+
+  private toInboundMessage(
+    message: GraphMessage,
+    input: Pick<SyncInboundMessagesInput, "connectionMode" | "preserveOriginalSenderHeaders">
+  ): InboundMailMessage {
+    const rawFrom = this.toInboundAddress(message.from.emailAddress);
+    const headers = this.toHeaderMap(message.internetMessageHeaders ?? []);
+    const forwardedFrom = input.connectionMode === "GRAPH_FORWARDED_MAILBOX" && input.preserveOriginalSenderHeaders !== false
+      ? this.resolveForwardedSender(headers, rawFrom, message.bodyPreview ?? null, message.body?.content ?? null)
+      : rawFrom;
+    return {
+      providerMessageId: message.id,
+      internetMessageId: message.internetMessageId ?? null,
+      conversationId: message.conversationId ?? null,
+      from: forwardedFrom,
+      rawFrom,
+      replyTo: message.replyTo?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
+      to: message.toRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
+      subject: message.subject || "(No subject)",
+      bodyText: message.bodyPreview ?? null,
+      bodyHtml: message.body?.contentType?.toLowerCase() === "html" ? message.body.content : null,
+      inReplyTo: headers["in-reply-to"] ?? null,
+      references: headers.references ?? null,
+      hasAttachments: message.hasAttachments ?? false,
+      internetMessageHeaders: headers
+    };
   }
 
   private resolveSecret(reference: string | null | undefined) {

@@ -206,11 +206,39 @@ interface SpamBlockEntry {
   type: "EMAIL" | "DOMAIN";
   value: string;
   normalizedValue: string;
+  action: "BLOCK" | "ALLOW";
+  scope: "NEW_CONVERSATIONS_ONLY" | "ALL_INBOUND";
   isActive: boolean;
   notes: string | null;
   createdAt: string;
   updatedAt: string;
   createdBy: { firstName: string; lastName: string; email: string } | null;
+}
+
+interface QuarantinedEmail {
+  id: string;
+  senderEmail: string;
+  senderName: string | null;
+  senderDomain: string | null;
+  subject: string;
+  bodyText: string | null;
+  reason: string;
+  status: "QUARANTINED" | "PROCESSING" | "RELEASED" | "DISMISSED";
+  resolutionAction: "KEEP_RULE" | "DEACTIVATE_RULE" | "ALLOW_SENDER" | "ALLOW_DOMAIN" | null;
+  releasedTicketId: string | null;
+  releaseFailureReason: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  mailbox: { id: string; name: string; emailAddress: string } | null;
+  spamBlockEntry: Pick<SpamBlockEntry, "id" | "type" | "value" | "normalizedValue" | "action" | "scope" | "isActive"> | null;
+  resolvedBy: { firstName: string; lastName: string; email: string } | null;
+}
+
+interface QuarantinedEmailResult {
+  items: QuarantinedEmail[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 interface MaintenanceSummary {
@@ -1076,6 +1104,7 @@ export function SettingsWorkspace() {
   const [autoReplyTemplates, setAutoReplyTemplates] = useState<AutoReplyTemplate[]>([]);
   const [notificationPreferenceRows, setNotificationPreferenceRows] = useState<UserNotificationPreferenceRow[]>([]);
   const [spamEntries, setSpamEntries] = useState<SpamBlockEntry[]>([]);
+  const [spamQuarantine, setSpamQuarantine] = useState<QuarantinedEmailResult | null>(null);
   const [maintenanceSummary, setMaintenanceSummary] = useState<MaintenanceSummary | null>(null);
   const [attachmentQuarantine, setAttachmentQuarantine] = useState<AttachmentQuarantineResult | null>(null);
   const [generalSettings, setGeneralSettings] = useState<GeneralSettings | null>(null);
@@ -1106,8 +1135,12 @@ export function SettingsWorkspace() {
   const [spamSearch, setSpamSearch] = useState("");
   const [spamTypeFilter, setSpamTypeFilter] = useState("");
   const [spamActiveFilter, setSpamActiveFilter] = useState("");
-  const [spamDraft, setSpamDraft] = useState({ type: "EMAIL" as "EMAIL" | "DOMAIN", value: "", notes: "" });
+  const [spamTab, setSpamTab] = useState<"rules" | "quarantine">("rules");
+  const [spamDraft, setSpamDraft] = useState({ type: "EMAIL" as "EMAIL" | "DOMAIN", action: "BLOCK" as "BLOCK" | "ALLOW", scope: "ALL_INBOUND" as "NEW_CONVERSATIONS_ONLY" | "ALL_INBOUND", value: "", notes: "" });
   const [showSpamCreate, setShowSpamCreate] = useState(false);
+  const [spamQuarantineFilters, setSpamQuarantineFilters] = useState({ search: "", status: "QUARANTINED", page: "1", pageSize: "20" });
+  const [expandedQuarantineId, setExpandedQuarantineId] = useState<string | null>(null);
+  const [releaseActions, setReleaseActions] = useState<Record<string, "KEEP_RULE" | "DEACTIVATE_RULE" | "ALLOW_SENDER" | "ALLOW_DOMAIN">>({});
   const [maintenanceDraft, setMaintenanceDraft] = useState("7");
   const [maintenanceTab, setMaintenanceTab] = useState<"recycle" | "quarantine">("recycle");
   const [quarantineFilters, setQuarantineFilters] = useState({
@@ -1257,6 +1290,10 @@ export function SettingsWorkspace() {
   const quarantineFirstItem = quarantineTotal === 0 ? 0 : (quarantinePage - 1) * quarantinePageSize + 1;
   const quarantineLastItem = quarantineTotal === 0 ? 0 : Math.min(quarantineTotal, quarantinePage * quarantinePageSize);
   const quarantinePageCount = Math.max(1, Math.ceil(quarantineTotal / quarantinePageSize));
+  const spamQuarantinePage = Number(spamQuarantine?.page ?? spamQuarantineFilters.page);
+  const spamQuarantinePageSize = Number(spamQuarantine?.pageSize ?? spamQuarantineFilters.pageSize);
+  const spamQuarantineTotal = spamQuarantine?.total ?? 0;
+  const spamQuarantinePageCount = Math.max(1, Math.ceil(spamQuarantineTotal / spamQuarantinePageSize));
   const systemHealthSnapshots = systemHealthHistory?.snapshots ?? [];
   const systemHealthHistoryPageCount = Math.max(1, Math.ceil(systemHealthSnapshots.length / SYSTEM_HEALTH_HISTORY_PAGE_SIZE));
   const visibleSystemHealthSnapshots = systemHealthSnapshots.slice((systemHealthHistoryPage - 1) * SYSTEM_HEALTH_HISTORY_PAGE_SIZE, systemHealthHistoryPage * SYSTEM_HEALTH_HISTORY_PAGE_SIZE);
@@ -1448,6 +1485,16 @@ export function SettingsWorkspace() {
     const query = quarantineQueryString(nextFilters);
     const result = await apiFetch<AttachmentQuarantineResult>(`/maintenance/attachment-quarantine${query ? `?${query}` : ""}`);
     setAttachmentQuarantine(result);
+  }
+
+  async function loadSpamQuarantine(nextFilters = spamQuarantineFilters) {
+    const params = new URLSearchParams();
+    Object.entries(nextFilters).forEach(([key, value]) => {
+      if (value && !(key === "status" && value === "ALL")) params.set(key, value);
+    });
+    const query = params.toString();
+    const result = await apiFetch<QuarantinedEmailResult>(`/spam-blocklist/quarantine${query ? `?${query}` : ""}`);
+    setSpamQuarantine(result);
   }
 
   async function loadSystemHealth(range = systemHealthRange) {
@@ -2042,7 +2089,7 @@ export function SettingsWorkspace() {
 
   async function createSpamEntry() {
     if (!spamDraft.value.trim()) {
-      setError("Enter an email address or domain to block.");
+      setError("Enter an email address or domain for the rule.");
       return;
     }
 
@@ -2054,22 +2101,24 @@ export function SettingsWorkspace() {
         method: "POST",
         body: JSON.stringify({
           type: spamDraft.type,
+          action: spamDraft.action,
+          scope: spamDraft.scope,
           value: spamDraft.value,
           notes: spamDraft.notes || undefined
         })
       });
-      setSpamDraft({ type: "EMAIL", value: "", notes: "" });
+      setSpamDraft({ type: "EMAIL", action: "BLOCK", scope: "ALL_INBOUND", value: "", notes: "" });
       setShowSpamCreate(false);
-      setNotice("Spam block entry created.");
+      setNotice("Mail rule created.");
       await loadSettingsData();
     } catch {
-      setError("Unable to create spam block entry. Check the value and duplicates.");
+      setError("Unable to create mail rule. Check the value and existing rules.");
     } finally {
       setBusy(null);
     }
   }
 
-  async function updateSpamEntry(entry: SpamBlockEntry, data: { isActive?: boolean; notes?: string }) {
+  async function updateSpamEntry(entry: SpamBlockEntry, data: { action?: "BLOCK" | "ALLOW"; scope?: "NEW_CONVERSATIONS_ONLY" | "ALL_INBOUND"; isActive?: boolean; notes?: string }) {
     setBusy(entry.id);
     setNotice(null);
     setError(null);
@@ -2078,17 +2127,17 @@ export function SettingsWorkspace() {
         method: "PATCH",
         body: JSON.stringify(data)
       });
-      setNotice("Spam block entry updated.");
+      setNotice("Mail rule updated.");
       await loadSettingsData();
     } catch {
-      setError("Unable to update spam block entry.");
+      setError("Unable to update mail rule.");
     } finally {
       setBusy(null);
     }
   }
 
   async function deleteSpamEntry(entry: SpamBlockEntry) {
-    if (!window.confirm(`Delete spam block entry ${entry.value}?`)) {
+    if (!window.confirm(`Archive mail rule ${entry.value}? Existing quarantine history will be preserved.`)) {
       return;
     }
 
@@ -2097,10 +2146,60 @@ export function SettingsWorkspace() {
     setError(null);
     try {
       await apiFetch(`/spam-blocklist/${entry.id}`, { method: "DELETE" });
-      setNotice("Spam block entry deleted.");
+      setNotice("Mail rule archived.");
       await loadSettingsData();
     } catch {
-      setError("Unable to delete spam block entry.");
+      setError("Unable to archive mail rule.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function applySpamQuarantineFilters(nextFilters = spamQuarantineFilters) {
+    setBusy("spam-quarantine");
+    setError(null);
+    try {
+      setSpamQuarantineFilters(nextFilters);
+      await loadSpamQuarantine(nextFilters);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load spam quarantine.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function releaseQuarantinedEmail(entry: QuarantinedEmail) {
+    const action = releaseActions[entry.id] ?? "KEEP_RULE";
+    if (!window.confirm(`Release “${entry.subject}” into Tickets? No automatic acknowledgement will be sent.`)) return;
+    setBusy(entry.id);
+    setNotice(null);
+    setError(null);
+    try {
+      const result = await apiFetch<{ ticketId: string; ticketNumber?: string; alreadyReleased: boolean }>(`/mailboxes/quarantine/${entry.id}/release`, {
+        method: "POST",
+        body: JSON.stringify({ action })
+      });
+      setNotice(`Message released to ${result.ticketNumber ? `ticket ${result.ticketNumber}` : "Tickets"}${result.alreadyReleased ? " (already imported)" : ""}.`);
+      await Promise.all([loadSettingsData(), loadSpamQuarantine(spamQuarantineFilters)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to release quarantined message.");
+      await loadSpamQuarantine(spamQuarantineFilters).catch(() => undefined);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function dismissQuarantinedEmail(entry: QuarantinedEmail) {
+    if (!window.confirm(`Dismiss “${entry.subject}” without creating a ticket?`)) return;
+    setBusy(entry.id);
+    setNotice(null);
+    setError(null);
+    try {
+      await apiFetch(`/spam-blocklist/quarantine/${entry.id}/dismiss`, { method: "POST" });
+      setNotice("Quarantined message dismissed. The mail rule was not changed.");
+      await loadSpamQuarantine(spamQuarantineFilters);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to dismiss quarantined message.");
     } finally {
       setBusy(null);
     }
@@ -2801,6 +2900,11 @@ export function SettingsWorkspace() {
     if (activeSection !== "maintenance" || maintenanceTab !== "quarantine") return;
     loadAttachmentQuarantine(quarantineFilters).catch(() => setError("Unable to load attachment quarantine."));
   }, [activeSection, maintenanceTab, quarantineFilters]);
+
+  useEffect(() => {
+    if (activeSection !== "spam" || spamTab !== "quarantine") return;
+    loadSpamQuarantine(spamQuarantineFilters).catch(() => setError("Unable to load spam quarantine."));
+  }, [activeSection, spamTab]);
 
   useEffect(() => {
     setSystemHealthHistoryPage(1);
@@ -4262,92 +4366,147 @@ export function SettingsWorkspace() {
                 <div className="section-heading">
                   <div>
                     <h2>Spam Management</h2>
-                    <p className="muted">Block sender emails or domains before inbound mail creates tickets.</p>
+                    <p className="muted">Control inbound mail rules and recover messages that were blocked incorrectly.</p>
                   </div>
-                  <div className="form-actions"><span className="count-pill">{spamEntries.length} entries</span><button className="button compact-button" type="button" onClick={() => setShowSpamCreate((open) => !open)}><Plus size={15} /> Add Block</button></div>
+                  <div className="form-actions">
+                    <span className="count-pill">{spamTab === "rules" ? `${spamEntries.length} rules` : `${spamQuarantineTotal} messages`}</span>
+                    {spamTab === "rules" ? <button className="button compact-button" type="button" onClick={() => setShowSpamCreate((open) => !open)}><Plus size={15} /> Add Rule</button> : null}
+                  </div>
                 </div>
 
-                {showSpamCreate ? <div className="client-form-grid settings-section settings-create-panel">
-                  <select className="input compact-select" value={spamDraft.type} onChange={(event) => setSpamDraft((current) => ({ ...current, type: event.target.value as "EMAIL" | "DOMAIN" }))}>
-                    <option value="EMAIL">Email address</option>
-                    <option value="DOMAIN">Domain</option>
-                  </select>
-                  <input className="input" placeholder={spamDraft.type === "EMAIL" ? "person@example.com" : "example.com"} value={spamDraft.value} onChange={(event) => setSpamDraft((current) => ({ ...current, value: event.target.value }))} />
-                  <input className="input" placeholder="Reason or notes" value={spamDraft.notes} onChange={(event) => setSpamDraft((current) => ({ ...current, notes: event.target.value }))} />
-                  <div className="form-actions"><button className="button secondary" type="button" onClick={() => setShowSpamCreate(false)}>Cancel</button><button className="button" type="button" onClick={createSpamEntry} disabled={busy === "spam-create"}><Plus size={16} aria-hidden="true" /><span>Add Block</span></button></div>
-                </div> : null}
-
-                <div className="client-form-grid settings-section">
-                  <input className="input" placeholder="Search blocked senders" value={spamSearch} onChange={(event) => setSpamSearch(event.target.value)} />
-                  <select className="input compact-select" value={spamTypeFilter} onChange={(event) => setSpamTypeFilter(event.target.value)}>
-                    <option value="">All types</option>
-                    <option value="EMAIL">Email</option>
-                    <option value="DOMAIN">Domain</option>
-                  </select>
-                  <select className="input compact-select" value={spamActiveFilter} onChange={(event) => setSpamActiveFilter(event.target.value)}>
-                    <option value="">All states</option>
-                    <option value="true">Active</option>
-                    <option value="false">Inactive</option>
-                  </select>
+                <div className="settings-tabs settings-section" role="tablist" aria-label="Spam management areas">
+                  <button className={spamTab === "rules" ? "active" : ""} type="button" role="tab" aria-selected={spamTab === "rules"} onClick={() => setSpamTab("rules")}>Rules</button>
+                  <button className={spamTab === "quarantine" ? "active" : ""} type="button" role="tab" aria-selected={spamTab === "quarantine"} onClick={() => setSpamTab("quarantine")}>Quarantine</button>
                 </div>
 
-                <div className="table-scroll settings-section">
-                  <table className="tickets-table">
-                    <thead>
-                      <tr>
-                        <th>Type</th>
-                        <th>Value</th>
-                        <th>Notes</th>
-                        <th>Status</th>
-                        <th>Created By</th>
-                        <th>Updated</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredSpamEntries.length === 0 ? (
-                        <tr>
-                          <td colSpan={7}>No spam block entries found.</td>
-                        </tr>
-                      ) : null}
-                      {filteredSpamEntries.map((entry) => (
-                        <tr key={entry.id}>
-                          <td>{entry.type === "EMAIL" ? "Email" : "Domain"}</td>
-                          <td>
-                            <strong>{entry.value}</strong>
-                            <span className="muted">{entry.normalizedValue}</span>
-                          </td>
-                          <td>
-                            <textarea
-                              className="textarea compact-textarea"
-                              defaultValue={entry.notes ?? ""}
-                              onBlur={(event) => {
-                                if (event.target.value !== (entry.notes ?? "")) {
-                                  void updateSpamEntry(entry, { notes: event.target.value });
-                                }
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <span className={`status-pill ${entry.isActive ? "read-pill" : "muted-pill"}`}>{entry.isActive ? "Active" : "Inactive"}</span>
-                          </td>
-                          <td>{entry.createdBy ? `${entry.createdBy.firstName} ${entry.createdBy.lastName}` : "System"}</td>
-                          <td>{new Date(entry.updatedAt).toLocaleString()}</td>
-                          <td>
-                            <div className="settings-actions">
-                              <button className="button secondary" type="button" onClick={() => updateSpamEntry(entry, { isActive: !entry.isActive })} disabled={busy === entry.id}>
-                                {entry.isActive ? "Deactivate" : "Activate"}
-                              </button>
-                              <button className="button secondary danger-button" type="button" onClick={() => deleteSpamEntry(entry)} disabled={busy === entry.id}>
-                                Delete
-                              </button>
+                {spamTab === "rules" ? <>
+                  {showSpamCreate ? <div className="client-form-grid settings-section settings-create-panel">
+                    <select className="input compact-select" value={spamDraft.action} onChange={(event) => setSpamDraft((current) => ({ ...current, action: event.target.value as "BLOCK" | "ALLOW", ...(event.target.value === "ALLOW" ? { scope: "ALL_INBOUND" as const } : {}) }))}>
+                      <option value="BLOCK">Block</option>
+                      <option value="ALLOW">Allow</option>
+                    </select>
+                    <select className="input compact-select" value={spamDraft.type} onChange={(event) => setSpamDraft((current) => ({ ...current, type: event.target.value as "EMAIL" | "DOMAIN" }))}>
+                      <option value="EMAIL">Email address</option>
+                      <option value="DOMAIN">Domain</option>
+                    </select>
+                    <select className="input compact-select" value={spamDraft.scope} onChange={(event) => setSpamDraft((current) => ({ ...current, scope: event.target.value as "NEW_CONVERSATIONS_ONLY" | "ALL_INBOUND" }))} disabled={spamDraft.action === "ALLOW"}>
+                      <option value="ALL_INBOUND">All inbound mail</option>
+                      <option value="NEW_CONVERSATIONS_ONLY">New conversations only</option>
+                    </select>
+                    <input className="input" placeholder={spamDraft.type === "EMAIL" ? "person@example.com" : "example.com"} value={spamDraft.value} onChange={(event) => setSpamDraft((current) => ({ ...current, value: event.target.value }))} />
+                    <input className="input" placeholder="Reason or notes" value={spamDraft.notes} onChange={(event) => setSpamDraft((current) => ({ ...current, notes: event.target.value }))} />
+                    <div className="form-actions"><button className="button secondary" type="button" onClick={() => setShowSpamCreate(false)}>Cancel</button><button className="button" type="button" onClick={createSpamEntry} disabled={busy === "spam-create"}><Plus size={16} aria-hidden="true" /><span>Add Rule</span></button></div>
+                  </div> : null}
+
+                  <div className="client-form-grid settings-section">
+                    <input className="input" placeholder="Search mail rules" value={spamSearch} onChange={(event) => setSpamSearch(event.target.value)} />
+                    <select className="input compact-select" value={spamTypeFilter} onChange={(event) => setSpamTypeFilter(event.target.value)}>
+                      <option value="">All types</option>
+                      <option value="EMAIL">Email</option>
+                      <option value="DOMAIN">Domain</option>
+                    </select>
+                    <select className="input compact-select" value={spamActiveFilter} onChange={(event) => setSpamActiveFilter(event.target.value)}>
+                      <option value="">All states</option>
+                      <option value="true">Active</option>
+                      <option value="false">Inactive</option>
+                    </select>
+                  </div>
+
+                  <div className="table-scroll settings-section">
+                    <table className="tickets-table">
+                      <thead><tr><th>Rule</th><th>Value</th><th>Scope</th><th>Notes</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+                      <tbody>
+                        {filteredSpamEntries.length === 0 ? <tr><td colSpan={7}>No mail rules found.</td></tr> : null}
+                        {filteredSpamEntries.map((entry) => (
+                          <tr key={entry.id}>
+                            <td>
+                              <select className="input compact-select" value={entry.action} onChange={(event) => void updateSpamEntry(entry, { action: event.target.value as "BLOCK" | "ALLOW" })} disabled={busy === entry.id}>
+                                <option value="BLOCK">Block {entry.type === "EMAIL" ? "email" : "domain"}</option>
+                                <option value="ALLOW">Allow {entry.type === "EMAIL" ? "email" : "domain"}</option>
+                              </select>
+                            </td>
+                            <td><strong>{entry.value}</strong><span className="muted">{entry.normalizedValue}</span></td>
+                            <td>
+                              <select className="input compact-select" value={entry.scope} onChange={(event) => void updateSpamEntry(entry, { scope: event.target.value as "NEW_CONVERSATIONS_ONLY" | "ALL_INBOUND" })} disabled={busy === entry.id || entry.action === "ALLOW"}>
+                                <option value="ALL_INBOUND">All inbound</option>
+                                <option value="NEW_CONVERSATIONS_ONLY">New conversations</option>
+                              </select>
+                            </td>
+                            <td><textarea className="textarea compact-textarea" defaultValue={entry.notes ?? ""} onBlur={(event) => { if (event.target.value !== (entry.notes ?? "")) void updateSpamEntry(entry, { notes: event.target.value }); }} /></td>
+                            <td><span className={`status-pill ${entry.isActive ? "read-pill" : "muted-pill"}`}>{entry.isActive ? "Active" : "Inactive"}</span></td>
+                            <td>{new Date(entry.updatedAt).toLocaleString()}</td>
+                            <td><div className="settings-actions">
+                              <button className="button secondary" type="button" onClick={() => void updateSpamEntry(entry, { isActive: !entry.isActive })} disabled={busy === entry.id}>{entry.isActive ? "Deactivate" : "Activate"}</button>
+                              <button className="button secondary danger-button" type="button" onClick={() => void deleteSpamEntry(entry)} disabled={busy === entry.id}>Archive</button>
+                            </div></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </> : null}
+
+                {spamTab === "quarantine" ? <>
+                  <div className="client-form-grid settings-section">
+                    <input className="input" placeholder="Sender, domain, subject, or reason" value={spamQuarantineFilters.search} onChange={(event) => setSpamQuarantineFilters((current) => ({ ...current, search: event.target.value, page: "1" }))} />
+                    <select className="input compact-select" value={spamQuarantineFilters.status} onChange={(event) => void applySpamQuarantineFilters({ ...spamQuarantineFilters, status: event.target.value, page: "1" })}>
+                      <option value="QUARANTINED">Needs review</option>
+                      <option value="PROCESSING">Processing</option>
+                      <option value="RELEASED">Released</option>
+                      <option value="DISMISSED">Dismissed</option>
+                      <option value="ALL">All states</option>
+                    </select>
+                    <select className="input compact-select" value={spamQuarantineFilters.pageSize} onChange={(event) => void applySpamQuarantineFilters({ ...spamQuarantineFilters, pageSize: event.target.value, page: "1" })}>
+                      <option value="20">20 per page</option><option value="50">50 per page</option><option value="100">100 per page</option>
+                    </select>
+                    <div className="form-actions">
+                      <button className="button" type="button" onClick={() => void applySpamQuarantineFilters(spamQuarantineFilters)} disabled={busy === "spam-quarantine"}><Search size={15} /> Apply</button>
+                      <button className="button secondary" type="button" onClick={() => void applySpamQuarantineFilters({ search: "", status: "QUARANTINED", page: "1", pageSize: spamQuarantineFilters.pageSize })}>Reset</button>
+                    </div>
+                  </div>
+                  <div className="settings-pagination settings-section">
+                    <span className="muted">{spamQuarantineTotal === 0 ? "No messages" : `${(spamQuarantinePage - 1) * spamQuarantinePageSize + 1}-${Math.min(spamQuarantineTotal, spamQuarantinePage * spamQuarantinePageSize)} of ${spamQuarantineTotal}`}</span>
+                    <div className="form-actions">
+                      <button className="button secondary" type="button" disabled={spamQuarantinePage <= 1 || busy === "spam-quarantine"} onClick={() => void applySpamQuarantineFilters({ ...spamQuarantineFilters, page: String(spamQuarantinePage - 1) })}>Previous</button>
+                      <button className="button secondary" type="button" disabled={spamQuarantinePage >= spamQuarantinePageCount || busy === "spam-quarantine"} onClick={() => void applySpamQuarantineFilters({ ...spamQuarantineFilters, page: String(spamQuarantinePage + 1) })}>Next</button>
+                    </div>
+                  </div>
+                  <div className="table-scroll settings-section">
+                    <table className="tickets-table">
+                      <thead><tr><th>Sender</th><th>Subject</th><th>Matched Rule</th><th>Received</th><th>Status</th><th>Actions</th></tr></thead>
+                      <tbody>
+                        {!spamQuarantine?.items.length ? <tr><td colSpan={6}>No quarantined messages match these filters.</td></tr> : null}
+                        {spamQuarantine?.items.map((entry) => <Fragment key={entry.id}>
+                          <tr>
+                            <td><strong>{entry.senderName || entry.senderEmail}</strong><span className="muted">{entry.senderEmail}</span></td>
+                            <td><strong>{entry.subject}</strong><span className="muted">{entry.mailbox ? `Via ${entry.mailbox.emailAddress}` : "Mailbox unavailable"}</span></td>
+                            <td>{entry.spamBlockEntry ? `${entry.spamBlockEntry.action === "BLOCK" ? "Block" : "Allow"} ${entry.spamBlockEntry.type.toLowerCase()}: ${entry.spamBlockEntry.value}` : entry.reason}</td>
+                            <td>{new Date(entry.createdAt).toLocaleString()}</td>
+                            <td><span className={`status-pill ${entry.status === "RELEASED" ? "read-pill" : entry.status === "QUARANTINED" ? "warning-pill" : "muted-pill"}`}>{entry.status.toLowerCase()}</span>{entry.releaseFailureReason ? <span className="error-text">{entry.releaseFailureReason}</span> : null}</td>
+                            <td><div className="settings-actions">
+                              <button className="button secondary" type="button" onClick={() => setExpandedQuarantineId((current) => current === entry.id ? null : entry.id)}>{expandedQuarantineId === entry.id ? "Hide" : "Review"}</button>
+                              {entry.releasedTicketId ? <a className="button secondary" href={`/tickets/${entry.releasedTicketId}`}>Open ticket</a> : null}
+                            </div></td>
+                          </tr>
+                          {expandedQuarantineId === entry.id ? <tr className="settings-detail-row"><td colSpan={6}>
+                            <div className="settings-create-panel">
+                              <div><strong>Message preview</strong><p className="quarantine-message-preview">{entry.bodyText || "This message has no plain-text preview. Its original HTML remains stored for release."}</p></div>
+                              {entry.status === "QUARANTINED" ? <div className="settings-table-toolbar">
+                                <select className="input compact-select" value={releaseActions[entry.id] ?? "KEEP_RULE"} onChange={(event) => setReleaseActions((current) => ({ ...current, [entry.id]: event.target.value as "KEEP_RULE" | "DEACTIVATE_RULE" | "ALLOW_SENDER" | "ALLOW_DOMAIN" }))}>
+                                  <option value="KEEP_RULE">Release once; keep rule</option>
+                                  <option value="DEACTIVATE_RULE">Release and deactivate matched rule</option>
+                                  <option value="ALLOW_SENDER">Release and always allow sender</option>
+                                  <option value="ALLOW_DOMAIN" disabled={!entry.senderDomain}>Release and always allow domain</option>
+                                </select>
+                                <div className="form-actions"><button className="button" type="button" disabled={busy === entry.id} onClick={() => void releaseQuarantinedEmail(entry)}>Release to Tickets</button><button className="button secondary" type="button" disabled={busy === entry.id} onClick={() => void dismissQuarantinedEmail(entry)}>Dismiss</button></div>
+                              </div> : <p className="muted">Resolved {entry.resolvedAt ? new Date(entry.resolvedAt).toLocaleString() : ""}{entry.resolvedBy ? ` by ${entry.resolvedBy.firstName} ${entry.resolvedBy.lastName}` : ""}.</p>}
                             </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                          </td></tr> : null}
+                        </Fragment>)}
+                      </tbody>
+                    </table>
+                  </div>
+                </> : null}
               </div>
             </section>
           ) : null}

@@ -1,13 +1,13 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Mailbox, MessageDirection, MessageVisibility, Prisma } from "@prisma/client";
+import { BlockedInboundEmailStatus, Mailbox, MessageDirection, MessageVisibility, Prisma, SpamReleaseAction } from "@prisma/client";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
 import { SpamManagementService } from "../spam-management/spam-management.service";
 import { TicketAttachmentsService } from "../ticket-attachments/ticket-attachments.service";
 import { TicketsService } from "../tickets/tickets.service";
 import { UpdateMailboxDto } from "./dto/update-mailbox.dto";
-import { MailProvider } from "./providers/mail-provider.interface";
+import { InboundMailMessage, MailProvider } from "./providers/mail-provider.interface";
 import { MicrosoftGraphMailProvider } from "./providers/microsoft-graph-mail.provider";
 import { MockMailProvider } from "./providers/mock-mail.provider";
 
@@ -169,6 +169,107 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
     });
 
     return result;
+  }
+
+  async releaseQuarantinedEmail(entryId: string, action: SpamReleaseAction, user: AuthenticatedUser) {
+    const entry = await this.spamManagement.getQuarantinedEmail(entryId, user.organizationId);
+    if (entry.status === BlockedInboundEmailStatus.RELEASED && entry.releasedTicketId && entry.releasedMessageId) {
+      return { ticketId: entry.releasedTicketId, messageId: entry.releasedMessageId, alreadyReleased: true };
+    }
+    if (entry.status !== BlockedInboundEmailStatus.QUARANTINED) {
+      throw new ConflictException("This quarantined message has already been resolved.");
+    }
+    if (!entry.mailbox) {
+      throw new BadRequestException("The source mailbox is no longer available.");
+    }
+    const claimed = await this.spamManagement.claimQuarantineRelease(entry.id, user);
+    if (!claimed) {
+      throw new ConflictException("This quarantined message is already being processed or has been resolved.");
+    }
+
+    try {
+      const duplicate = await this.prisma.ticketMessage.findFirst({
+        where: {
+          ticket: { organizationId: user.organizationId },
+          OR: [
+            ...(entry.emailMessageId ? [{ emailMessageId: entry.emailMessageId }] : []),
+            ...(entry.emailInternetMessageId ? [{ emailInternetMessageId: entry.emailInternetMessageId }] : [])
+          ]
+        },
+        select: { id: true, ticketId: true }
+      });
+      if (duplicate) {
+        await this.spamManagement.applyReleaseRuleAction(entry.id, action, user);
+        await this.spamManagement.markReleased(entry.id, action, duplicate.ticketId, duplicate.id, user);
+        return { ticketId: duplicate.ticketId, messageId: duplicate.id, alreadyReleased: true };
+      }
+
+      const { provider } = this.resolveProvider(entry.mailbox);
+      const message = await this.resolveQuarantinedInboundMessage(entry, provider);
+      const result = await this.ticketsService.createFromInboundEmail({
+        organizationId: entry.organizationId,
+        mailboxId: entry.mailbox.id,
+        senderEmail: message.from.email,
+        senderName: message.from.name,
+        subject: message.subject,
+        bodyText: message.bodyText,
+        bodyHtml: message.bodyHtml,
+        emailMessageId: message.providerMessageId,
+        emailInternetMessageId: message.internetMessageId,
+        emailConversationId: message.conversationId,
+        inReplyTo: message.inReplyTo,
+        references: message.references,
+        hasAttachments: message.hasAttachments,
+        internetMessageHeaders: message.internetMessageHeaders,
+        suppressAutoReply: true
+      });
+      if (message.hasAttachments) {
+        await this.storeInboundAttachments(provider, entry.mailbox, message.providerMessageId, result.ticket.id, result.message.id);
+      }
+      await this.spamManagement.applyReleaseRuleAction(entry.id, action, user);
+      await this.spamManagement.markReleased(entry.id, action, result.ticket.id, result.message.id, user);
+      return { ticketId: result.ticket.id, ticketNumber: result.ticket.ticketNumber, messageId: result.message.id, alreadyReleased: false };
+    } catch (error) {
+      await this.spamManagement.markReleaseFailed(entry.id, error, user);
+      throw error;
+    }
+  }
+
+  private async resolveQuarantinedInboundMessage(
+    entry: Awaited<ReturnType<SpamManagementService["getQuarantinedEmail"]>>,
+    provider: MailProvider
+  ): Promise<InboundMailMessage> {
+    if (entry.bodyText || entry.bodyHtml) {
+      return {
+        providerMessageId: entry.emailMessageId ?? `quarantine-${entry.id}`,
+        internetMessageId: entry.emailInternetMessageId,
+        conversationId: entry.emailConversationId,
+        from: { email: entry.senderEmail, name: entry.senderName },
+        subject: entry.subject,
+        bodyText: entry.bodyText,
+        bodyHtml: entry.bodyHtml,
+        inReplyTo: entry.inReplyTo,
+        references: entry.emailReferences,
+        hasAttachments: entry.hasAttachments,
+        internetMessageHeaders: this.jsonStringRecord(entry.internetMessageHeaders)
+      };
+    }
+    if (!entry.emailMessageId || !provider.getInboundMessage || !entry.mailbox) {
+      throw new ServiceUnavailableException("The original message content is no longer available for release.");
+    }
+    const message = await provider.getInboundMessage({
+      mailboxId: entry.mailbox.id,
+      mailboxEmailAddress: this.getMailboxReadAddress(entry.mailbox),
+      publicEmailAddress: entry.mailbox.publicEmailAddress ?? entry.mailbox.emailAddress,
+      connectionMode: entry.mailbox.connectionMode,
+      preserveOriginalSenderHeaders: entry.mailbox.preserveOriginalSenderHeaders,
+      providerMessageId: entry.emailMessageId,
+      tenantId: entry.mailbox.tenantId,
+      microsoftClientId: entry.mailbox.microsoftClientId,
+      encryptedClientSecretReference: entry.mailbox.encryptedClientSecretReference
+    });
+    if (!message) throw new ServiceUnavailableException("Microsoft Graph no longer has the original quarantined message.");
+    return message;
   }
 
   private async runDueAutoSyncs() {
@@ -478,35 +579,50 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
           data: {
             requestId: eventRequest.id,
             action: "event_service_message.received",
-            metadata: {
-              senderEmail: message.from.email,
-              subject: message.subject
-            }
+            metadata: { senderEmail: message.from.email, subject: message.subject }
           }
         });
         skippedDuplicates += 1;
         continue;
       }
-
       const senderDomain = this.extractDomain(message.from.email);
-      const spamBlock = await this.spamManagement.findBlockForSender(mailbox.organizationId, message.from.email, senderDomain);
+      let spamBlock = await this.spamManagement.findBlockForSender(mailbox.organizationId, message.from.email, senderDomain);
+      if (spamBlock?.scope === "NEW_CONVERSATIONS_ONLY") {
+        const existingTicketConversation = this.ticketsService.hasExistingInboundConversation
+          ? await this.ticketsService.hasExistingInboundConversation({
+              organizationId: mailbox.organizationId,
+              subject: message.subject,
+              bodyText: message.bodyText,
+              emailConversationId: message.conversationId,
+              inReplyTo: message.inReplyTo,
+              references: message.references
+            })
+          : false;
+        if (existingTicketConversation) spamBlock = null;
+      }
       if (spamBlock) {
         await this.spamManagement.logBlockedInboundEmail({
           organizationId: mailbox.organizationId,
           mailboxId: mailbox.id,
           spamBlockEntryId: spamBlock.id,
           senderEmail: message.from.email,
+          senderName: message.from.name,
           senderDomain,
           subject: message.subject,
+          bodyText: message.bodyText,
+          bodyHtml: message.bodyHtml,
           emailMessageId: message.providerMessageId,
           emailInternetMessageId: message.internetMessageId,
           emailConversationId: message.conversationId,
+          inReplyTo: message.inReplyTo,
+          references: message.references,
+          hasAttachments: message.hasAttachments,
+          internetMessageHeaders: message.internetMessageHeaders,
           reason: `Blocked by ${spamBlock.type.toLowerCase()} rule: ${spamBlock.normalizedValue}`
         });
         blockedSpamMessages += 1;
         continue;
       }
-
       const result = await this.ticketsService.createFromInboundEmail({
         organizationId: mailbox.organizationId,
         mailboxId: mailbox.id,
@@ -565,6 +681,11 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
       attachmentBackfillErrors: attachmentBackfillErrors.slice(0, 10),
       nextSyncCursor: syncResult.nextSyncCursor
     };
+  }
+
+  private jsonStringRecord(value: Prisma.JsonValue | null): Record<string, string> | undefined {
+    if (!value || Array.isArray(value) || typeof value !== "object") return undefined;
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   }
 
   private scheduleBroadAttachmentBackfill(mailbox: Mailbox) {

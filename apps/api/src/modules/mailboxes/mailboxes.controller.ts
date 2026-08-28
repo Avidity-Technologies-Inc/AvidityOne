@@ -6,6 +6,7 @@ import { RequirePermissions } from "../permissions/decorators/require-permission
 import { PermissionsGuard } from "../permissions/guards/permissions.guard";
 import { RunMailboxBackfillDto } from "./dto/run-mailbox-backfill.dto";
 import { UpdateMailboxDto } from "./dto/update-mailbox.dto";
+import { ReleaseQuarantinedEmailDto } from "./dto/release-quarantined-email.dto";
 import { MailboxesService } from "./mailboxes.service";
 
 @Controller("mailboxes")
@@ -35,5 +36,11 @@ export class MailboxesController {
   @RequirePermissions("mailboxes.update")
   backfillInbound(@Param("mailboxId") mailboxId: string, @Body() body: RunMailboxBackfillDto, @CurrentUser() user: AuthenticatedUser) {
     return this.mailboxesService.backfillInbound(mailboxId, body.initialSyncFrom, user);
+  }
+
+  @Post("quarantine/:entryId/release")
+  @RequirePermissions("spam.manage")
+  releaseQuarantinedEmail(@Param("entryId") entryId: string, @Body() body: ReleaseQuarantinedEmailDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.mailboxesService.releaseQuarantinedEmail(entryId, body.action, user);
   }
 }

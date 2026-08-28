@@ -1,4 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
+import { BlockedInboundEmailStatus, SpamReleaseAction } from "@prisma/client";
 import { MailboxesService } from "./mailboxes.service";
 
 const user = {
@@ -38,6 +39,58 @@ describe("MailboxesService", () => {
       where: { organizationId: "org-1" },
       orderBy: { emailAddress: "asc" }
     });
+  });
+
+  it("releases a quarantined message without sending a late automatic acknowledgement", async () => {
+    const prisma = { ticketMessage: { findFirst: jest.fn().mockResolvedValue(null) } };
+    const ticketsService = {
+      createFromInboundEmail: jest.fn().mockResolvedValue({ ticket: { id: "ticket-1", ticketNumber: "AIT-100001" }, message: { id: "message-1" } })
+    };
+    const spamManagement = {
+      getQuarantinedEmail: jest.fn().mockResolvedValue({
+        id: "quarantine-1",
+        organizationId: "org-1",
+        status: BlockedInboundEmailStatus.QUARANTINED,
+        senderEmail: "person@example.com",
+        senderName: "Person",
+        subject: "Need assistance",
+        bodyText: "Please help.",
+        bodyHtml: null,
+        emailMessageId: "graph-message-1",
+        emailInternetMessageId: "<message@example.com>",
+        emailConversationId: "conversation-1",
+        inReplyTo: null,
+        emailReferences: null,
+        hasAttachments: false,
+        internetMessageHeaders: null,
+        mailbox: { id: "mailbox-1", provider: "MOCK", connectionMode: "MOCK", emailAddress: "support@example.com", publicEmailAddress: null },
+        spamBlockEntry: null
+      }),
+      claimQuarantineRelease: jest.fn().mockResolvedValue(true),
+      applyReleaseRuleAction: jest.fn(),
+      markReleased: jest.fn(),
+      markReleaseFailed: jest.fn()
+    };
+    const service = new MailboxesService(
+      prisma as never,
+      { get: jest.fn() } as never,
+      ticketsService as never,
+      {} as never,
+      spamManagement as never,
+      {} as never,
+      {} as never
+    );
+
+    const result = await service.releaseQuarantinedEmail("quarantine-1", SpamReleaseAction.ALLOW_SENDER, user);
+
+    expect(ticketsService.createFromInboundEmail).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org-1",
+      senderEmail: "person@example.com",
+      suppressAutoReply: true
+    }));
+    expect(spamManagement.applyReleaseRuleAction).toHaveBeenCalledWith("quarantine-1", SpamReleaseAction.ALLOW_SENDER, user);
+    expect(spamManagement.markReleased).toHaveBeenCalledWith("quarantine-1", SpamReleaseAction.ALLOW_SENDER, "ticket-1", "message-1", user);
+    expect(result).toEqual({ ticketId: "ticket-1", ticketNumber: "AIT-100001", messageId: "message-1", alreadyReleased: false });
   });
 
   it("defers automatic sync outside configured operational hours without calling the provider", async () => {

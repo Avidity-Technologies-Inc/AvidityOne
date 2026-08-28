@@ -37,6 +37,7 @@ export interface CreateInboundEmailTicketInput {
   references?: string | null;
   hasAttachments?: boolean;
   internetMessageHeaders?: Record<string, string>;
+  suppressAutoReply?: boolean;
 }
 
 @Injectable()
@@ -1324,7 +1325,7 @@ export class TicketsService {
       organizationId: input.organizationId
     });
 
-    await this.autoReplies.sendForNewInboundTicket({
+    if (!input.suppressAutoReply) await this.autoReplies.sendForNewInboundTicket({
       organizationId: input.organizationId,
       ticketId: result.ticket.id,
       messageId: result.message.id,
@@ -1338,6 +1339,10 @@ export class TicketsService {
     });
 
     return result;
+  }
+
+  async hasExistingInboundConversation(input: Pick<CreateInboundEmailTicketInput, "organizationId" | "subject" | "bodyText" | "emailConversationId" | "inReplyTo" | "references">) {
+    return Boolean(await this.findExistingTicketForInbound(input as CreateInboundEmailTicketInput));
   }
 
   async updateAssignment(ticketId: string, input: UpdateTicketAssignmentDto, user: AuthenticatedUser) {
