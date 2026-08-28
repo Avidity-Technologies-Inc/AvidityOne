@@ -68,11 +68,12 @@ interface TicketReplyEditorProps {
   ticketId?: string;
   ccUsers?: Array<{ id: string; firstName: string; lastName: string; email: string }>;
   ccContacts?: Array<{ id: string; firstName: string; lastName: string; email: string }>;
+  conversationParticipants?: Array<{ id: string; email: string; userId: string | null }>;
   insertRequest?: { id: number; text: string } | null;
   onSaved?: () => void | Promise<void>;
 }
 
-export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], insertRequest, onSaved }: TicketReplyEditorProps) {
+export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], conversationParticipants = [], insertRequest, onSaved }: TicketReplyEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const extrasRef = useRef<HTMLDetailsElement>(null);
   const draftRestoredRef = useRef(false);
@@ -86,7 +87,8 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
   const [ccInput, setCcInput] = useState("");
   const [ccEmails, setCcEmails] = useState<string[]>([]);
   const [ccUserIds, setCcUserIds] = useState<string[]>([]);
-  const [followCcUsers, setFollowCcUsers] = useState(false);
+  const [persistCc, setPersistCc] = useState(true);
+  const [includePersistentCc, setIncludePersistentCc] = useState(true);
   const [saving, setSaving] = useState(false);
   const [aiBusy, setAiBusy] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
@@ -99,13 +101,14 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
     try {
       const stored = window.localStorage.getItem(`ticket-reply-draft:${ticketId}`);
       if (stored) {
-        const draft = JSON.parse(stored) as { html?: string; mode?: "public" | "internal"; ccEmails?: string[]; ccUserIds?: string[]; followCcUsers?: boolean };
+        const draft = JSON.parse(stored) as { html?: string; mode?: "public" | "internal"; ccEmails?: string[]; ccUserIds?: string[]; persistCc?: boolean; includePersistentCc?: boolean; followCcUsers?: boolean };
         editorRef.current.innerHTML = draft.html ?? "";
         setDraftText(htmlToText(draft.html ?? ""));
         setMode(draft.mode === "internal" ? "internal" : "public");
         setCcEmails(Array.isArray(draft.ccEmails) ? draft.ccEmails : []);
         setCcUserIds(Array.isArray(draft.ccUserIds) ? draft.ccUserIds : []);
-        setFollowCcUsers(Boolean(draft.followCcUsers));
+        setPersistCc(draft.persistCc ?? draft.followCcUsers ?? true);
+        setIncludePersistentCc(draft.includePersistentCc ?? true);
       }
     } catch {
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
@@ -115,17 +118,30 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
   }, [ticketId]);
 
   useEffect(() => {
+    if (!ticketId || !draftRestoredRef.current) return;
+    const stored = window.localStorage.getItem(`ticket-reply-draft:${ticketId}`);
+    if (stored) return;
+    setCcUserIds(conversationParticipants.flatMap((participant) => participant.userId ? [participant.userId] : []));
+    setCcEmails(conversationParticipants.filter((participant) => !participant.userId).map((participant) => participant.email));
+  }, [conversationParticipants, ticketId]);
+
+  useEffect(() => {
     if (!ticketId || !draftRestoredRef.current || !editorRef.current) return;
     const clone = editorRef.current.cloneNode(true) as HTMLElement;
     clone.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
     const html = clone.innerHTML;
-    const hasDraft = Boolean(htmlToText(html) || ccEmails.length || ccUserIds.length);
+    const persistentEmails = conversationParticipants.filter((participant) => !participant.userId).map((participant) => participant.email).sort();
+    const persistentUserIds = conversationParticipants.flatMap((participant) => participant.userId ? [participant.userId] : []).sort();
+    const ccChanged = !includePersistentCc
+      || [...ccEmails].sort().join("|") !== persistentEmails.join("|")
+      || [...ccUserIds].sort().join("|") !== persistentUserIds.join("|");
+    const hasDraft = Boolean(htmlToText(html) || ccChanged || mode === "internal");
     if (!hasDraft) {
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
       return;
     }
-    window.localStorage.setItem(`ticket-reply-draft:${ticketId}`, JSON.stringify({ html, mode, ccEmails, ccUserIds, followCcUsers }));
-  }, [ccEmails, ccUserIds, draftText, followCcUsers, mode, ticketId]);
+    window.localStorage.setItem(`ticket-reply-draft:${ticketId}`, JSON.stringify({ html, mode, ccEmails, ccUserIds, persistCc, includePersistentCc }));
+  }, [ccEmails, ccUserIds, conversationParticipants, draftText, includePersistentCc, persistCc, mode, ticketId]);
 
   useEffect(() => {
     let mounted = true;
@@ -490,6 +506,12 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
     setError(null);
     if (nextMode === "internal") {
       setCcEmails([]);
+      setCcUserIds([]);
+      setIncludePersistentCc(false);
+    } else if (ccEmails.length === 0 && ccUserIds.length === 0) {
+      setIncludePersistentCc(true);
+      setCcUserIds(conversationParticipants.flatMap((participant) => participant.userId ? [participant.userId] : []));
+      setCcEmails(conversationParticipants.filter((participant) => !participant.userId).map((participant) => participant.email));
     }
   }
 
@@ -522,7 +544,8 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
           attachmentIds: attachments.map((attachment) => attachment.id),
           ccEmails,
           ccUserIds,
-          followUserIds: followCcUsers ? ccUserIds : [],
+          persistCc: mode === "public" && persistCc,
+          includePersistentCc: mode === "public" && includePersistentCc,
           action: selectedAction
         })
       });
@@ -531,9 +554,10 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
       setAutocompleteSuggestion("");
       setAttachments([]);
       setCcInput("");
-      setCcEmails([]);
-      setCcUserIds([]);
-      setFollowCcUsers(false);
+      setCcEmails(conversationParticipants.filter((participant) => !participant.userId).map((participant) => participant.email));
+      setCcUserIds(conversationParticipants.flatMap((participant) => participant.userId ? [participant.userId] : []));
+      setPersistCc(true);
+      setIncludePersistentCc(true);
       setShowActionMenu(false);
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
       await onSaved?.();
@@ -608,10 +632,16 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
   }
 
   function removeCcEmail(email: string) {
+    if (conversationParticipants.some((participant) => participant.email.toLowerCase() === email.toLowerCase())) {
+      setIncludePersistentCc(false);
+    }
     setCcEmails((current) => current.filter((item) => item !== email));
   }
 
   function removeCcUser(userId: string) {
+    if (conversationParticipants.some((participant) => participant.userId === userId)) {
+      setIncludePersistentCc(false);
+    }
     setCcUserIds((current) => current.filter((item) => item !== userId));
   }
 
@@ -846,11 +876,16 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], ins
                 ) : null;
               })}
             </div>
-            {mode === "public" && ccUserIds.length > 0 ? (
+            {mode === "public" && (ccEmails.length > 0 || ccUserIds.length > 0) ? (
               <label className="ticket-follow-cc-option">
-                <input type="checkbox" checked={followCcUsers} onChange={(event) => setFollowCcUsers(event.target.checked)} />
-                <span>Keep selected internal users following future ticket activity</span>
+                <input type="checkbox" checked={persistCc} onChange={(event) => setPersistCc(event.target.checked)} />
+                <span>Keep new CC recipients in future public replies</span>
               </label>
+            ) : null}
+            {mode === "public" && (ccEmails.length > 0 || ccUserIds.length > 0) ? (
+              <button className="button secondary compact-button ticket-clear-reply-cc" type="button" onClick={() => { setCcEmails([]); setCcUserIds([]); setIncludePersistentCc(false); }}>
+                Clear CC for this reply
+              </button>
             ) : null}
           </div>
           <div className="grid columns-2 ticket-editor-attachments">

@@ -42,6 +42,14 @@ export class CreateTicketMessageDto {
   followUserIds?: string[];
 
   @IsOptional()
+  @IsBoolean()
+  persistCc?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  includePersistentCc?: boolean;
+
+  @IsOptional()
   @IsIn(["send", "send_and_close", "save_note", "send_note", "send_note_and_close"])
   action?: "send" | "send_and_close" | "save_note" | "send_note" | "send_note_and_close";
 }

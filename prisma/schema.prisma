@@ -522,6 +522,9 @@ model User {
   routingRuleAssignments TicketRoutingRule[] @relation("RoutingRuleAssignUser")
   watchedTickets      TicketWatcher[] @relation("TicketWatcherUser")
   createdTicketWatchers TicketWatcher[] @relation("TicketWatcherCreatedBy")
+  ticketConversationParticipations TicketConversationParticipant[] @relation("TicketConversationParticipantUser")
+  addedTicketConversationParticipants TicketConversationParticipant[] @relation("TicketConversationParticipantAddedBy")
+  removedTicketConversationParticipants TicketConversationParticipant[] @relation("TicketConversationParticipantRemovedBy")
   ticketTeamMemberships TicketTeamMember[]
   notificationPreference UserNotificationPreference?
   notifications       Notification[]
@@ -873,6 +876,7 @@ model Contact {
   ticketMessages        TicketMessage[] @relation("ContactAuthoredMessages")
   tickets               Ticket[]
   eventServiceRequests  EventServiceRequest[]
+  ticketConversationParticipations TicketConversationParticipant[]
 
   @@unique([clientId, email])
   @@index([email])
@@ -981,6 +985,7 @@ model Ticket {
   assignees                  TicketAssignee[]
   externalSpecialists        TicketExternalSpecialist[]
   watchers                   TicketWatcher[]
+  conversationParticipants   TicketConversationParticipant[]
   notifications              Notification[]
   aiRequestLogs              AiRequestLog[]
   aiAnalyses                 TicketAiAnalysis[]
@@ -1187,6 +1192,32 @@ model TicketWatcher {
   @@unique([ticketId, userId])
   @@index([userId])
   @@map("ticket_watchers")
+}
+
+model TicketConversationParticipant {
+  id          String    @id @default(uuid()) @db.Uuid
+  ticketId    String    @db.Uuid
+  userId      String?   @db.Uuid
+  contactId   String?   @db.Uuid
+  email       String
+  displayName String?
+  isActive    Boolean   @default(true)
+  addedById   String?   @db.Uuid
+  removedById String?   @db.Uuid
+  addedAt     DateTime  @default(now())
+  removedAt   DateTime?
+  updatedAt   DateTime  @updatedAt
+  ticket      Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user        User?     @relation("TicketConversationParticipantUser", fields: [userId], references: [id], onDelete: SetNull)
+  contact     Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  addedBy     User?     @relation("TicketConversationParticipantAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+  removedBy   User?     @relation("TicketConversationParticipantRemovedBy", fields: [removedById], references: [id], onDelete: SetNull)
+
+  @@unique([ticketId, email])
+  @@index([ticketId, isActive])
+  @@index([userId])
+  @@index([contactId])
+  @@map("ticket_conversation_participants")
 }
 
 model Notification {

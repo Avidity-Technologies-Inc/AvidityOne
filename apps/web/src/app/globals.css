@@ -15466,6 +15466,59 @@ button.operations-summary-card {
   font-size: 11px;
 }
 
+.ticket-clear-reply-cc {
+  width: fit-content;
+}
+
+.ticket-conversation-participants {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.ticket-rail-section-heading,
+.ticket-participant-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ticket-rail-section-heading h3 {
+  margin: 0;
+}
+
+.ticket-participant-list {
+  display: grid;
+  gap: 5px;
+}
+
+.ticket-participant-list > div {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
+}
+
+.ticket-participant-list span,
+.ticket-participant-list small {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ticket-participant-list strong {
+  font-size: 12px;
+}
+
+.ticket-participant-list small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
 .ticket-conversation-controls { display: flex; align-items: center; gap: 5px; }
 .ticket-conversation-controls label {
   display: flex;

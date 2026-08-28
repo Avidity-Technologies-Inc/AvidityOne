@@ -756,6 +756,14 @@ export class TicketsService {
             user: { select: { id: true, firstName: true, lastName: true, email: true } }
           }
         },
+        conversationParticipants: {
+          where: { isActive: true },
+          include: {
+            user: { select: { id: true, firstName: true, lastName: true, email: true } },
+            contact: { select: { id: true, firstName: true, lastName: true, email: true } }
+          },
+          orderBy: { addedAt: "asc" }
+        },
         messages: {
           include: {
             attachments: true,
@@ -843,6 +851,14 @@ export class TicketsService {
             include: {
               user: { select: { id: true, firstName: true, lastName: true, email: true } }
             }
+          },
+          conversationParticipants: {
+            where: { isActive: true },
+            include: {
+              user: { select: { id: true, firstName: true, lastName: true, email: true } },
+              contact: { select: { id: true, firstName: true, lastName: true, email: true } }
+            },
+            orderBy: { addedAt: "asc" }
           },
           messages: {
             include: {
@@ -1985,9 +2001,19 @@ export class TicketsService {
     if (isInternal && (input.ccEmails?.length ?? 0) > 0) {
       throw new BadRequestException("Internal notes can only CC internal users.");
     }
-    const ccEmails = isInternal
+    const explicitCcUsers = isInternal ? [] : await this.resolveInternalCcUsers(input.ccUserIds ?? [], user.organizationId);
+    const explicitCcEmails = isInternal
       ? internalCcUsers.map((ccUser) => ccUser.email.toLowerCase())
       : await this.resolveCcEmails(input.ccEmails ?? [], input.ccUserIds ?? [], user.organizationId);
+    const persistentParticipants = isInternal || input.includePersistentCc === false
+      ? []
+      : await this.prisma.ticketConversationParticipant.findMany({
+          where: { ticketId: internalTicketId, isActive: true },
+          select: { email: true, userId: true }
+        });
+    const ccEmails = isInternal
+      ? explicitCcEmails
+      : [...new Set([...explicitCcEmails, ...persistentParticipants.map((participant) => participant.email.trim().toLowerCase())])];
     const notifiedUserIds = isInternal ? internalCcUsers.map((ccUser) => ccUser.id) : [];
     const followUsers = await this.resolveInternalCcUsers(input.followUserIds ?? [], user.organizationId);
     const latestInboundMessage = isInternal
@@ -2092,6 +2118,15 @@ export class TicketsService {
       });
     }
 
+    if (!isInternal && input.persistCc && explicitCcEmails.length > 0) {
+      await this.persistConversationParticipants(
+        internalTicketId,
+        explicitCcEmails.filter((email) => email !== requesterEmail),
+        explicitCcUsers,
+        user
+      );
+    }
+
     await this.prisma.ticket.update({
       where: { id: internalTicketId },
       data: {
@@ -2148,13 +2183,16 @@ export class TicketsService {
       );
     }
     if (shouldNotifyStaff) {
+      const publicCcUserIds = isInternal
+        ? []
+        : [...new Set([...explicitCcUsers.map((ccUser) => ccUser.id), ...persistentParticipants.map((participant) => participant.userId).filter((userId): userId is string => Boolean(userId))])];
       await this.notifyTicketParticipants({
         ticketId: internalTicketId,
         createdById: user.id,
         reason: isInternal ? "Internal note added to an assigned ticket" : "Public reply added to an assigned ticket",
         title: isInternal ? "Internal note added" : "Ticket reply added",
         eventType: isInternal ? "internalNoteOnAssignedTicket" : "ticketReplyOnAssignedTicket",
-        excludeUserIds: [user.id, ...notifiedUserIds]
+        excludeUserIds: [user.id, ...notifiedUserIds, ...publicCcUserIds]
       });
     }
 
@@ -2386,7 +2424,111 @@ export class TicketsService {
 
     return this.prisma.user.findMany({
       where: { id: { in: uniqueUserIds }, organizationId, deletedAt: null, isActive: true },
+      select: { id: true, email: true, firstName: true, lastName: true }
+    });
+  }
+
+  async removeConversationParticipant(ticketId: string, participantId: string, user: AuthenticatedUser) {
+    const ticket = await this.ensureTicketExists(ticketId, user);
+    const participant = await this.prisma.ticketConversationParticipant.findFirst({
+      where: { id: participantId, ticketId: ticket.id, isActive: true },
       select: { id: true, email: true }
+    });
+    if (!participant) {
+      throw new NotFoundException("Conversation participant was not found.");
+    }
+
+    await this.prisma.ticketConversationParticipant.update({
+      where: { id: participant.id },
+      data: { isActive: false, removedAt: new Date(), removedById: user.id }
+    });
+    await this.auditLogs.create({
+      userId: user.id,
+      entityType: "Ticket",
+      entityId: ticket.id,
+      action: "ticket.conversation_participant_removed",
+      metadata: { email: participant.email }
+    });
+    return this.getById(ticketId, user);
+  }
+
+  async clearConversationParticipants(ticketId: string, user: AuthenticatedUser) {
+    const ticket = await this.ensureTicketExists(ticketId, user);
+    const participants = await this.prisma.ticketConversationParticipant.findMany({
+      where: { ticketId: ticket.id, isActive: true },
+      select: { email: true }
+    });
+    if (participants.length > 0) {
+      await this.prisma.ticketConversationParticipant.updateMany({
+        where: { ticketId: ticket.id, isActive: true },
+        data: { isActive: false, removedAt: new Date(), removedById: user.id }
+      });
+      await this.auditLogs.create({
+        userId: user.id,
+        entityType: "Ticket",
+        entityId: ticket.id,
+        action: "ticket.conversation_participants_cleared",
+        metadata: { emails: participants.map((participant) => participant.email) }
+      });
+    }
+    return this.getById(ticketId, user);
+  }
+
+  private async persistConversationParticipants(
+    ticketId: string,
+    emails: string[],
+    users: Array<{ id: string; email: string; firstName: string; lastName: string }>,
+    actor: AuthenticatedUser
+  ) {
+    const normalizedEmails = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    if (normalizedEmails.length === 0) {
+      return;
+    }
+    const userByEmail = new Map(users.map((participant) => [participant.email.trim().toLowerCase(), participant]));
+    const contacts = await this.prisma.contact.findMany({
+      where: {
+        email: { in: normalizedEmails, mode: "insensitive" },
+        deletedAt: null,
+        client: { organizationId: actor.organizationId }
+      },
+      select: { id: true, email: true, firstName: true, lastName: true }
+    });
+    const contactByEmail = new Map(contacts.map((contact) => [contact.email.trim().toLowerCase(), contact]));
+
+    await Promise.all(normalizedEmails.map((email) => {
+      const participantUser = userByEmail.get(email);
+      const contact = contactByEmail.get(email);
+      const displayName = participantUser
+        ? `${participantUser.firstName} ${participantUser.lastName}`.trim()
+        : contact
+          ? `${contact.firstName} ${contact.lastName}`.trim()
+          : null;
+      return this.prisma.ticketConversationParticipant.upsert({
+        where: { ticketId_email: { ticketId, email } },
+        update: {
+          userId: participantUser?.id ?? null,
+          contactId: contact?.id ?? null,
+          displayName,
+          isActive: true,
+          removedAt: null,
+          removedById: null
+        },
+        create: {
+          ticketId,
+          userId: participantUser?.id ?? null,
+          contactId: contact?.id ?? null,
+          email,
+          displayName,
+          addedById: actor.id
+        }
+      });
+    }));
+    await this.auditLogs.create({
+      userId: actor.id,
+      entityType: "Ticket",
+      entityId: ticketId,
+      action: "ticket.conversation_participants_added",
+      metadata: { emails: normalizedEmails }
     });
   }
 

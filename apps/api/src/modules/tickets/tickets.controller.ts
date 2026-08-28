@@ -135,6 +135,22 @@ export class TicketsController {
     return this.ticketsService.updateWatchers(ticketId, body.userIds ?? [], user);
   }
 
+  @Delete(":ticketId/conversation-participants/:participantId")
+  @RequirePermissions("tickets.update")
+  removeConversationParticipant(
+    @Param("ticketId") ticketId: string,
+    @Param("participantId") participantId: string,
+    @CurrentUser() user: AuthenticatedUser
+  ) {
+    return this.ticketsService.removeConversationParticipant(ticketId, participantId, user);
+  }
+
+  @Delete(":ticketId/conversation-participants")
+  @RequirePermissions("tickets.update")
+  clearConversationParticipants(@Param("ticketId") ticketId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.ticketsService.clearConversationParticipants(ticketId, user);
+  }
+
   @Post(":ticketId/external-specialists")
   @RequirePermissions("tickets.update")
   addExternalSpecialist(@Param("ticketId") ticketId: string, @Body() body: AddTicketExternalSpecialistDto, @CurrentUser() user: AuthenticatedUser) {

@@ -464,6 +464,13 @@ describe("TicketsService", () => {
       ticketWatcher: {
         findMany: jest.fn().mockResolvedValue([]),
         upsert: jest.fn()
+      },
+      ticketConversationParticipant: {
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn().mockResolvedValue({})
+      },
+      contact: {
+        findMany: jest.fn().mockResolvedValue([])
       }
     };
     const auditLogs = { create: jest.fn() };
@@ -497,6 +504,8 @@ describe("TicketsService", () => {
           bodyText: "Please try restarting the printer.",
           bodyHtml: "<p>Please try restarting the printer.</p>",
           visibility: "public",
+          ccEmails: ["manager@example.com"],
+          persistCc: true,
           action: "send"
         },
         {
@@ -528,6 +537,11 @@ describe("TicketsService", () => {
         mailDeliveryAcceptedAt: expect.any(Date)
       })
     });
+    expect(mailDelivery.sendTicketReply).toHaveBeenCalledWith(expect.objectContaining({ cc: ["manager@example.com"] }));
+    expect(prisma.ticketConversationParticipant.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { ticketId_email: { ticketId: "ticket-1", email: "manager@example.com" } },
+      create: expect.objectContaining({ ticketId: "ticket-1", email: "manager@example.com", addedById: "user-1" })
+    }));
   });
 
   it("sends a manual ticket reply to the saved requester and includes the ticket number in the subject", async () => {
@@ -556,7 +570,8 @@ describe("TicketsService", () => {
       },
       ticketAttachment: { updateMany: jest.fn() },
       ticketAssignee: { findMany: jest.fn().mockResolvedValue([]) },
-      ticketWatcher: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() }
+      ticketWatcher: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() },
+      ticketConversationParticipant: { findMany: jest.fn().mockResolvedValue([{ email: "manager@example.com", userId: null }]) }
     };
     const mailDelivery = { sendTicketReply: jest.fn().mockResolvedValue({ providerMessageId: "message-1", internetMessageId: null, conversationId: null }) };
     const service = new TicketsService(
@@ -576,8 +591,19 @@ describe("TicketsService", () => {
 
     expect(mailDelivery.sendTicketReply).toHaveBeenCalledWith(expect.objectContaining({
       to: ["requester@example.com"],
+      cc: ["manager@example.com"],
       subject: "Re: [AIT-100001] New employee setup"
     }));
+
+    await service.createMessage("AIT-100001", {
+      visibility: "public",
+      bodyText: "Private follow-up for the requester.",
+      action: "send",
+      includePersistentCc: false
+    }, {
+      id: "user-1", organizationId: "org-1", email: "tech@example.com", firstName: "Tech", lastName: "User", forcePasswordChange: false, permissions: []
+    });
+    expect(mailDelivery.sendTicketReply).toHaveBeenNthCalledWith(2, expect.objectContaining({ cc: [] }));
   });
 
   it("does not save a public reply when outbound delivery is unavailable", async () => {
@@ -587,7 +613,8 @@ describe("TicketsService", () => {
     };
     const prisma = {
       ticket: { findFirst: jest.fn().mockResolvedValue(ticket) },
-      ticketMessage: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }
+      ticketMessage: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      ticketConversationParticipant: { findMany: jest.fn().mockResolvedValue([]) }
     };
     const service = new TicketsService(
       prisma as never,
@@ -678,6 +705,7 @@ describe("TicketsService", () => {
     ).resolves.toEqual(message);
 
     expect(mailDelivery.sendTicketReply).not.toHaveBeenCalled();
+    expect("ticketConversationParticipant" in prisma).toBe(false);
     expect(prisma.ticketMessage.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         direction: "INTERNAL",

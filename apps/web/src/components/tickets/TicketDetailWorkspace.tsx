@@ -111,6 +111,16 @@ interface TicketAttachment {
   scanStatus: string;
 }
 
+interface ConversationParticipant {
+  id: string;
+  email: string;
+  displayName: string | null;
+  userId: string | null;
+  contactId: string | null;
+  user: User | null;
+  contact: Contact | null;
+}
+
 interface Ticket {
   id: string;
   ticketNumber: string;
@@ -133,6 +143,7 @@ interface Ticket {
   assignedGroup: Group | null;
   assignedTeam: TicketTeam | null;
   watchers: Array<{ user: User }>;
+  conversationParticipants: ConversationParticipant[];
   messages: TicketMessage[];
   attachments: TicketAttachment[];
   mergedIntoTicket: MergedTicketReference | null;
@@ -348,7 +359,8 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       setUsers(mergeUsers(userData, [
         ticketData.assignedUser,
         ...(ticketData.assignees ?? []).map((assignment) => assignment.user),
-        ...(ticketData.watchers ?? []).map((watcher) => watcher.user)
+        ...(ticketData.watchers ?? []).map((watcher) => watcher.user),
+        ...(ticketData.conversationParticipants ?? []).map((participant) => participant.user)
       ]));
       setTicketTeams(teamData);
       setTicketStatuses(statusData);
@@ -586,6 +598,37 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       setAssignmentNotice("External specialist removed.");
     } catch {
       setError("Unable to remove external specialist.");
+    } finally {
+      setToolBusy(null);
+    }
+  }
+
+  async function removeConversationParticipant(participantId: string) {
+    setToolBusy(`participant-remove-${participantId}`);
+    setAssignmentNotice(null);
+    setError(null);
+    try {
+      const updated = await apiFetch<Ticket>(`/tickets/${ticketId}/conversation-participants/${participantId}`, { method: "DELETE" });
+      setTicket(updated);
+      setAssignmentNotice("Conversation participant removed.");
+    } catch {
+      setError("Unable to remove conversation participant.");
+    } finally {
+      setToolBusy(null);
+    }
+  }
+
+  async function clearConversationParticipants() {
+    if (!window.confirm("Remove all persistent CC recipients from future public replies?")) return;
+    setToolBusy("participants-clear");
+    setAssignmentNotice(null);
+    setError(null);
+    try {
+      const updated = await apiFetch<Ticket>(`/tickets/${ticketId}/conversation-participants`, { method: "DELETE" });
+      setTicket(updated);
+      setAssignmentNotice("Conversation participants cleared.");
+    } catch {
+      setError("Unable to clear conversation participants.");
     } finally {
       setToolBusy(null);
     }
@@ -909,7 +952,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             <div className="ticket-composer-slot" ref={composerSlotRef}>
               <div className={`panel ticket-composer-panel${composerCollapsed ? " collapsed" : ""} ${composerScrollState === "HIDDEN" ? "scroll-hidden" : composerScrollState === "PINNED" ? "scroll-pinned" : "scroll-normal"}`} ref={composerRef} tabIndex={-1}>
                 <div className="ticket-composer-heading"><div><MessageSquareReply size={16} aria-hidden="true" /><h2>Reply Composer</h2></div><button className="button secondary icon-button" type="button" onClick={() => setComposerCollapsed((current) => !current)} title={composerCollapsed ? "Expand composer" : "Collapse composer"} aria-label={composerCollapsed ? "Expand composer" : "Collapse composer"}>{composerCollapsed ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronUp size={15} aria-hidden="true" />}</button></div>
-                {!composerCollapsed ? <TicketReplyEditor ticketId={ticketRef} ccUsers={users} ccContacts={ccContacts} insertRequest={draftInsertRequest} onSaved={load} /> : null}
+                {!composerCollapsed ? <TicketReplyEditor ticketId={ticketRef} ccUsers={users} ccContacts={ccContacts} conversationParticipants={ticket.conversationParticipants ?? []} insertRequest={draftInsertRequest} onSaved={load} /> : null}
               </div>
             </div>
           ) : null}
@@ -1114,6 +1157,22 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
               </select>
             </label>
             <p className="ticket-assignment-note">Assigned specialists receive ticket notifications automatically.</p>
+            <div className="ticket-conversation-participants">
+              <div className="ticket-rail-section-heading">
+                <h3>Conversation Participants</h3>
+                {canUpdate && ticket.conversationParticipants.length > 1 ? <button className="button secondary compact-button" type="button" onClick={() => void clearConversationParticipants()} disabled={toolBusy === "participants-clear"}>Clear all</button> : null}
+              </div>
+              <p className="ticket-assignment-note">Included automatically on future public replies. Internal notes are never sent to these recipients.</p>
+              {ticket.conversationParticipants.length === 0 ? <span className="muted">No persistent CC recipients.</span> : null}
+              <div className="ticket-participant-list">
+                {ticket.conversationParticipants.map((participant) => (
+                  <div key={participant.id}>
+                    <span><strong>{participant.displayName || participant.email}</strong>{participant.displayName ? <small>{participant.email}</small> : null}</span>
+                    {canUpdate ? <button className="icon-button" type="button" onClick={() => void removeConversationParticipant(participant.id)} disabled={toolBusy === `participant-remove-${participant.id}`} title="Remove from future public replies" aria-label={`Remove ${participant.email} from conversation`}><X size={14} aria-hidden="true" /></button> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="ticket-external-section">
             <h3>External Specialists</h3>
             <div className="checkbox-row vertical">
