@@ -15988,3 +15988,200 @@ button.ticket-workflow-toggle { border: 0; cursor: pointer; }
   .ticket-workflow-wide { grid-column: auto; }
   .ticket-workflow-source-statuses > div { grid-template-columns: 1fr; }
 }
+
+/* Spam Management uses fixed operational tables because its editable controls and mail metadata need predictable columns. */
+.settings-page .spam-rules-filters {
+  grid-template-columns: minmax(260px, 1fr) 180px 160px;
+  gap: 8px;
+}
+
+.settings-page .spam-rule-create {
+  grid-template-columns: 150px 180px minmax(210px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-page .spam-rule-create .form-actions { justify-content: flex-end; }
+
+.settings-page .spam-quarantine-filters {
+  grid-template-columns: minmax(300px, 1fr) minmax(180px, 240px) 140px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-page .spam-quarantine-filters .form-actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+.settings-page .spam-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.settings-page .spam-rules-table,
+.settings-page .spam-quarantine-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.settings-page .spam-rules-table { min-width: 1160px; }
+.settings-page .spam-quarantine-table { min-width: 1120px; }
+
+.settings-page .spam-rules-table th:nth-child(1),
+.settings-page .spam-rules-table td:nth-child(1) { width: 16%; }
+.settings-page .spam-rules-table th:nth-child(2),
+.settings-page .spam-rules-table td:nth-child(2) { width: 18%; }
+.settings-page .spam-rules-table th:nth-child(3),
+.settings-page .spam-rules-table td:nth-child(3) { width: 16%; }
+.settings-page .spam-rules-table th:nth-child(4),
+.settings-page .spam-rules-table td:nth-child(4) { width: 17%; }
+.settings-page .spam-rules-table th:nth-child(5),
+.settings-page .spam-rules-table td:nth-child(5) { width: 7%; }
+.settings-page .spam-rules-table th:nth-child(6),
+.settings-page .spam-rules-table td:nth-child(6) { width: 12%; }
+.settings-page .spam-rules-table th:nth-child(7),
+.settings-page .spam-rules-table td:nth-child(7) { width: 14%; }
+
+.settings-page .spam-quarantine-table th:nth-child(1),
+.settings-page .spam-quarantine-table td:nth-child(1) { width: 20%; }
+.settings-page .spam-quarantine-table th:nth-child(2),
+.settings-page .spam-quarantine-table td:nth-child(2) { width: 27%; }
+.settings-page .spam-quarantine-table th:nth-child(3),
+.settings-page .spam-quarantine-table td:nth-child(3) { width: 20%; }
+.settings-page .spam-quarantine-table th:nth-child(4),
+.settings-page .spam-quarantine-table td:nth-child(4) { width: 14%; }
+.settings-page .spam-quarantine-table th:nth-child(5),
+.settings-page .spam-quarantine-table td:nth-child(5) { width: 10%; }
+.settings-page .spam-quarantine-table th:nth-child(6),
+.settings-page .spam-quarantine-table td:nth-child(6) { width: 9%; }
+
+.settings-page .spam-rules-table th,
+.settings-page .spam-rules-table td,
+.settings-page .spam-quarantine-table th,
+.settings-page .spam-quarantine-table td {
+  overflow: hidden;
+  padding: 8px 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  vertical-align: middle;
+}
+
+.settings-page .spam-rules-table tbody tr:hover > td,
+.settings-page .spam-quarantine-table tbody tr:not(.settings-detail-row):hover > td {
+  background: var(--surface-subtle);
+}
+
+.settings-page .spam-rules-table .input,
+.settings-page .spam-rules-table .compact-select,
+.settings-page .spam-rules-table .textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-page .spam-rules-table .compact-select {
+  min-height: 34px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-size: 12px;
+}
+
+.settings-page .spam-notes-input {
+  min-height: 54px;
+  max-height: 110px;
+  padding: 7px 8px;
+  resize: vertical;
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.settings-page .spam-cell-stack,
+.settings-page .spam-rule-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-page .spam-cell-stack strong,
+.settings-page .spam-cell-stack span,
+.settings-page .spam-rule-summary strong,
+.settings-page .spam-rule-summary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-page .spam-cell-stack strong,
+.settings-page .spam-rule-summary strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.settings-page .spam-cell-stack .muted,
+.settings-page .spam-rule-summary span {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.settings-page .spam-subject {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.settings-page .spam-rule-summary span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.settings-page .spam-received-time {
+  display: block;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.settings-page .spam-rules-table .settings-actions,
+.settings-page .spam-quarantine-table .settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.settings-page .spam-rules-table .settings-actions .button,
+.settings-page .spam-quarantine-table .settings-actions .button {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.settings-page .spam-quarantine-table .settings-detail-row > td {
+  width: auto;
+  padding: 0 9px 10px;
+  overflow: visible;
+  background: var(--surface-subtle);
+}
+
+@media (max-width: 1400px) {
+  .settings-page .spam-quarantine-filters {
+    grid-template-columns: minmax(260px, 1fr) minmax(180px, 1fr);
+  }
+  .settings-page .spam-quarantine-filters .form-actions { justify-content: flex-start; }
+}
+
+@media (max-width: 900px) {
+  .settings-page .spam-rule-create,
+  .settings-page .spam-rules-filters,
+  .settings-page .spam-quarantine-filters { grid-template-columns: 1fr; }
+  .settings-page .spam-quarantine-filters .form-actions { justify-content: stretch; }
+}

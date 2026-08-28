@@ -4380,7 +4380,7 @@ export function SettingsWorkspace() {
                 </div>
 
                 {spamTab === "rules" ? <>
-                  {showSpamCreate ? <div className="client-form-grid settings-section settings-create-panel">
+                  {showSpamCreate ? <div className="client-form-grid settings-section settings-create-panel spam-rule-create">
                     <select className="input compact-select" value={spamDraft.action} onChange={(event) => setSpamDraft((current) => ({ ...current, action: event.target.value as "BLOCK" | "ALLOW", ...(event.target.value === "ALLOW" ? { scope: "ALL_INBOUND" as const } : {}) }))}>
                       <option value="BLOCK">Block</option>
                       <option value="ALLOW">Allow</option>
@@ -4398,7 +4398,7 @@ export function SettingsWorkspace() {
                     <div className="form-actions"><button className="button secondary" type="button" onClick={() => setShowSpamCreate(false)}>Cancel</button><button className="button" type="button" onClick={createSpamEntry} disabled={busy === "spam-create"}><Plus size={16} aria-hidden="true" /><span>Add Rule</span></button></div>
                   </div> : null}
 
-                  <div className="client-form-grid settings-section">
+                  <div className="client-form-grid settings-section spam-rules-filters">
                     <input className="input" placeholder="Search mail rules" value={spamSearch} onChange={(event) => setSpamSearch(event.target.value)} />
                     <select className="input compact-select" value={spamTypeFilter} onChange={(event) => setSpamTypeFilter(event.target.value)}>
                       <option value="">All types</option>
@@ -4412,8 +4412,8 @@ export function SettingsWorkspace() {
                     </select>
                   </div>
 
-                  <div className="table-scroll settings-section">
-                    <table className="tickets-table">
+                  <div className="table-scroll settings-section spam-table-scroll">
+                    <table className="tickets-table spam-rules-table">
                       <thead><tr><th>Rule</th><th>Value</th><th>Scope</th><th>Notes</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
                       <tbody>
                         {filteredSpamEntries.length === 0 ? <tr><td colSpan={7}>No mail rules found.</td></tr> : null}
@@ -4425,14 +4425,14 @@ export function SettingsWorkspace() {
                                 <option value="ALLOW">Allow {entry.type === "EMAIL" ? "email" : "domain"}</option>
                               </select>
                             </td>
-                            <td><strong>{entry.value}</strong><span className="muted">{entry.normalizedValue}</span></td>
+                            <td><div className="spam-cell-stack"><strong title={entry.value}>{entry.value}</strong>{entry.value.trim().toLowerCase() !== entry.normalizedValue ? <span className="muted" title={entry.normalizedValue}>{entry.normalizedValue}</span> : null}</div></td>
                             <td>
                               <select className="input compact-select" value={entry.scope} onChange={(event) => void updateSpamEntry(entry, { scope: event.target.value as "NEW_CONVERSATIONS_ONLY" | "ALL_INBOUND" })} disabled={busy === entry.id || entry.action === "ALLOW"}>
                                 <option value="ALL_INBOUND">All inbound</option>
                                 <option value="NEW_CONVERSATIONS_ONLY">New conversations</option>
                               </select>
                             </td>
-                            <td><textarea className="textarea compact-textarea" defaultValue={entry.notes ?? ""} onBlur={(event) => { if (event.target.value !== (entry.notes ?? "")) void updateSpamEntry(entry, { notes: event.target.value }); }} /></td>
+                            <td><textarea className="textarea compact-textarea spam-notes-input" aria-label={`Notes for ${entry.value}`} defaultValue={entry.notes ?? ""} onBlur={(event) => { if (event.target.value !== (entry.notes ?? "")) void updateSpamEntry(entry, { notes: event.target.value }); }} /></td>
                             <td><span className={`status-pill ${entry.isActive ? "read-pill" : "muted-pill"}`}>{entry.isActive ? "Active" : "Inactive"}</span></td>
                             <td>{new Date(entry.updatedAt).toLocaleString()}</td>
                             <td><div className="settings-actions">
@@ -4447,7 +4447,7 @@ export function SettingsWorkspace() {
                 </> : null}
 
                 {spamTab === "quarantine" ? <>
-                  <div className="client-form-grid settings-section">
+                  <div className="client-form-grid settings-section spam-quarantine-filters">
                     <input className="input" placeholder="Sender, domain, subject, or reason" value={spamQuarantineFilters.search} onChange={(event) => setSpamQuarantineFilters((current) => ({ ...current, search: event.target.value, page: "1" }))} />
                     <select className="input compact-select" value={spamQuarantineFilters.status} onChange={(event) => void applySpamQuarantineFilters({ ...spamQuarantineFilters, status: event.target.value, page: "1" })}>
                       <option value="QUARANTINED">Needs review</option>
@@ -4471,17 +4471,17 @@ export function SettingsWorkspace() {
                       <button className="button secondary" type="button" disabled={spamQuarantinePage >= spamQuarantinePageCount || busy === "spam-quarantine"} onClick={() => void applySpamQuarantineFilters({ ...spamQuarantineFilters, page: String(spamQuarantinePage + 1) })}>Next</button>
                     </div>
                   </div>
-                  <div className="table-scroll settings-section">
-                    <table className="tickets-table">
+                  <div className="table-scroll settings-section spam-table-scroll">
+                    <table className="tickets-table spam-quarantine-table">
                       <thead><tr><th>Sender</th><th>Subject</th><th>Matched Rule</th><th>Received</th><th>Status</th><th>Actions</th></tr></thead>
                       <tbody>
                         {!spamQuarantine?.items.length ? <tr><td colSpan={6}>No quarantined messages match these filters.</td></tr> : null}
                         {spamQuarantine?.items.map((entry) => <Fragment key={entry.id}>
                           <tr>
-                            <td><strong>{entry.senderName || entry.senderEmail}</strong><span className="muted">{entry.senderEmail}</span></td>
-                            <td><strong>{entry.subject}</strong><span className="muted">{entry.mailbox ? `Via ${entry.mailbox.emailAddress}` : "Mailbox unavailable"}</span></td>
-                            <td>{entry.spamBlockEntry ? `${entry.spamBlockEntry.action === "BLOCK" ? "Block" : "Allow"} ${entry.spamBlockEntry.type.toLowerCase()}: ${entry.spamBlockEntry.value}` : entry.reason}</td>
-                            <td>{new Date(entry.createdAt).toLocaleString()}</td>
+                            <td><div className="spam-cell-stack"><strong title={entry.senderName || entry.senderEmail}>{entry.senderName || entry.senderEmail}</strong>{entry.senderName ? <span className="muted" title={entry.senderEmail}>{entry.senderEmail}</span> : null}</div></td>
+                            <td><div className="spam-cell-stack"><strong className="spam-subject" title={entry.subject}>{entry.subject}</strong><span className="muted" title={entry.mailbox?.emailAddress}>{entry.mailbox ? `Via ${entry.mailbox.emailAddress}` : "Mailbox unavailable"}</span></div></td>
+                            <td><div className="spam-rule-summary"><strong>{entry.spamBlockEntry ? `${entry.spamBlockEntry.action === "BLOCK" ? "Block" : "Allow"} ${entry.spamBlockEntry.type.toLowerCase()}` : "Matched rule"}</strong><span>{entry.spamBlockEntry?.value ?? entry.reason}</span></div></td>
+                            <td><time className="spam-received-time" dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></td>
                             <td><span className={`status-pill ${entry.status === "RELEASED" ? "read-pill" : entry.status === "QUARANTINED" ? "warning-pill" : "muted-pill"}`}>{entry.status.toLowerCase()}</span>{entry.releaseFailureReason ? <span className="error-text">{entry.releaseFailureReason}</span> : null}</td>
                             <td><div className="settings-actions">
                               <button className="button secondary" type="button" onClick={() => setExpandedQuarantineId((current) => current === entry.id ? null : entry.id)}>{expandedQuarantineId === entry.id ? "Hide" : "Review"}</button>
