@@ -24,6 +24,7 @@ export interface InboundMailMessage {
   rawFrom?: InboundMailAddress | null;
   replyTo?: InboundMailAddress[] | null;
   to?: InboundMailAddress[] | null;
+  cc?: InboundMailAddress[] | null;
   subject: string;
   bodyText?: string | null;
   bodyHtml?: string | null;

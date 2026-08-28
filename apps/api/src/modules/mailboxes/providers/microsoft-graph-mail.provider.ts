@@ -251,7 +251,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
   }
 
   private inboundMessageSelect() {
-    return "id,subject,body,bodyPreview,from,toRecipients,replyTo,receivedDateTime,internetMessageId,conversationId,hasAttachments,internetMessageHeaders";
+    return "id,subject,body,bodyPreview,from,toRecipients,ccRecipients,replyTo,receivedDateTime,internetMessageId,conversationId,hasAttachments,internetMessageHeaders";
   }
 
   private toInboundMessage(
@@ -271,6 +271,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
       rawFrom,
       replyTo: message.replyTo?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
       to: message.toRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
+      cc: message.ccRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
       subject: message.subject || "(No subject)",
       bodyText: message.bodyPreview ?? null,
       bodyHtml: message.body?.contentType?.toLowerCase() === "html" ? message.body.content : null,
@@ -488,6 +489,7 @@ interface GraphMessage {
   hasAttachments?: boolean;
   from: GraphRecipient;
   toRecipients?: GraphRecipient[];
+  ccRecipients?: GraphRecipient[];
   replyTo?: GraphRecipient[];
   internetMessageHeaders?: GraphInternetMessageHeader[];
   body?: {

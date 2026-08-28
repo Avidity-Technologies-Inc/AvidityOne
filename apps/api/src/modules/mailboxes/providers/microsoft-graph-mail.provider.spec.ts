@@ -89,6 +89,7 @@ describe("MicrosoftGraphMailProvider", () => {
           body: { contentType: "html", content: "<p>Please help.</p>" },
           from: { emailAddress: { address: "person@example.com", name: "Person" } },
           toRecipients: [],
+          ccRecipients: [{ emailAddress: { address: "manager@example.com", name: "Manager" } }],
           replyTo: [],
           internetMessageId: "<message@example.com>",
           conversationId: "conversation-1",
@@ -114,8 +115,10 @@ describe("MicrosoftGraphMailProvider", () => {
       from: { email: "person@example.com", name: "Person" },
       bodyText: "Please help.",
       bodyHtml: "<p>Please help.</p>",
+      cc: [{ email: "manager@example.com", name: "Manager" }],
       inReplyTo: "<previous@example.com>"
     }));
     expect(fetchMock.mock.calls[1][0]).toContain("/users/support%40example.com/messages/message-1");
+    expect(fetchMock.mock.calls[1][0]).toContain("ccRecipients");
   });
 });

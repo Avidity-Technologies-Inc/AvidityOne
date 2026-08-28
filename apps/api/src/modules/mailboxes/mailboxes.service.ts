@@ -220,6 +220,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
         inReplyTo: message.inReplyTo,
         references: message.references,
         hasAttachments: message.hasAttachments,
+        ccRecipients: message.cc,
         internetMessageHeaders: message.internetMessageHeaders,
         suppressAutoReply: true
       });
@@ -251,6 +252,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
         inReplyTo: entry.inReplyTo,
         references: entry.emailReferences,
         hasAttachments: entry.hasAttachments,
+        cc: this.jsonInboundMailAddresses(entry.ccRecipients),
         internetMessageHeaders: this.jsonStringRecord(entry.internetMessageHeaders)
       };
     }
@@ -617,6 +619,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
           inReplyTo: message.inReplyTo,
           references: message.references,
           hasAttachments: message.hasAttachments,
+          ccRecipients: message.cc ?? undefined,
           internetMessageHeaders: message.internetMessageHeaders,
           reason: `Blocked by ${spamBlock.type.toLowerCase()} rule: ${spamBlock.normalizedValue}`
         });
@@ -637,6 +640,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
         inReplyTo: message.inReplyTo,
         references: message.references,
         hasAttachments: message.hasAttachments,
+        ccRecipients: message.cc,
         internetMessageHeaders: message.internetMessageHeaders
       });
 
@@ -686,6 +690,16 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
   private jsonStringRecord(value: Prisma.JsonValue | null): Record<string, string> | undefined {
     if (!value || Array.isArray(value) || typeof value !== "object") return undefined;
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  }
+
+  private jsonInboundMailAddresses(value: Prisma.JsonValue | null): InboundMailMessage["cc"] {
+    if (!Array.isArray(value)) return undefined;
+    return value.flatMap((entry) => {
+      if (!entry || Array.isArray(entry) || typeof entry !== "object") return [];
+      const email = typeof entry.email === "string" ? entry.email.trim() : "";
+      if (!email) return [];
+      return [{ email, name: typeof entry.name === "string" ? entry.name : null }];
+    });
   }
 
   private scheduleBroadAttachmentBackfill(mailbox: Mailbox) {

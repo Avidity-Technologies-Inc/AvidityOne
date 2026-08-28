@@ -186,6 +186,7 @@ export class SpamManagementService {
     inReplyTo?: string | null;
     references?: string | null;
     hasAttachments?: boolean;
+    ccRecipients?: Array<{ email: string; name?: string | null }>;
     internetMessageHeaders?: Record<string, string>;
     reason: string;
   }) {
@@ -220,6 +221,7 @@ export class SpamManagementService {
         inReplyTo: input.inReplyTo ?? null,
         emailReferences: input.references ?? null,
         hasAttachments: input.hasAttachments ?? false,
+        ccRecipients: input.ccRecipients as Prisma.InputJsonValue | undefined,
         internetMessageHeaders: input.internetMessageHeaders as Prisma.InputJsonValue | undefined,
         reason: input.reason
       }

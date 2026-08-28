@@ -62,6 +62,7 @@ describe("MailboxesService", () => {
         inReplyTo: null,
         emailReferences: null,
         hasAttachments: false,
+        ccRecipients: [{ email: "manager@example.com", name: "Manager" }],
         internetMessageHeaders: null,
         mailbox: { id: "mailbox-1", provider: "MOCK", connectionMode: "MOCK", emailAddress: "support@example.com", publicEmailAddress: null },
         spamBlockEntry: null
@@ -86,6 +87,7 @@ describe("MailboxesService", () => {
     expect(ticketsService.createFromInboundEmail).toHaveBeenCalledWith(expect.objectContaining({
       organizationId: "org-1",
       senderEmail: "person@example.com",
+      ccRecipients: [{ email: "manager@example.com", name: "Manager" }],
       suppressAutoReply: true
     }));
     expect(spamManagement.applyReleaseRuleAction).toHaveBeenCalledWith("quarantine-1", SpamReleaseAction.ALLOW_SENDER, user);
@@ -189,6 +191,7 @@ describe("MailboxesService", () => {
             internetMessageId: "<mock-message-1@example.org>",
             conversationId: "conversation-1",
             from: { email: "requester@example.org", name: "Requester One" },
+            cc: [{ email: "manager@example.org", name: "Manager One" }],
             subject: "Need help",
             bodyText: "Please help"
           }
@@ -223,6 +226,7 @@ describe("MailboxesService", () => {
         organizationId: "org-1",
         senderEmail: "requester@example.org",
         senderName: "Requester One",
+        ccRecipients: [{ email: "manager@example.org", name: "Manager One" }],
         subject: "Need help",
         emailMessageId: "mock-message-1"
       })

@@ -36,8 +36,16 @@ export interface CreateInboundEmailTicketInput {
   inReplyTo?: string | null;
   references?: string | null;
   hasAttachments?: boolean;
+  ccRecipients?: Array<{ email: string; name?: string | null }> | null;
   internetMessageHeaders?: Record<string, string>;
   suppressAutoReply?: boolean;
+}
+
+interface PreparedInboundParticipant {
+  email: string;
+  displayName: string | null;
+  userId: string | null;
+  contactId: string | null;
 }
 
 @Injectable()
@@ -1122,6 +1130,7 @@ export class TicketsService {
   async createFromInboundEmail(input: CreateInboundEmailTicketInput) {
     const senderEmail = input.senderEmail.trim().toLowerCase();
     const senderDomain = this.extractDomain(senderEmail);
+    const inboundCcEmails = this.normalizeInboundRecipients(input.ccRecipients ?? []).map((recipient) => recipient.email);
     const requester = await this.contactsService.resolveRequesterFromEmail({
       emailAddress: input.senderEmail,
       displayName: input.senderName,
@@ -1145,6 +1154,13 @@ export class TicketsService {
       if (!targetTicket) {
         throw new NotFoundException("Merged primary ticket was not found.");
       }
+      const inboundParticipants = await this.prepareInboundConversationParticipants({
+        organizationId: input.organizationId,
+        senderEmail,
+        senderName: input.senderName,
+        primaryRequesterEmail: targetTicket.senderEmail,
+        ccRecipients: input.ccRecipients ?? []
+      });
       const mergeOrigin = targetTicket.id === existingTicket.id ? null : existingTicket;
       const shouldReopen = this.shouldReopenFromInbound(targetTicket.status);
       const shouldAwaitTechnician = await this.shouldMarkWaitingOnTechnicianFromInbound(targetTicket.id, targetTicket.status);
@@ -1195,6 +1211,7 @@ export class TicketsService {
             emailConversationId: input.emailConversationId ?? null,
             inReplyTo: input.inReplyTo ?? null,
             emailReferences: input.references ?? null,
+            ccEmails: inboundCcEmails,
             mergedFromTicketId: mergeOrigin?.id ?? null,
             mergedFromTicketNumber: mergeOrigin?.ticketNumber ?? null,
             mergedFromTicketSubject: mergeOrigin?.subject ?? null,
@@ -1202,7 +1219,9 @@ export class TicketsService {
           }
         });
 
-        return { ticket, message };
+        const participantCapture = await this.captureInboundConversationParticipants(tx, ticket.id, inboundParticipants);
+
+        return { ticket, message, participantCapture };
       });
 
       await this.ticketWorkflow?.applyRules({
@@ -1227,6 +1246,7 @@ export class TicketsService {
           matchedMergedTicketNumber: mergeOrigin?.ticketNumber ?? null
         }
       });
+      await this.auditInboundParticipantCapture(result.ticket.id, result.participantCapture);
 
       await this.notifyTicketParticipants({
         ticketId: result.ticket.id,
@@ -1245,10 +1265,17 @@ export class TicketsService {
         });
       }
 
-      return result;
+      return { ticket: result.ticket, message: result.message };
     }
 
     const defaultStatus = await this.ticketWorkflow?.getDefaultStatus(input.organizationId);
+    const inboundParticipants = await this.prepareInboundConversationParticipants({
+      organizationId: input.organizationId,
+      senderEmail,
+      senderName: input.senderName,
+      primaryRequesterEmail: senderEmail,
+      ccRecipients: input.ccRecipients ?? []
+    });
     const result = await this.prisma.$transaction(async (tx) => {
       const ticketNumber = await this.nextTicketNumber(tx);
       const ticket = await tx.ticket.create({
@@ -1286,11 +1313,13 @@ export class TicketsService {
           emailConversationId: input.emailConversationId ?? null,
           inReplyTo: input.inReplyTo ?? null,
           emailReferences: input.references ?? null,
+          ccEmails: inboundCcEmails,
           hasAttachments: input.hasAttachments ?? false
         }
       });
 
-      return { ticket, message };
+      const participantCapture = await this.captureInboundConversationParticipants(tx, ticket.id, inboundParticipants);
+      return { ticket, message, participantCapture };
     });
 
     const matchedRule = await this.ticketRouting.applyInboundRules({
@@ -1319,6 +1348,7 @@ export class TicketsService {
         routingRuleId: matchedRule?.id ?? null
       }
     });
+    await this.auditInboundParticipantCapture(result.ticket.id, result.participantCapture);
 
     await this.notifications.notifyNewTicketCreated({
       ticketId: result.ticket.id,
@@ -1338,7 +1368,7 @@ export class TicketsService {
       replyToProviderMessageId: input.emailMessageId ?? null
     });
 
-    return result;
+    return { ticket: result.ticket, message: result.message };
   }
 
   async hasExistingInboundConversation(input: Pick<CreateInboundEmailTicketInput, "organizationId" | "subject" | "bodyText" | "emailConversationId" | "inReplyTo" | "references">) {
@@ -2016,9 +2046,6 @@ export class TicketsService {
           where: { ticketId: internalTicketId, isActive: true },
           select: { email: true, userId: true }
         });
-    const ccEmails = isInternal
-      ? explicitCcEmails
-      : [...new Set([...explicitCcEmails, ...persistentParticipants.map((participant) => participant.email.trim().toLowerCase())])];
     const notifiedUserIds = isInternal ? internalCcUsers.map((ccUser) => ccUser.id) : [];
     const followUsers = await this.resolveInternalCcUsers(input.followUserIds ?? [], user.organizationId);
     const latestInboundMessage = isInternal
@@ -2034,9 +2061,17 @@ export class TicketsService {
         });
     let sendResult = null;
     const sendsPublicEmail = !isInternal && (action === "send" || action === "send_and_close");
+    const primaryRequesterEmail = ticket.senderEmail?.trim().toLowerCase() || null;
     const requesterEmail = latestInboundMessage?.senderEmail?.trim().toLowerCase()
-      || ticket.senderEmail?.trim().toLowerCase()
+      || primaryRequesterEmail
       || await this.resolveTicketContactEmail(ticket.contactId, user.organizationId);
+    const ccEmails = isInternal
+      ? explicitCcEmails
+      : [...new Set([
+          ...explicitCcEmails,
+          ...persistentParticipants.map((participant) => participant.email.trim().toLowerCase()),
+          ...(primaryRequesterEmail && primaryRequesterEmail !== requesterEmail ? [primaryRequesterEmail] : [])
+        ])];
     const deliveredCcEmails = requesterEmail ? ccEmails.filter((email) => email !== requesterEmail) : ccEmails;
     const deliveryAttemptedAt = sendsPublicEmail ? new Date() : null;
     if (sendsPublicEmail) {
@@ -2534,6 +2569,148 @@ export class TicketsService {
       entityId: ticketId,
       action: "ticket.conversation_participants_added",
       metadata: { emails: normalizedEmails }
+    });
+  }
+
+  private normalizeInboundRecipients(recipients: Array<{ email: string; name?: string | null }>) {
+    const normalized = new Map<string, { email: string; name: string | null }>();
+    for (const recipient of recipients) {
+      const email = recipient.email.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+      const name = recipient.name?.trim() || null;
+      const existing = normalized.get(email);
+      normalized.set(email, { email, name: existing?.name || name });
+    }
+    return [...normalized.values()];
+  }
+
+  private async prepareInboundConversationParticipants(input: {
+    organizationId: string;
+    senderEmail: string;
+    senderName?: string | null;
+    primaryRequesterEmail?: string | null;
+    ccRecipients: Array<{ email: string; name?: string | null }>;
+  }): Promise<PreparedInboundParticipant[]> {
+    const senderEmail = input.senderEmail.trim().toLowerCase();
+    const primaryRequesterEmail = input.primaryRequesterEmail?.trim().toLowerCase() || senderEmail;
+    const candidates = new Map(
+      this.normalizeInboundRecipients(input.ccRecipients)
+        .filter((recipient) => recipient.email !== senderEmail && recipient.email !== primaryRequesterEmail)
+        .map((recipient) => [recipient.email, recipient])
+    );
+
+    if (senderEmail !== primaryRequesterEmail) {
+      candidates.set(senderEmail, { email: senderEmail, name: input.senderName?.trim() || null });
+    }
+    if (candidates.size === 0) return [];
+
+    const mailboxes = await this.prisma.mailbox.findMany({
+      where: { organizationId: input.organizationId, isActive: true },
+      select: {
+        emailAddress: true,
+        publicEmailAddress: true,
+        ingestionEmailAddress: true,
+        outboundFromAddress: true,
+        outboundReplyToAddress: true
+      }
+    });
+    const mailboxAddresses = new Set(mailboxes.flatMap((mailbox) => [
+      mailbox.emailAddress,
+      mailbox.publicEmailAddress,
+      mailbox.ingestionEmailAddress,
+      mailbox.outboundFromAddress,
+      mailbox.outboundReplyToAddress
+    ]).filter((email): email is string => Boolean(email)).map((email) => email.trim().toLowerCase()));
+    const emails = [...candidates.keys()].filter((email) => !mailboxAddresses.has(email));
+    if (emails.length === 0) return [];
+
+    const [users, contacts] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { organizationId: input.organizationId, email: { in: emails, mode: "insensitive" }, deletedAt: null, isActive: true },
+        select: { id: true, email: true, firstName: true, lastName: true }
+      }),
+      this.prisma.contact.findMany({
+        where: { email: { in: emails, mode: "insensitive" }, deletedAt: null, client: { organizationId: input.organizationId } },
+        select: { id: true, email: true, firstName: true, lastName: true }
+      })
+    ]);
+    const userByEmail = new Map(users.map((user) => [user.email.trim().toLowerCase(), user]));
+    const contactByEmail = new Map(contacts.map((contact) => [contact.email.trim().toLowerCase(), contact]));
+
+    return emails.map((email) => {
+      const candidate = candidates.get(email)!;
+      const participantUser = userByEmail.get(email);
+      const contact = contactByEmail.get(email);
+      return {
+        email,
+        userId: participantUser?.id ?? null,
+        contactId: contact?.id ?? null,
+        displayName: candidate.name
+          || (participantUser ? `${participantUser.firstName} ${participantUser.lastName}`.trim() : null)
+          || (contact ? `${contact.firstName} ${contact.lastName}`.trim() : null)
+      };
+    });
+  }
+
+  private async captureInboundConversationParticipants(
+    tx: Prisma.TransactionClient,
+    ticketId: string,
+    participants: PreparedInboundParticipant[]
+  ) {
+    if (participants.length === 0) return { activeEmails: [] as string[], addedEmails: [] as string[], suppressedEmails: [] as string[] };
+    const existing = await tx.ticketConversationParticipant.findMany({
+      where: { ticketId, email: { in: participants.map((participant) => participant.email) } },
+      select: { id: true, email: true, isActive: true }
+    });
+    const existingByEmail = new Map(existing.map((participant) => [participant.email.trim().toLowerCase(), participant]));
+    const activeEmails: string[] = [];
+    const addedEmails: string[] = [];
+    const suppressedEmails: string[] = [];
+
+    await Promise.all(participants.map(async (participant) => {
+      const current = existingByEmail.get(participant.email);
+      if (current && !current.isActive) {
+        suppressedEmails.push(participant.email);
+        return;
+      }
+      if (current) {
+        await tx.ticketConversationParticipant.update({
+          where: { id: current.id },
+          data: {
+            ...(participant.userId ? { userId: participant.userId } : {}),
+            ...(participant.contactId ? { contactId: participant.contactId } : {}),
+            ...(participant.displayName ? { displayName: participant.displayName } : {})
+          }
+        });
+      } else {
+        await tx.ticketConversationParticipant.create({
+          data: {
+            ticketId,
+            userId: participant.userId,
+            contactId: participant.contactId,
+            email: participant.email,
+            displayName: participant.displayName,
+            addedById: null
+          }
+        });
+        addedEmails.push(participant.email);
+      }
+      activeEmails.push(participant.email);
+    }));
+    return { activeEmails, addedEmails, suppressedEmails };
+  }
+
+  private async auditInboundParticipantCapture(
+    ticketId: string,
+    capture: { activeEmails: string[]; addedEmails: string[]; suppressedEmails: string[] }
+  ) {
+    if (capture.activeEmails.length === 0 && capture.suppressedEmails.length === 0) return;
+    await this.auditLogs.create({
+      userId: null,
+      entityType: "Ticket",
+      entityId: ticketId,
+      action: "ticket.inbound_cc_participants_captured",
+      metadata: capture
     });
   }
 

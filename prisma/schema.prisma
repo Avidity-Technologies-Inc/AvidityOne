@@ -1144,6 +1144,7 @@ model BlockedInboundEmail {
   inReplyTo                String?
   emailReferences          String?
   hasAttachments           Boolean         @default(false)
+  ccRecipients             Json?
   internetMessageHeaders   Json?
   reason                   String
   status                   BlockedInboundEmailStatus @default(QUARANTINED)

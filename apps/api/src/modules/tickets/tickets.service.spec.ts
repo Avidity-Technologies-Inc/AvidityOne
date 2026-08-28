@@ -86,9 +86,21 @@ describe("TicketsService", () => {
       },
       ticketMessage: {
         create: jest.fn().mockResolvedValue(message)
+      },
+      ticketConversationParticipant: {
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({}),
+        update: jest.fn()
       }
     };
     const prisma = {
+      mailbox: {
+        findMany: jest.fn().mockResolvedValue([{ emailAddress: "support@example.org", publicEmailAddress: null, ingestionEmailAddress: null, outboundFromAddress: null, outboundReplyToAddress: null }])
+      },
+      user: { findMany: jest.fn().mockResolvedValue([]) },
+      contact: {
+        findMany: jest.fn().mockResolvedValue([{ id: "contact-2", email: "manager@cityofharveyil.gov", firstName: "Maria", lastName: "Manager" }])
+      },
       $transaction: jest.fn((callback: (txClient: typeof tx) => unknown) => callback(tx))
     };
     const auditLogs = { create: jest.fn() };
@@ -124,6 +136,11 @@ describe("TicketsService", () => {
         subject: "Need workstation help",
         bodyText: "Please help",
         bodyHtml: "<p>Please help</p><script>bad()</script>",
+        ccRecipients: [
+          { email: "Manager@cityofharveyil.gov", name: "Maria Manager" },
+          { email: "support@example.org", name: "Avidity Support" },
+          { email: "jane@cityofharveyil.gov", name: "Jane Mayor" }
+        ],
         emailInternetMessageId: "<message@example.org>"
       })
     ).resolves.toEqual({ ticket, message });
@@ -147,11 +164,23 @@ describe("TicketsService", () => {
         authorContactId: "contact-1",
         direction: "INBOUND",
         visibility: "PUBLIC",
+        ccEmails: ["manager@cityofharveyil.gov", "support@example.org", "jane@cityofharveyil.gov"],
         sanitizedBodyHtml: "<p>Please help</p>bad()",
         emailInternetMessageId: "<message@example.org>"
       })
     });
+    expect(tx.ticketConversationParticipant.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ticketId: "ticket-1",
+        email: "manager@cityofharveyil.gov",
+        displayName: "Maria Manager",
+        contactId: "contact-2",
+        addedById: null
+      })
+    });
+    expect(tx.ticketConversationParticipant.create).toHaveBeenCalledTimes(1);
     expect(auditLogs.create).toHaveBeenCalledWith(expect.objectContaining({ action: "ticket.created_from_inbound_email" }));
+    expect(auditLogs.create).toHaveBeenCalledWith(expect.objectContaining({ action: "ticket.inbound_cc_participants_captured" }));
     expect(autoReplies.sendForNewInboundTicket).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: "org-1",
@@ -604,6 +633,107 @@ describe("TicketsService", () => {
       id: "user-1", organizationId: "org-1", email: "tech@example.com", firstName: "Tech", lastName: "User", forcePasswordChange: false, permissions: []
     });
     expect(mailDelivery.sendTicketReply).toHaveBeenNthCalledWith(2, expect.objectContaining({ cc: [] }));
+  });
+
+  it("keeps the original requester on replies when a conversation participant answers", async () => {
+    const ticket = {
+      id: "ticket-1",
+      ticketNumber: "AIT-100001",
+      status: "OPEN",
+      subject: "Account access",
+      mailboxId: "mailbox-1",
+      contactId: "contact-1",
+      senderEmail: "requester@example.com",
+      firstResponseAt: new Date(),
+      assignedUserId: null,
+      assignedTeamId: null,
+      assignedGroupId: null
+    };
+    const prisma = {
+      ticket: {
+        findFirst: jest.fn().mockResolvedValue(ticket),
+        findUnique: jest.fn().mockResolvedValue(ticket),
+        update: jest.fn().mockResolvedValue(ticket)
+      },
+      ticketMessage: {
+        findFirst: jest.fn().mockResolvedValue({
+          senderEmail: "manager@example.com",
+          emailMessageId: "provider-message-2",
+          emailInternetMessageId: "<manager-reply@example.com>",
+          emailReferences: "<requester-message@example.com>",
+          emailConversationId: "conversation-1"
+        }),
+        create: jest.fn().mockResolvedValue({ id: "message-3", ticketId: "ticket-1" })
+      },
+      ticketAttachment: { updateMany: jest.fn() },
+      ticketAssignee: { findMany: jest.fn().mockResolvedValue([]) },
+      ticketWatcher: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() },
+      ticketConversationParticipant: {
+        findMany: jest.fn().mockResolvedValue([{ email: "manager@example.com", userId: null }])
+      }
+    };
+    const mailDelivery = {
+      sendTicketReply: jest.fn().mockResolvedValue({ providerMessageId: "sent-message-3", internetMessageId: null, conversationId: "conversation-1" })
+    };
+    const service = new TicketsService(
+      prisma as never,
+      { create: jest.fn() } as never,
+      { sanitize: jest.fn((value: string) => value) } as never,
+      { resolveRequesterFromEmail: jest.fn() } as never,
+      { applyInboundRules: jest.fn() } as never,
+      mailDelivery as never,
+      { notifyUser: jest.fn(), notifyNewTicketCreated: jest.fn() } as never,
+      { sendForNewInboundTicket: jest.fn() } as never
+    );
+
+    await service.createMessage("AIT-100001", { visibility: "public", bodyText: "We are reviewing this.", action: "send" }, {
+      id: "user-1", organizationId: "org-1", email: "tech@example.com", firstName: "Tech", lastName: "User", forcePasswordChange: false, permissions: []
+    });
+
+    expect(mailDelivery.sendTicketReply).toHaveBeenCalledWith(expect.objectContaining({
+      to: ["manager@example.com"],
+      cc: ["requester@example.com"]
+    }));
+    expect(prisma.ticketMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ ccEmails: ["requester@example.com"] })
+    });
+  });
+
+  it("does not reactivate a conversation participant removed manually when inbound CC is captured", async () => {
+    const tx = {
+      ticketConversationParticipant: {
+        findMany: jest.fn().mockResolvedValue([{ id: "participant-1", email: "manager@example.com", isActive: false }]),
+        update: jest.fn(),
+        create: jest.fn()
+      }
+    };
+    const service = new TicketsService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never
+    );
+
+    const capture = await (service as unknown as {
+      captureInboundConversationParticipants: (
+        txClient: typeof tx,
+        ticketId: string,
+        participants: Array<{ email: string; displayName: string | null; userId: string | null; contactId: string | null }>
+      ) => Promise<{ activeEmails: string[]; addedEmails: string[]; suppressedEmails: string[] }>;
+    }).captureInboundConversationParticipants(tx, "ticket-1", [{
+      email: "manager@example.com",
+      displayName: "Manager",
+      userId: null,
+      contactId: null
+    }]);
+
+    expect(capture).toEqual({ activeEmails: [], addedEmails: [], suppressedEmails: ["manager@example.com"] });
+    expect(tx.ticketConversationParticipant.update).not.toHaveBeenCalled();
+    expect(tx.ticketConversationParticipant.create).not.toHaveBeenCalled();
   });
 
   it("does not save a public reply when outbound delivery is unavailable", async () => {
