@@ -121,4 +121,80 @@ describe("MicrosoftGraphMailProvider", () => {
     expect(fetchMock.mock.calls[1][0]).toContain("/users/support%40example.com/messages/message-1");
     expect(fetchMock.mock.calls[1][0]).toContain("ccRecipients");
   });
+
+  it("recovers CC recipients from internet headers when a legacy delta projection omits ccRecipients", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "token-1" }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "message-legacy",
+          subject: "Legacy projection",
+          bodyPreview: "Please review.",
+          from: { emailAddress: { address: "requester@example.com", name: "Requester" } },
+          toRecipients: [{ emailAddress: { address: "support@example.com", name: "Support" } }],
+          internetMessageHeaders: [
+            { name: "Cc", value: "Manager One <manager@example.com>; reviewer@example.org" }
+          ]
+        })
+      });
+    const provider = new MicrosoftGraphMailProvider({
+      get: jest.fn((key: string) => (key === "MICROSOFT_CLIENT_SECRET" ? "secret-1" : undefined))
+    } as never);
+
+    const message = await provider.getInboundMessage({
+      mailboxId: "mailbox-1",
+      mailboxEmailAddress: "support@example.com",
+      providerMessageId: "message-legacy",
+      connectionMode: "GRAPH_DIRECT",
+      tenantId: "tenant-1",
+      microsoftClientId: "client-1",
+      encryptedClientSecretReference: "env:MICROSOFT_CLIENT_SECRET"
+    });
+
+    expect(message?.cc).toEqual([
+      { email: "manager@example.com", name: null },
+      { email: "reviewer@example.org", name: null }
+    ]);
+  });
+
+  it("recovers the original CC line from a forwarded message body", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "token-1" }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "message-forwarded",
+          subject: "Fwd: Website update",
+          bodyPreview: "From: Requester <requester@example.com>\nTo: Support <support@example.com>\nCc: Manager <manager@example.com>; reviewer@example.org\nSubject: Website update",
+          body: {
+            contentType: "html",
+            content: "<div>From: Requester &lt;requester@example.com&gt;</div><div>To: Support &lt;support@example.com&gt;</div><div>Cc: Manager &lt;manager@example.com&gt;; reviewer@example.org</div>"
+          },
+          from: { emailAddress: { address: "forwarder@aviditytechnologies.com", name: "Forwarder" } },
+          toRecipients: [{ emailAddress: { address: "ingestion@aviditytechnologies.com", name: "Ingestion" } }],
+          ccRecipients: []
+        })
+      });
+    const provider = new MicrosoftGraphMailProvider({
+      get: jest.fn((key: string) => (key === "MICROSOFT_CLIENT_SECRET" ? "secret-1" : undefined))
+    } as never);
+
+    const message = await provider.getInboundMessage({
+      mailboxId: "mailbox-1",
+      mailboxEmailAddress: "ingestion@aviditytechnologies.com",
+      providerMessageId: "message-forwarded",
+      connectionMode: "GRAPH_FORWARDED_MAILBOX",
+      preserveOriginalSenderHeaders: true,
+      tenantId: "tenant-1",
+      microsoftClientId: "client-1",
+      encryptedClientSecretReference: "env:MICROSOFT_CLIENT_SECRET"
+    });
+
+    expect(message?.from.email).toBe("requester@example.com");
+    expect(message?.cc).toEqual([
+      { email: "manager@example.com", name: null },
+      { email: "reviewer@example.org", name: null }
+    ]);
+  });
 });

@@ -927,6 +927,7 @@ model Mailbox {
   encryptedClientSecretReference String?
   isActive                       Boolean         @default(true)
   lastSyncCursor                 String?
+  inboundProjectionVersion       Int             @default(2)
   autoSyncEnabled                Boolean         @default(false)
   autoSyncIntervalSeconds        Int?
   nextAutoSyncAt                 DateTime?

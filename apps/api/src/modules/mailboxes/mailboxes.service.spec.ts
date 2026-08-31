@@ -233,7 +233,59 @@ describe("MailboxesService", () => {
     );
     expect(prisma.mailbox.update).toHaveBeenCalledWith({
       where: { id: "mailbox-1" },
-      data: expect.objectContaining({ lastSyncCursor: "cursor-1", lastSyncError: null })
+      data: expect.objectContaining({ lastSyncCursor: "cursor-1", inboundProjectionVersion: 2, lastSyncError: null })
+    });
+  });
+
+  it("starts a fresh delta projection once for mailboxes with a legacy sync cursor", async () => {
+    const mailbox = {
+      id: "mailbox-1",
+      organizationId: "org-1",
+      emailAddress: "support@example.org",
+      provider: "MOCK",
+      connectionMode: "MOCK",
+      lastSyncCursor: "https://graph.example/legacy-delta-link",
+      inboundProjectionVersion: 1,
+      initialSyncFrom: new Date("2026-08-01T00:00:00.000Z"),
+      lastSyncedAt: new Date("2026-08-30T15:00:00.000Z"),
+      autoSyncEnabled: false,
+      autoSyncIntervalSeconds: null,
+      nextAutoSyncAt: null,
+      tenantId: null,
+      microsoftClientId: null,
+      encryptedClientSecretReference: null
+    };
+    const prisma = {
+      mailbox: {
+        findFirst: jest.fn().mockResolvedValue(mailbox),
+        update: jest.fn()
+      },
+      ticketMessage: { findMany: jest.fn().mockResolvedValue([]) },
+      eventServiceMessage: { findFirst: jest.fn().mockResolvedValue(null) },
+      eventServiceRequest: { findFirst: jest.fn().mockResolvedValue(null) }
+    };
+    const mockMailProvider = {
+      syncInboundMessages: jest.fn().mockResolvedValue({ messages: [], nextSyncCursor: "fresh-cursor" })
+    };
+    const service = new MailboxesService(
+      prisma as never,
+      { get: jest.fn().mockReturnValue("mock") } as never,
+      { createFromInboundEmail: jest.fn() } as never,
+      { createInboundEmailAttachment: jest.fn() } as never,
+      { findBlockForSender: jest.fn().mockResolvedValue(null), logBlockedInboundEmail: jest.fn() } as never,
+      mockMailProvider as never,
+      {} as never
+    );
+
+    await service.syncInbound("mailbox-1", user);
+
+    expect(mockMailProvider.syncInboundMessages).toHaveBeenCalledWith(expect.objectContaining({
+      lastSyncCursor: null,
+      initialSyncFrom: new Date("2026-08-29T15:00:00.000Z")
+    }));
+    expect(prisma.mailbox.update).toHaveBeenCalledWith({
+      where: { id: "mailbox-1" },
+      data: expect.objectContaining({ lastSyncCursor: "fresh-cursor", inboundProjectionVersion: 2 })
     });
   });
 

@@ -59,6 +59,8 @@ const DEFAULT_EMAIL_OPERATIONAL_SCHEDULE: EmailOperationalSchedule = {
   customClosedDates: []
 };
 
+const CURRENT_INBOUND_PROJECTION_VERSION = 2;
+
 const WEEKDAY_KEYS: Record<string, string> = {
   Sunday: "SUNDAY",
   Monday: "MONDAY",
@@ -492,14 +494,19 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
 
   private async syncMailbox(mailbox: Mailbox, options: SyncMailboxOptions = {}): Promise<SyncMailboxResult> {
     const { providerName, provider } = this.resolveProvider(mailbox);
+    const requiresProjectionRefresh = !options.initialSyncFromOverride
+      && mailbox.inboundProjectionVersion < CURRENT_INBOUND_PROJECTION_VERSION;
+    const projectionRefreshFrom = requiresProjectionRefresh && mailbox.lastSyncedAt
+      ? new Date(mailbox.lastSyncedAt.getTime() - 24 * 60 * 60 * 1000)
+      : null;
     const syncResult = await provider.syncInboundMessages({
       mailboxId: mailbox.id,
       mailboxEmailAddress: this.getMailboxReadAddress(mailbox),
       publicEmailAddress: mailbox.publicEmailAddress ?? mailbox.emailAddress,
       connectionMode: mailbox.connectionMode,
       preserveOriginalSenderHeaders: mailbox.preserveOriginalSenderHeaders,
-      lastSyncCursor: options.initialSyncFromOverride ? null : mailbox.lastSyncCursor,
-      initialSyncFrom: options.initialSyncFromOverride ?? mailbox.initialSyncFrom,
+      lastSyncCursor: options.initialSyncFromOverride || requiresProjectionRefresh ? null : mailbox.lastSyncCursor,
+      initialSyncFrom: options.initialSyncFromOverride ?? projectionRefreshFrom ?? mailbox.initialSyncFrom,
       tenantId: mailbox.tenantId,
       microsoftClientId: mailbox.microsoftClientId,
       encryptedClientSecretReference: mailbox.encryptedClientSecretReference
@@ -665,6 +672,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
         where: { id: mailbox.id },
         data: {
           ...(syncResult.nextSyncCursor !== undefined ? { lastSyncCursor: syncResult.nextSyncCursor } : {}),
+          inboundProjectionVersion: CURRENT_INBOUND_PROJECTION_VERSION,
           lastSyncedAt: new Date(),
           lastSyncError: null,
           nextAutoSyncAt: mailbox.autoSyncEnabled && mailbox.autoSyncIntervalSeconds ? new Date(Date.now() + mailbox.autoSyncIntervalSeconds * 1000) : mailbox.nextAutoSyncAt,

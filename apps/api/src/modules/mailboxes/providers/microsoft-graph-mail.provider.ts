@@ -263,6 +263,21 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     const forwardedFrom = input.connectionMode === "GRAPH_FORWARDED_MAILBOX" && input.preserveOriginalSenderHeaders !== false
       ? this.resolveForwardedSender(headers, rawFrom, message.bodyPreview ?? null, message.body?.content ?? null)
       : rawFrom;
+    const graphCc = message.ccRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? [];
+    const headerCc = this.extractMailAddresses([
+      headers.cc,
+      headers["resent-cc"],
+      headers["x-original-cc"],
+      headers["x-forwarded-cc"],
+      headers["x-ms-exchange-organization-originalcc"]
+    ]);
+    const forwardedCc = input.connectionMode === "GRAPH_FORWARDED_MAILBOX" && input.preserveOriginalSenderHeaders !== false
+      ? this.extractMailAddresses([
+          this.extractForwardedHeader(message.bodyPreview ?? null, "cc"),
+          this.extractForwardedHeader(message.body?.content ?? null, "cc")
+        ])
+      : [];
+    const cc = this.mergeInboundAddresses(graphCc, headerCc, forwardedCc);
     return {
       providerMessageId: message.id,
       internetMessageId: message.internetMessageId ?? null,
@@ -271,7 +286,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
       rawFrom,
       replyTo: message.replyTo?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
       to: message.toRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
-      cc: message.ccRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
+      cc: cc.length ? cc : null,
       subject: message.subject || "(No subject)",
       bodyText: message.bodyPreview ?? null,
       bodyHtml: message.body?.contentType?.toLowerCase() === "html" ? message.body.content : null,
@@ -462,6 +477,45 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     const normalized = value.replace(/<[^>]*>/g, " ").replace(/&lt;|&gt;/g, " ");
     const fromLine = normalized.match(/(?:from|de):\s*([^\n\r]+)/i)?.[1];
     return fromLine ? [fromLine] : [];
+  }
+
+  private extractForwardedHeader(value: string | null, headerName: string) {
+    if (!value) return null;
+    const normalized = value
+      .slice(0, 64_000)
+      .replace(/<br\s*\/?>|<\/(?:div|p|tr|li)>/gi, "\n")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'");
+    const escapedHeaderName = headerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return normalized.match(new RegExp(`(?:^|\\n)\\s*${escapedHeaderName}\\s*:\\s*([^\\n\\r]+)`, "i"))?.[1] ?? null;
+  }
+
+  private extractMailAddresses(values: Array<string | null | undefined>) {
+    const addresses: Array<{ email: string; name: null }> = [];
+    const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+    for (const value of values) {
+      if (!value) continue;
+      for (const match of value.slice(0, 32_000).matchAll(emailPattern)) {
+        addresses.push({ email: match[0].toLowerCase(), name: null });
+        if (addresses.length >= 100) return addresses;
+      }
+    }
+    return addresses;
+  }
+
+  private mergeInboundAddresses(...groups: Array<Array<{ email: string; name?: string | null }>>) {
+    const merged = new Map<string, { email: string; name: string | null }>();
+    for (const address of groups.flat()) {
+      const email = address.email.trim().toLowerCase();
+      if (!email) continue;
+      const current = merged.get(email);
+      merged.set(email, { email, name: current?.name || address.name?.trim() || null });
+    }
+    return [...merged.values()].sort((left, right) => left.email.localeCompare(right.email));
   }
 
   private extractEmail(value: string | null | undefined) {
