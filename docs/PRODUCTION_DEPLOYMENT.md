@@ -60,7 +60,7 @@ Do not expose PostgreSQL, Redis, API port `4000`, or web port `3000` publicly.
 sudo mkdir -p /opt/avidity
 sudo chown "$USER":"$USER" /opt/avidity
 cd /opt/avidity
-git clone https://github.com/dluiso/helpdesksystem.git .
+git clone https://github.com/Avidity-Technologies-Inc/AvidityOne.git .
 cp .env.production.example .env.production
 nano .env.production
 ```

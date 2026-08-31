@@ -99,7 +99,7 @@ Completed work visible from repo docs, migrations, and continuity notes includes
 Latest local Git state checked during this handoff:
 
 - Branch: `main`.
-- Remote: `https://github.com/dluiso/helpdesksystem.git`.
+- Remote: `https://github.com/Avidity-Technologies-Inc/AvidityOne.git`.
 - Latest visible commits:
   - `14579d6 Preserve autocomplete cursor spacing`
   - `2e4ae20 Refine inline writing suggestions`
