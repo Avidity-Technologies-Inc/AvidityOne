@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException } from "@nestjs/common";
-import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig } from "./ai-provider.interface";
+import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig, buildAiUserPrompt } from "./ai-provider.interface";
 
 @Injectable()
 export class GeminiProvider implements AiProviderPort {
@@ -45,7 +45,7 @@ export class GeminiProvider implements AiProviderPort {
         systemInstruction: {
           parts: [{ text: input.systemPrompt ?? "You assist IT support technicians with concise, safe, customer-ready writing." }]
         },
-        contents: [{ role: "user", parts: [{ text: this.buildUserPrompt(input) }] }]
+        contents: [{ role: "user", parts: [{ text: buildAiUserPrompt(input) }] }]
       }),
       signal: AbortSignal.timeout(config.timeoutMs)
     });
@@ -81,12 +81,6 @@ export class GeminiProvider implements AiProviderPort {
     }
 
     return { model, text };
-  }
-
-  private buildUserPrompt(input: AiProviderInput) {
-    return [`Action: ${input.action}`, input.draft ? `Draft:\n${input.draft}` : null, `Ticket context:\n${input.ticketContext}`]
-      .filter(Boolean)
-      .join("\n\n");
   }
 
   private normalizeModelName(model: string) {

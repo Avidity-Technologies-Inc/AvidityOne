@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException } from "@nestjs/common";
-import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig } from "./ai-provider.interface";
+import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig, buildAiUserPrompt } from "./ai-provider.interface";
 
 @Injectable()
 export class AnthropicProvider implements AiProviderPort {
@@ -21,7 +21,7 @@ export class AnthropicProvider implements AiProviderPort {
         max_tokens: input.maxOutputTokens ?? 1024,
         temperature: input.temperature ?? 0.3,
         system: input.systemPrompt ?? "You assist IT support technicians with concise, safe, customer-ready writing.",
-        messages: [{ role: "user", content: this.buildUserPrompt(input) }]
+        messages: [{ role: "user", content: buildAiUserPrompt(input) }]
       }),
       signal: AbortSignal.timeout(config.timeoutMs)
     });
@@ -40,9 +40,4 @@ export class AnthropicProvider implements AiProviderPort {
     return { model: input.model, text };
   }
 
-  private buildUserPrompt(input: AiProviderInput) {
-    return [`Action: ${input.action}`, input.draft ? `Draft:\n${input.draft}` : null, `Ticket context:\n${input.ticketContext}`]
-      .filter(Boolean)
-      .join("\n\n");
-  }
 }

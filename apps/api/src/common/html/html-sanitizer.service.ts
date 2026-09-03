@@ -10,6 +10,14 @@ const CSS_FONT_FAMILY = /^[a-zA-Z0-9\s"',._-]+$/;
 @Injectable()
 export class HtmlSanitizerService {
   sanitize(input: string | null | undefined): string {
+    return this.sanitizeContent(input, false);
+  }
+
+  sanitizeEmail(input: string | null | undefined): string {
+    return this.sanitizeContent(input, true);
+  }
+
+  private sanitizeContent(input: string | null | undefined, emailSafe: boolean): string {
     if (!input) {
       return "";
     }
@@ -51,9 +59,9 @@ export class HtmlSanitizerService {
         "*": ["style", "align"],
         a: ["href", "name", "target", "rel", "title", "style"],
         img: ["src", "alt", "title", "width", "height", "data-attachment-id", "style"],
-        table: ["width", "height", "cellpadding", "cellspacing", "border", "role", "align", "style"],
-        td: ["width", "height", "valign", "align", "colspan", "rowspan", "style"],
-        th: ["width", "height", "valign", "align", "colspan", "rowspan", "style"],
+        table: [...(emailSafe ? [] : ["width", "height"]), "cellpadding", "cellspacing", "border", "role", "align", "style"],
+        td: [...(emailSafe ? [] : ["width", "height"]), "valign", "align", "colspan", "rowspan", "style"],
+        th: [...(emailSafe ? [] : ["width", "height"]), "valign", "align", "colspan", "rowspan", "style"],
         font: ["face", "size", "color", "style"]
       },
       allowedStyles: {
@@ -68,11 +76,13 @@ export class HtmlSanitizerService {
           "text-align": [/^(left|right|center|justify)$/],
           "text-decoration": [/^(none|underline|line-through)$/],
           "vertical-align": [/^(top|middle|bottom|baseline)$/],
-          "white-space": [/^(normal|nowrap|pre|pre-wrap|pre-line)$/],
-          display: [/^(block|inline|inline-block|table|table-row|table-cell)$/],
-          width: [CSS_LENGTH],
-          height: [CSS_LENGTH],
-          "max-width": [CSS_LENGTH],
+          ...(emailSafe ? {} : {
+            "white-space": [/^(normal|nowrap|pre|pre-wrap|pre-line)$/],
+            display: [/^(block|inline|inline-block|table|table-row|table-cell)$/],
+            width: [CSS_LENGTH],
+            height: [CSS_LENGTH],
+            "max-width": [CSS_LENGTH]
+          }),
           margin: [CSS_BOX],
           "margin-top": [CSS_LENGTH],
           "margin-right": [CSS_LENGTH],

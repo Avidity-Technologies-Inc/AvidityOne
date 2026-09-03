@@ -21,6 +21,58 @@ describe("TicketPromptBuilder", () => {
     expect(context).not.toContain("Internal-only note");
   });
 
+  it("omits all conversation content for grammar and paraphrase actions", () => {
+    const builder = new TicketPromptBuilder();
+    const input = {
+      subject: "Sensitive ticket subject",
+      messages: [{ visibility: "PUBLIC", direction: "INBOUND", bodyText: "Customer history that must not be rewritten" }]
+    };
+
+    expect(builder.buildTicketActionContext({ ...input, action: "fix_grammar" })).toBe(
+      "Reference conversation intentionally omitted for this draft-only editing action."
+    );
+    expect(builder.buildTicketActionContext({ ...input, action: "paraphrase" })).not.toContain("Customer history");
+  });
+
+  it("cleans and labels reply context without quoted iPhone history or signatures", () => {
+    const builder = new TicketPromptBuilder();
+    const context = builder.buildTicketActionContext({
+      action: "suggest_reply",
+      subject: "RTCC computers",
+      messages: [
+        {
+          visibility: "PUBLIC",
+          direction: "INBOUND",
+          createdAt: new Date("2026-09-03T14:00:00Z"),
+          bodyText: "Please send your findings to my office.\n\nSent from my iPhone\n\n> On Sep 2, 2026, Support wrote:\n> Previous conversation"
+        }
+      ]
+    });
+
+    expect(context).toContain("Customer:\nPlease send your findings to my office.");
+    expect(context).not.toContain("Sent from my iPhone");
+    expect(context).not.toContain("Previous conversation");
+  });
+
+  it("cleans labels, signatures, and quoted content from generated replies", () => {
+    const builder = new TicketPromptBuilder();
+    const result = builder.cleanGeneratedReply(
+      "Response: We will review the systems and send the findings.\n\nBest regards,\nTechnician\n\nConversation:\nCustomer: old content"
+    );
+
+    expect(result).toBe("We will review the systems and send the findings.");
+  });
+
+  it("flags generated output that copies multiple context lines", () => {
+    const builder = new TicketPromptBuilder();
+    const first = "The customer requested a complete diagnostic report for all affected workstations before the meeting.";
+    const second = "The technician previously confirmed that the replacement quote expired and must be renewed by Dell.";
+    const context = `Customer:\n${first}\n\nTechnician:\n${second}`;
+
+    expect(builder.isSuspiciousGeneratedReply(`${first}\n\n${second}`, undefined, context)).toBe(true);
+    expect(builder.isSuspiciousGeneratedReply("We will obtain the updated quote and report our findings.", undefined, context)).toBe(false);
+  });
+
   it("builds an operational context without internal notes or common secrets", () => {
     const builder = new TicketPromptBuilder();
     const context = builder.buildOperationalContext({

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { BlockedInboundEmailStatus, Mailbox, MessageDirection, MessageVisibility, Prisma, SpamReleaseAction } from "@prisma/client";
+import { HtmlSanitizerService } from "../../common/html/html-sanitizer.service";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
 import { SpamManagementService } from "../spam-management/spam-management.service";
@@ -85,7 +86,8 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
     private readonly ticketAttachmentsService: TicketAttachmentsService,
     private readonly spamManagement: SpamManagementService,
     private readonly mockMailProvider: MockMailProvider,
-    private readonly microsoftGraphMailProvider: MicrosoftGraphMailProvider
+    private readonly microsoftGraphMailProvider: MicrosoftGraphMailProvider,
+    private readonly htmlSanitizer: HtmlSanitizerService = new HtmlSanitizerService()
   ) {}
 
   onModuleInit() {
@@ -575,7 +577,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
             visibility: MessageVisibility.PUBLIC,
             bodyText: message.bodyText ?? message.bodyHtml ?? "",
             bodyHtml: message.bodyHtml ?? null,
-            sanitizedBodyHtml: message.bodyHtml ?? null,
+            sanitizedBodyHtml: message.bodyHtml ? this.htmlSanitizer.sanitizeEmail(message.bodyHtml) : null,
             senderEmail: message.from.email,
             emailMessageId: message.providerMessageId,
             emailInternetMessageId: message.internetMessageId ?? null,

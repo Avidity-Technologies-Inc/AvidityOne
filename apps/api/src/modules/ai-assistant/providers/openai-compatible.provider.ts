@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException } from "@nestjs/common";
-import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig } from "./ai-provider.interface";
+import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig, buildAiUserPrompt } from "./ai-provider.interface";
 
 @Injectable()
 export class OpenAiCompatibleProvider implements AiProviderPort {
@@ -30,7 +30,7 @@ export class OpenAiCompatibleProvider implements AiProviderPort {
         ...tokenLimit,
         messages: [
           { role: "system", content: input.systemPrompt ?? "You assist IT support technicians with concise, safe, customer-ready writing." },
-          { role: "user", content: this.buildUserPrompt(input) }
+          { role: "user", content: buildAiUserPrompt(input) }
         ]
       }),
       signal: AbortSignal.timeout(config.timeoutMs)
@@ -60,7 +60,7 @@ export class OpenAiCompatibleProvider implements AiProviderPort {
       body: JSON.stringify({
         model: input.model,
         instructions: input.systemPrompt ?? "You assist IT support technicians with concise, safe, customer-ready writing.",
-        input: this.buildUserPrompt(input),
+        input: buildAiUserPrompt(input),
         temperature: this.supportsTemperature(input.model) ? input.temperature ?? 0.3 : undefined,
         max_output_tokens: input.maxOutputTokens ?? undefined
       }),
@@ -82,12 +82,6 @@ export class OpenAiCompatibleProvider implements AiProviderPort {
     }
 
     return { model: input.model, text };
-  }
-
-  private buildUserPrompt(input: AiProviderInput) {
-    return [`Action: ${input.action}`, input.draft ? `Draft:\n${input.draft}` : null, `Ticket context:\n${input.ticketContext}`]
-      .filter(Boolean)
-      .join("\n\n");
   }
 
   private shouldUseResponsesApi(baseUrl: string, model: string) {

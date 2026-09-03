@@ -15566,6 +15566,87 @@ button.operations-summary-card {
 .message-collapsible > summary { width: fit-content; cursor: pointer; color: var(--text-muted); font-size: 11px; font-weight: 750; }
 .message-collapsible[open] > summary { margin-bottom: 6px; }
 
+/* Untrusted email markup must never establish the intrinsic width of the ticket workspace. */
+.ticket-conversation-panel,
+.ticket-conversation-scroll,
+.ticket-timeline,
+.ticket-timeline .message,
+.ticket-timeline .message > *,
+.message-body {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ticket-timeline,
+.ticket-timeline .message {
+  width: 100%;
+}
+
+.ticket-conversation-scroll {
+  overflow-x: hidden;
+}
+
+.message-body {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overscroll-behavior-inline: contain;
+}
+
+.message-body :is(a, code),
+.message-cc-list > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.message-body :is(p, div, span, font, a, td, th) {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+}
+
+.message-body :is(p, div, span, font) {
+  width: auto !important;
+}
+
+.message-body table {
+  max-width: 100% !important;
+}
+
+.message-body img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.message-body pre,
+.message-plain-text {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.editor-surface [data-editor-signature] {
+  max-width: 100%;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--editor-line);
+  cursor: default;
+  user-select: text;
+}
+
+@supports not (overflow-wrap: anywhere) {
+  .message-body,
+  .message-body :is(a, code),
+  .message-cc-list > span,
+  .message-plain-text {
+    word-break: break-all;
+  }
+}
+
 .ticket-composer-panel:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .ticket-composer-panel .editor-format-toolbar { gap: 4px; padding: 5px; }
 .ticket-composer-panel .editor-format-toolbar .icon-button { width: 29px; min-width: 29px; height: 29px; }
@@ -15818,6 +15899,23 @@ button.operations-summary-card {
   .ticket-conversation-controls label { width: 100%; }
   .ticket-tools-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ticket-editor-attachments { grid-template-columns: 1fr; }
+  .ticket-composer-panel .editor-format-toolbar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .ticket-composer-panel .editor-format-toolbar .icon-button { width: 100%; min-width: 0; }
+  .ticket-composer-panel .editor-format-toolbar .compact-button { grid-column: span 2; width: 100%; }
+  .ticket-composer-panel .editor-submit-toolbar { align-items: stretch; flex-direction: column; }
+  .ticket-composer-panel .editor-submit-toolbar > .button,
+  .ticket-composer-panel .editor-submit-toolbar .split-action { width: 100%; }
+  .ticket-composer-panel .editor-submit-toolbar .split-action-main { flex: 1 1 auto; }
+}
+
+@media (max-width: 420px) {
+  .ticket-composer-panel .editor-format-toolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ticket-composer-panel .editor-format-toolbar .compact-button { grid-column: span 3; }
+  .ticket-conversation-scroll { padding: 7px; }
+  .ticket-timeline .message { padding: 9px 10px; }
 }
 
 /* Keep the Settings workspace overrides after legacy responsive rules. */

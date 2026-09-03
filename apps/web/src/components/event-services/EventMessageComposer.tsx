@@ -18,6 +18,21 @@ import {
 } from "lucide-react";
 import { ClipboardEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import {
+  EDITOR_SIGNATURE_SELECTOR,
+  INLINE_AUTOCOMPLETE_CLASS,
+  captureEditorSelection,
+  composeEditorHtml,
+  getEditorText as readEditorText,
+  getEditorTextWithoutSignature as readEditorTextWithoutSignature,
+  htmlToEditorText,
+  isSelectionAtOrAfterSignature,
+  normalizeEditorText,
+  replaceEditorRangeWithText,
+  selectionIntersectsSignature,
+  setEditorSignature,
+  stripLegacySignature
+} from "@/lib/editor-content";
 import { AttachmentPreviewItem, AttachmentPreviewList } from "../tickets/AttachmentPreviewList";
 import { SignatureInserter } from "../tickets/SignatureInserter";
 import { EventAttachmentDropzone } from "./EventAttachmentDropzone";
@@ -34,7 +49,6 @@ const toolbar = [
   { label: "Remove formatting", icon: RemoveFormatting, command: "removeFormat" }
 ] as const;
 
-const INLINE_AUTOCOMPLETE_CLASS = "ai-inline-suggestion";
 const AUTOCOMPLETE_MIN_CHARS = 12;
 const AUTOCOMPLETE_DELAY_MS = 450;
 
@@ -54,24 +68,6 @@ interface EventMessageComposerProps {
   requestId?: string;
   users: UserOption[];
   onSaved?: () => void | Promise<void>;
-}
-
-function normalizeEditorText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function htmlToText(html: string) {
-  const container = document.createElement("div");
-  container.innerHTML = html;
-  return normalizeEditorText(container.innerText);
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function textToHtml(value: string) {
-  return escapeHtml(value).replace(/\n/g, "<br />");
 }
 
 export function EventMessageComposer({ requestId, users, onSaved }: EventMessageComposerProps) {
@@ -101,9 +97,9 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
           return;
         }
         signatureHtmlRef.current = signature.htmlSignature;
-        signatureTextRef.current = htmlToText(signature.htmlSignature);
+        signatureTextRef.current = htmlToEditorText(signature.htmlSignature);
         if (signature.useSignatureByDefault && !editorRef.current.innerText.trim() && !editorRef.current.innerHTML.trim()) {
-          editorRef.current.innerHTML = signature.htmlSignature;
+          editorRef.current.innerHTML = composeEditorHtml("", signature.htmlSignature);
         }
       })
       .catch(() => undefined);
@@ -146,60 +142,21 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
     setDraftText(getEditorText());
   }
 
-  function insertHtml(html: string) {
-    removeInlineAutocomplete();
-    setAutocompleteSuggestion("");
-    editorRef.current?.focus();
-    document.execCommand("insertHTML", false, html);
-    setDraftText(getEditorText());
-  }
-
   function getEditorText() {
     const editor = editorRef.current;
-    if (!editor) return "";
-    const clone = editor.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
-    return clone.innerText.trim();
+    return editor ? readEditorText(editor) : "";
   }
 
   function getEditorTextWithoutSignature() {
-    return stripSignatureFromText(getEditorText());
+    return editorRef.current ? readEditorTextWithoutSignature(editorRef.current, signatureTextRef.current) : "";
   }
 
   function stripSignatureFromText(value: string) {
-    const signatureText = signatureTextRef.current;
-    const text = value.trim();
-    if (!signatureText) {
-      return text;
-    }
-
-    const normalizedText = normalizeEditorText(text);
-    const normalizedSignature = normalizeEditorText(signatureText);
-    if (!normalizedSignature || !normalizedText.endsWith(normalizedSignature)) {
-      return text;
-    }
-
-    const lines = text.split(/\r?\n/);
-    for (let index = 0; index < lines.length; index += 1) {
-      const remaining = normalizeEditorText(lines.slice(index).join("\n"));
-      if (remaining === normalizedSignature) {
-        return lines.slice(0, index).join("\n").trim();
-      }
-    }
-
-    return normalizedText === normalizedSignature ? "" : text;
+    return stripLegacySignature(value, signatureTextRef.current);
   }
 
   function composeDraftWithSignature(draft: string) {
-    const signatureHtml = signatureHtmlRef.current.trim();
-    const normalizedDraft = draft.trim();
-    if (!signatureHtml) {
-      return textToHtml(normalizedDraft);
-    }
-    if (!normalizedDraft) {
-      return signatureHtml;
-    }
-    return `${textToHtml(normalizedDraft)}<br /><br />${signatureHtml}`;
+    return composeEditorHtml(draft, signatureHtmlRef.current);
   }
 
   function getTextBeforeCursor() {
@@ -215,6 +172,7 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
     const container = document.createElement("div");
     container.appendChild(range.cloneContents());
     container.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
+    container.querySelectorAll(EDITOR_SIGNATURE_SELECTOR).forEach((node) => node.remove());
     const text = container.innerText.trimStart();
     const rawText = container.textContent ?? "";
     return /\s$/.test(rawText) && !/\s$/.test(text) ? `${text} ` : text;
@@ -233,6 +191,7 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
     const container = document.createElement("div");
     container.appendChild(range.cloneContents());
     container.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
+    container.querySelectorAll(EDITOR_SIGNATURE_SELECTOR).forEach((node) => node.remove());
     return container.innerText.trim();
   }
 
@@ -264,6 +223,10 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
   }
 
   function isCursorAfterSignature() {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (editor?.querySelector(EDITOR_SIGNATURE_SELECTOR)) return isSelectionAtOrAfterSignature(editor, selection);
+
     const signatureText = signatureTextRef.current;
     if (!signatureText) {
       return false;
@@ -322,9 +285,19 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
     const node = getInlineAutocompleteNode();
     if ((!autocompleteSuggestion && !node) || !editorRef.current) return;
     const acceptedText = normalizeAcceptedAutocomplete(node?.textContent ?? autocompleteSuggestion);
-    node?.remove();
+    const range = document.createRange();
+    if (node) {
+      range.setStartBefore(node);
+      range.collapse(true);
+      node.remove();
+    } else {
+      const savedRange = captureEditorSelection(editorRef.current, window.getSelection());
+      if (!savedRange) return;
+      range.setStart(savedRange.startContainer, savedRange.startOffset);
+      range.collapse(true);
+    }
     editorRef.current.focus();
-    document.execCommand("insertText", false, acceptedText);
+    replaceEditorRangeWithText(editorRef.current, range, acceptedText);
     setAutocompleteSuggestion("");
     setDraftText(getEditorText());
   }
@@ -385,8 +358,7 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
   }
 
   function selectionIncludesSignature(value: string) {
-    const signatureText = signatureTextRef.current;
-    return Boolean(signatureText && normalizeEditorText(value).endsWith(normalizeEditorText(signatureText)));
+    return Boolean(value && editorRef.current && selectionIntersectsSignature(editorRef.current, window.getSelection()));
   }
 
   async function uploadPastedImage(file: File, index: number) {
@@ -450,6 +422,7 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
       setError("Select only the draft text above your signature before running this AI tool.");
       return;
     }
+    const selectedRange = selectedText ? captureEditorSelection(editorRef.current, window.getSelection()) : null;
     const draft = selectedText || getEditorTextWithoutSignature();
     if (action !== "suggest-reply" && !draft) {
       setError(action === "paraphrase" ? "Select text to paraphrase or write a draft first." : "Write a draft first.");
@@ -464,7 +437,9 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
       });
       const resultText = stripSignatureFromText(result.text);
       if (selectedText) {
-        document.execCommand("insertText", false, resultText);
+        if (!selectedRange || !replaceEditorRangeWithText(editorRef.current, selectedRange, resultText)) {
+          throw new Error("The selected text changed before the AI result was ready. Please select it again.");
+        }
       } else {
         removeInlineAutocomplete();
         editorRef.current.innerHTML = composeDraftWithSignature(resultText);
@@ -619,7 +594,14 @@ export function EventMessageComposer({ requestId, users, onSaved }: EventMessage
         </div>
       </div>
       <div className="editor-toolbar editor-submit-toolbar">
-        <SignatureInserter onInsert={insertHtml} />
+        <SignatureInserter onInsert={(html) => {
+          if (!editorRef.current) return;
+          clearAutocomplete();
+          signatureHtmlRef.current = html;
+          signatureTextRef.current = htmlToEditorText(html);
+          setEditorSignature(editorRef.current, html);
+          setDraftText(getEditorText());
+        }} />
         {users.length ? (
           <div className="notify-picker">
             <strong>Notify</strong>

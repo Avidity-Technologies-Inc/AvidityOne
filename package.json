@@ -19,12 +19,14 @@
     "lint:api": "npm --workspace @avidity/api run lint",
     "lint:web": "npm --workspace @avidity/web run lint",
     "test": "npm --workspace @avidity/api run test",
+    "test:browser": "playwright test",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts",
     "prisma:studio": "prisma studio --schema prisma/schema.prisma"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/node": "^22.10.1",
     "dotenv": "^16.4.5",
     "npm-run-all": "^4.1.5",

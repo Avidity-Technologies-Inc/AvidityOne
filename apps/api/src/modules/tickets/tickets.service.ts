@@ -1137,7 +1137,7 @@ export class TicketsService {
       organizationId: input.organizationId
     });
     const bodyText = input.bodyText?.trim() || "Inbound email did not include a plain text body.";
-    const sanitizedBodyHtml = input.bodyHtml ? this.htmlSanitizer.sanitize(input.bodyHtml) : null;
+    const sanitizedBodyHtml = input.bodyHtml ? this.sanitizeTicketMessageHtml(input.bodyHtml) : null;
     const existingTicket = await this.findExistingTicketForInbound(input);
 
     if (existingTicket) {
@@ -2031,7 +2031,7 @@ export class TicketsService {
 
     const isInternal = input.visibility === "internal";
     const action = input.action ?? (isInternal ? "save_note" : "send");
-    const sanitizedBodyHtml = input.bodyHtml ? this.htmlSanitizer.sanitize(input.bodyHtml) : null;
+    const sanitizedBodyHtml = input.bodyHtml ? this.sanitizeTicketMessageHtml(input.bodyHtml) : null;
     const internalCcUsers = isInternal ? await this.resolveInternalCcUsers(input.ccUserIds ?? [], user.organizationId) : [];
     if (isInternal && (input.ccEmails?.length ?? 0) > 0) {
       throw new BadRequestException("Internal notes can only CC internal users.");
@@ -3031,5 +3031,12 @@ export class TicketsService {
   private optionalTrim(value: string | null | undefined) {
     const trimmed = value?.trim();
     return trimmed ? trimmed : null;
+  }
+
+  private sanitizeTicketMessageHtml(value: string) {
+    const emailSanitizer = (this.htmlSanitizer as HtmlSanitizerService & { sanitizeEmail?: (input: string) => string }).sanitizeEmail;
+    return typeof emailSanitizer === "function"
+      ? emailSanitizer.call(this.htmlSanitizer, value)
+      : this.htmlSanitizer.sanitize(value);
   }
 }

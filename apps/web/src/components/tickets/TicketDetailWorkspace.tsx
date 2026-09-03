@@ -6,6 +6,7 @@ import { ArrowDown, ArrowLeft, ArrowUp, BookOpen, ChevronDown, ChevronUp, Circle
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { apiBaseUrl, apiFetch } from "@/lib/api";
+import { enhanceEmailMessageBody, splitPlainMessage } from "@/lib/message-content";
 import { TicketStatusDefinition, ticketStatusDefinition, ticketStatusName, ticketStatusStyle } from "@/lib/ticket-statuses";
 import { AssignableTicketUser, TicketAssigneePicker } from "./TicketAssigneePicker";
 import { TicketReplyEditor } from "./TicketReplyEditor";
@@ -1009,7 +1010,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
                   {message.sanitizedBodyHtml ? (
                     <CollapsibleMessageBody html={renderMessageHtml(ticketRef, message.sanitizedBodyHtml, mergeAttachments(message.attachments, ticket.attachments))} />
                   ) : (
-                    <p>{message.bodyText}</p>
+                    <CollapsiblePlainTextBody text={message.bodyText} />
                   )}
                   <MessageAttachments
                     ticketId={ticketRef}
@@ -1398,28 +1399,38 @@ function dedupeInlineAttachments(attachments: TicketAttachment[]) {
 
 function CollapsibleMessageBody({ html }: { html: string }) {
   const bodyRef = useRef<HTMLDivElement>(null);
+  const enhancedHtmlRef = useRef<string | null>(null);
 
   useEffect(() => {
     const body = bodyRef.current;
-    if (!body) return;
-
-    const selectors = "blockquote, .gmail_quote, .gmail_signature, [id^='divRplyFwdMsg']";
-    const candidates = Array.from(body.querySelectorAll<HTMLElement>(selectors));
-    const topLevelCandidates = candidates.filter((candidate) => !candidate.parentElement?.closest(selectors));
-    topLevelCandidates.forEach((candidate) => wrapMessageSection(candidate, candidate.matches(".gmail_signature") ? "Show signature" : "Show quoted history"));
-
-    const hasQuotedSection = topLevelCandidates.some((candidate) => !candidate.matches(".gmail_signature"));
-    if (!hasQuotedSection) {
-      const outlookHeaderPattern = /\bFrom:\s+[\s\S]{0,600}?\bSent:\s+[\s\S]{0,600}?\bTo:\s+[\s\S]{0,600}?\bSubject:/i;
-      const outlookHeader = Array.from(body.querySelectorAll<HTMLElement>("div, p, table"))
-        .filter((candidate) => !candidate.closest("details") && outlookHeaderPattern.test(candidate.textContent ?? ""))
-        .sort((left, right) => (left.textContent?.length ?? 0) - (right.textContent?.length ?? 0))[0];
-
-      if (outlookHeader) wrapMessageSection(outlookHeader, "Show quoted history", true);
-    }
+    if (!body || enhancedHtmlRef.current === html) return;
+    enhanceEmailMessageBody(body);
+    enhancedHtmlRef.current = html;
   }, [html]);
 
   return <div className="message-body" ref={bodyRef} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function CollapsiblePlainTextBody({ text }: { text: string }) {
+  const sections = splitPlainMessage(text);
+
+  return (
+    <div className="message-body message-plain-body">
+      {sections.main ? <div className="message-plain-text">{sections.main}</div> : null}
+      {sections.signature ? (
+        <details className="message-collapsible message-signature-collapsible">
+          <summary>Show signature</summary>
+          <div className="message-plain-text">{sections.signature}</div>
+        </details>
+      ) : null}
+      {sections.quote ? (
+        <details className="message-collapsible">
+          <summary>Show quoted history</summary>
+          <div className="message-plain-text">{sections.quote}</div>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 function TicketGoalList({ icon, title, items, emptyLabel }: { icon: ReactNode; title: string; items: string[]; emptyLabel?: string }) {
@@ -1427,19 +1438,6 @@ function TicketGoalList({ icon, title, items, emptyLabel }: { icon: ReactNode; t
     <span>{icon}{title}</span>
     {items.length > 0 ? <ol>{items.map((item) => <li key={item}>{item}</li>)}</ol> : <p className="muted">{emptyLabel ?? "No recommendations generated."}</p>}
   </section>;
-}
-
-function wrapMessageSection(candidate: HTMLElement, labelText: string, includeFollowingSiblings = false) {
-  const details = document.createElement("details");
-  details.className = "message-collapsible";
-  const summary = document.createElement("summary");
-  summary.textContent = labelText;
-  candidate.before(details);
-  details.append(summary, candidate);
-
-  if (includeFollowingSiblings) {
-    while (details.nextSibling) details.append(details.nextSibling);
-  }
 }
 
 function cleanContentId(value: string | null) {

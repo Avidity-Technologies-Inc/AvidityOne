@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException } from "@nestjs/common";
-import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig } from "./ai-provider.interface";
+import { AiProviderInput, AiProviderPort, AiProviderResult, AiProviderRuntimeConfig, buildAiUserPrompt } from "./ai-provider.interface";
 
 @Injectable()
 export class OllamaProvider implements AiProviderPort {
@@ -17,7 +17,7 @@ export class OllamaProvider implements AiProviderPort {
         },
         messages: [
           { role: "system", content: input.systemPrompt ?? "You assist IT support technicians with concise, safe, customer-ready writing." },
-          { role: "user", content: [`Action: ${input.action}`, input.draft ? `Draft:\n${input.draft}` : null, `Ticket context:\n${input.ticketContext}`].filter(Boolean).join("\n\n") }
+          { role: "user", content: buildAiUserPrompt(input) }
         ]
       }),
       signal: AbortSignal.timeout(config.timeoutMs)

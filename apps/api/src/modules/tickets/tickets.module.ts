@@ -18,6 +18,6 @@ import { TicketsService } from "./tickets.service";
   imports: [AuthModule, AuditLogsModule, ContactsModule, ExternalSpecialistsModule, TicketRoutingModule, TicketWorkflowModule, MailTransportModule, NotificationsModule, AutoRepliesModule],
   controllers: [TicketsController, SupportPortalController],
   providers: [TicketsService, SupportPortalService, HtmlSanitizerService],
-  exports: [TicketsService]
+  exports: [TicketsService, HtmlSanitizerService]
 })
 export class TicketsModule {}

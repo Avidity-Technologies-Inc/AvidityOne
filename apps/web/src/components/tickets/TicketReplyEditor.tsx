@@ -19,6 +19,22 @@ import {
 } from "lucide-react";
 import { ClipboardEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import {
+  EDITOR_SIGNATURE_SELECTOR,
+  INLINE_AUTOCOMPLETE_CLASS,
+  captureEditorSelection,
+  composeEditorHtml,
+  getEditorText as readEditorText,
+  getEditorTextWithoutSignature as readEditorTextWithoutSignature,
+  htmlToEditorText,
+  isSelectionAtOrAfterSignature,
+  markLegacySignature,
+  normalizeEditorText,
+  replaceEditorRangeWithText,
+  selectionIntersectsSignature,
+  setEditorSignature,
+  stripLegacySignature
+} from "@/lib/editor-content";
 import { AttachmentDropzone } from "./AttachmentDropzone";
 import { AttachmentPreviewItem, AttachmentPreviewList } from "./AttachmentPreviewList";
 import { SignatureInserter } from "./SignatureInserter";
@@ -35,27 +51,8 @@ const toolbar = [
   { label: "Remove formatting", icon: RemoveFormatting, command: "removeFormat" }
 ] as const;
 
-const INLINE_AUTOCOMPLETE_CLASS = "ai-inline-suggestion";
 const AUTOCOMPLETE_MIN_CHARS = 12;
 const AUTOCOMPLETE_DELAY_MS = 450;
-
-function normalizeEditorText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function htmlToText(html: string) {
-  const container = document.createElement("div");
-  container.innerHTML = html;
-  return normalizeEditorText(container.innerText);
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function textToHtml(value: string) {
-  return escapeHtml(value).replace(/\n/g, "<br />");
-}
 
 type ComposerAction = "send" | "send_and_close" | "save_note" | "send_note" | "send_note_and_close";
 
@@ -103,7 +100,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
       if (stored) {
         const draft = JSON.parse(stored) as { html?: string; mode?: "public" | "internal"; ccEmails?: string[]; ccUserIds?: string[]; persistCc?: boolean; includePersistentCc?: boolean; followCcUsers?: boolean };
         editorRef.current.innerHTML = draft.html ?? "";
-        setDraftText(htmlToText(draft.html ?? ""));
+        setDraftText(htmlToEditorText(draft.html ?? ""));
         setMode(draft.mode === "internal" ? "internal" : "public");
         setCcEmails(Array.isArray(draft.ccEmails) ? draft.ccEmails : []);
         setCcUserIds(Array.isArray(draft.ccUserIds) ? draft.ccUserIds : []);
@@ -135,7 +132,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     const ccChanged = !includePersistentCc
       || [...ccEmails].sort().join("|") !== persistentEmails.join("|")
       || [...ccUserIds].sort().join("|") !== persistentUserIds.join("|");
-    const hasDraft = Boolean(htmlToText(html) || ccChanged || mode === "internal");
+    const hasDraft = Boolean(readEditorTextWithoutSignature(clone, signatureTextRef.current) || ccChanged || mode === "internal");
     if (!hasDraft) {
       window.localStorage.removeItem(`ticket-reply-draft:${ticketId}`);
       return;
@@ -151,12 +148,13 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
           return;
         }
         signatureHtmlRef.current = signature.htmlSignature;
-        signatureTextRef.current = htmlToText(signature.htmlSignature);
+        signatureTextRef.current = htmlToEditorText(signature.htmlSignature);
+        markLegacySignature(editorRef.current, signature.htmlSignature);
         if (!signature.useSignatureByDefault) {
           return;
         }
         if (!editorRef.current.innerText.trim() && !editorRef.current.innerHTML.trim()) {
-          editorRef.current.innerHTML = signature.htmlSignature;
+          editorRef.current.innerHTML = composeEditorHtml("", signature.htmlSignature);
         }
       })
       .catch(() => undefined);
@@ -171,7 +169,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     if (getEditorTextWithoutSignature() && !window.confirm("Replace the current reply draft with the AI suggestion?")) return;
 
     clearWritingSuggestions();
-    editorRef.current.innerHTML = composeDraftWithSignature(insertRequest.text);
+    editorRef.current.innerHTML = composeEditorHtml(insertRequest.text, signatureHtmlRef.current);
     setDraftText(getEditorText());
     editorRef.current.focus();
   // The request id intentionally drives each explicit insertion action.
@@ -220,63 +218,21 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     setDraftText(getEditorText());
   }
 
-  function insertHtml(html: string) {
-    removeInlineAutocomplete();
-    setAutocompleteSuggestion("");
-    editorRef.current?.focus();
-    document.execCommand("insertHTML", false, html);
-    setDraftText(getEditorText());
-  }
-
   function getEditorText() {
     const editor = editorRef.current;
-    if (!editor) {
-      return "";
-    }
-
-    const clone = editor.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
-    return clone.innerText.trim();
+    return editor ? readEditorText(editor) : "";
   }
 
   function getEditorTextWithoutSignature() {
-    return stripSignatureFromText(getEditorText());
+    return editorRef.current ? readEditorTextWithoutSignature(editorRef.current, signatureTextRef.current) : "";
   }
 
   function stripSignatureFromText(value: string) {
-    const signatureText = signatureTextRef.current;
-    const text = value.trim();
-    if (!signatureText) {
-      return text;
-    }
-
-    const normalizedText = normalizeEditorText(text);
-    const normalizedSignature = normalizeEditorText(signatureText);
-    if (!normalizedSignature || !normalizedText.endsWith(normalizedSignature)) {
-      return text;
-    }
-
-    const lines = text.split(/\r?\n/);
-    for (let index = 0; index < lines.length; index += 1) {
-      const remaining = normalizeEditorText(lines.slice(index).join("\n"));
-      if (remaining === normalizedSignature) {
-        return lines.slice(0, index).join("\n").trim();
-      }
-    }
-
-    return normalizedText === normalizedSignature ? "" : text;
+    return stripLegacySignature(value, signatureTextRef.current);
   }
 
   function composeDraftWithSignature(draft: string) {
-    const signatureHtml = signatureHtmlRef.current.trim();
-    const normalizedDraft = draft.trim();
-    if (!signatureHtml) {
-      return textToHtml(normalizedDraft);
-    }
-    if (!normalizedDraft) {
-      return signatureHtml;
-    }
-    return `${textToHtml(normalizedDraft)}<br /><br />${signatureHtml}`;
+    return composeEditorHtml(draft, signatureHtmlRef.current);
   }
 
   function getTextBeforeCursor() {
@@ -294,6 +250,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     const container = document.createElement("div");
     container.appendChild(fragment);
     container.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
+    container.querySelectorAll(EDITOR_SIGNATURE_SELECTOR).forEach((node) => node.remove());
     const text = container.innerText.trimStart();
     const rawText = container.textContent ?? "";
     return /\s$/.test(rawText) && !/\s$/.test(text) ? `${text} ` : text;
@@ -314,6 +271,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     const container = document.createElement("div");
     container.appendChild(fragment);
     container.querySelectorAll(`.${INLINE_AUTOCOMPLETE_CLASS}`).forEach((node) => node.remove());
+    container.querySelectorAll(EDITOR_SIGNATURE_SELECTOR).forEach((node) => node.remove());
     return container.innerText.trim();
   }
 
@@ -355,6 +313,10 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
   }
 
   function isCursorAfterSignature() {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (editor?.querySelector(EDITOR_SIGNATURE_SELECTOR)) return isSelectionAtOrAfterSignature(editor, selection);
+
     const signatureText = signatureTextRef.current;
     if (!signatureText) {
       return false;
@@ -420,9 +382,19 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     }
 
     const acceptedText = normalizeAcceptedAutocomplete(node?.textContent ?? autocompleteSuggestion);
-    node?.remove();
+    const range = document.createRange();
+    if (node) {
+      range.setStartBefore(node);
+      range.collapse(true);
+      node.remove();
+    } else {
+      const savedRange = captureEditorSelection(editorRef.current, window.getSelection());
+      if (!savedRange) return;
+      range.setStart(savedRange.startContainer, savedRange.startOffset);
+      range.collapse(true);
+    }
     editorRef.current.focus();
-    document.execCommand("insertText", false, acceptedText);
+    replaceEditorRangeWithText(editorRef.current, range, acceptedText);
     setAutocompleteSuggestion("");
     setDraftText(getEditorText());
   }
@@ -478,8 +450,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
   }
 
   function selectionIncludesSignature(value: string) {
-    const signatureText = signatureTextRef.current;
-    return Boolean(signatureText && normalizeEditorText(value).endsWith(normalizeEditorText(signatureText)));
+    return Boolean(value && editorRef.current && selectionIntersectsSignature(editorRef.current, window.getSelection()));
   }
 
   function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
@@ -693,6 +664,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
       setError("Select only the draft text above your signature before running this AI tool.");
       return;
     }
+    const selectedRange = selectedText ? captureEditorSelection(editorRef.current, window.getSelection()) : null;
     const draft = selectedText || getEditorTextWithoutSignature();
     if (action !== "suggest-reply" && !draft) {
       setError(action === "paraphrase" ? "Select text to paraphrase or write a draft first." : "Write a draft first.");
@@ -709,7 +681,9 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
 
       const resultText = stripSignatureFromText(result.text);
       if (selectedText) {
-        document.execCommand("insertText", false, resultText);
+        if (!selectedRange || !replaceEditorRangeWithText(editorRef.current, selectedRange, resultText)) {
+          throw new Error("The selected text changed before the AI result was ready. Please select it again.");
+        }
       } else {
         removeInlineAutocomplete();
         editorRef.current.innerHTML = composeDraftWithSignature(resultText);
@@ -898,7 +872,14 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
         </div>
       </details>
       <div className="editor-toolbar editor-submit-toolbar">
-        <SignatureInserter onInsert={insertHtml} />
+        <SignatureInserter onInsert={(html) => {
+          if (!editorRef.current) return;
+          clearWritingSuggestions();
+          signatureHtmlRef.current = html;
+          signatureTextRef.current = htmlToEditorText(html);
+          setEditorSignature(editorRef.current, html);
+          setDraftText(getEditorText());
+        }} />
         {error ? <span className="error">{error}</span> : null}
         <div className="split-action">
           <button className="button split-action-main" type="button" onClick={() => submitMessage()} disabled={saving || !ticketId}>
