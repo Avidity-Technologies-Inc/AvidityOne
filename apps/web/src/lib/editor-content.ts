@@ -99,7 +99,21 @@ export function selectionIntersectsSignature(editor: HTMLElement, selection: Sel
   const range = selection.getRangeAt(0);
   if (!editor.contains(range.commonAncestorContainer)) return false;
   try {
-    return range.intersectsNode(signature);
+    const textNodes = document.createTreeWalker(signature, NodeFilter.SHOW_TEXT);
+    let textNode = textNodes.nextNode();
+    while (textNode) {
+      if (textNode.textContent) {
+        const textRange = document.createRange();
+        textRange.selectNodeContents(textNode);
+        const overlapsText = range.compareBoundaryPoints(Range.START_TO_END, textRange) > 0
+          && range.compareBoundaryPoints(Range.END_TO_START, textRange) < 0;
+        if (overlapsText) return true;
+      }
+      textNode = textNodes.nextNode();
+    }
+
+    return Array.from(signature.querySelectorAll("img, svg, canvas, video, audio, iframe, object, embed, hr"))
+      .some((node) => range.intersectsNode(node));
   } catch {
     return false;
   }
@@ -120,7 +134,22 @@ export function captureEditorSelection(editor: HTMLElement, selection: Selection
   if (!selection?.rangeCount) return null;
   const range = selection.getRangeAt(0);
   if (!editor.contains(range.commonAncestorContainer)) return null;
-  return range.cloneRange();
+  const captured = range.cloneRange();
+  const signature = editor.querySelector(EDITOR_SIGNATURE_SELECTOR);
+  if (!signature || selectionIntersectsSignature(editor, selection)) return captured;
+
+  try {
+    if (!captured.intersectsNode(signature)) return captured;
+    const draft = editor.querySelector(EDITOR_DRAFT_SELECTOR);
+    if (draft && (draft === captured.startContainer || draft.contains(captured.startContainer))) {
+      captured.setEnd(draft, draft.childNodes.length);
+    } else {
+      captured.setEndBefore(signature);
+    }
+  } catch {
+    return captured;
+  }
+  return captured;
 }
 
 export function replaceEditorRangeWithText(editor: HTMLElement, range: Range, value: string) {

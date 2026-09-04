@@ -119,6 +119,59 @@ test("replaces a captured selection without modifying the protected signature", 
   expect(result.signature).toBe("Support Team");
 });
 
+test("allows a draft selection whose boundary only touches the signature", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+    const editor = document.querySelector<HTMLElement>("#editor")!;
+    editor.innerHTML = '<div data-editor-draft="true">Draft with teh typo.</div><div data-editor-signature="true" contenteditable="false"><p>Support Team</p></div>';
+    const draft = editor.querySelector<HTMLElement>(api.EDITOR_DRAFT_SELECTOR)!;
+    const draftText = draft.firstChild!;
+    const signature = editor.querySelector<HTMLElement>(api.EDITOR_SIGNATURE_SELECTOR)!;
+    const signatureText = signature.querySelector("p")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(draftText, 0);
+    range.setEnd(signatureText, 0);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const includesSignature = api.selectionIntersectsSignature(editor, selection);
+    const captured = api.captureEditorSelection(editor, selection)!;
+    const replaced = api.replaceEditorRangeWithText(editor, captured, "Draft with the typo.");
+    return {
+      includesSignature,
+      replaced,
+      draft: draft.textContent,
+      signature: signature.textContent,
+      signatureProtected: signature.getAttribute("contenteditable")
+    };
+  });
+
+  expect(result.includesSignature).toBe(false);
+  expect(result.replaced).toBe(true);
+  expect(result.draft).toBe("Draft with the typo.");
+  expect(result.signature).toBe("Support Team");
+  expect(result.signatureProtected).toBe("false");
+});
+
+test("rejects a selection containing actual signature text", async ({ page }) => {
+  const includesSignature = await page.evaluate(() => {
+    const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+    const editor = document.querySelector<HTMLElement>("#editor")!;
+    editor.innerHTML = '<div data-editor-draft="true">Draft text</div><div data-editor-signature="true" contenteditable="false"><p>Support Team</p></div>';
+    const draft = editor.querySelector<HTMLElement>(api.EDITOR_DRAFT_SELECTOR)!;
+    const signature = editor.querySelector<HTMLElement>(api.EDITOR_SIGNATURE_SELECTOR)!;
+    const range = document.createRange();
+    range.setStart(draft.firstChild!, 0);
+    range.setEnd(signature.querySelector("p")!.firstChild!, 1);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return api.selectionIntersectsSignature(editor, selection);
+  });
+
+  expect(includesSignature).toBe(true);
+});
+
 test("detects a caret at or after the protected signature", async ({ page }) => {
   const result = await page.evaluate(() => {
     const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
