@@ -79,6 +79,33 @@ enum TicketSource {
   SYSTEM
 }
 
+enum TicketMeetingStatus {
+  DRAFT
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum CalendarSyncStatus {
+  NOT_SYNCED
+  PENDING
+  SYNCED
+  FAILED
+}
+
+enum MeetingAttendeeType {
+  REQUIRED
+  OPTIONAL
+}
+
+enum MeetingAttendeeSource {
+  REQUESTER
+  CONVERSATION_PARTICIPANT
+  INTERNAL_USER
+  CONTACT
+  MANUAL
+}
+
 enum SpamBlockType {
   EMAIL
   DOMAIN
@@ -313,6 +340,7 @@ model Organization {
   clients        Client[]
   mailboxes      Mailbox[]
   tickets        Ticket[]
+  ticketMeetings TicketMeeting[]
   ticketStatusDefinitions TicketStatusDefinition[]
   ticketWorkflowRules TicketWorkflowRule[]
   ticketTeams    TicketTeam[]
@@ -549,6 +577,11 @@ model User {
   ticketConversationParticipations TicketConversationParticipant[] @relation("TicketConversationParticipantUser")
   addedTicketConversationParticipants TicketConversationParticipant[] @relation("TicketConversationParticipantAddedBy")
   removedTicketConversationParticipants TicketConversationParticipant[] @relation("TicketConversationParticipantRemovedBy")
+  organizedTicketMeetings TicketMeeting[] @relation("TicketMeetingOrganizer")
+  createdTicketMeetings TicketMeeting[] @relation("TicketMeetingCreatedBy")
+  updatedTicketMeetings TicketMeeting[] @relation("TicketMeetingUpdatedBy")
+  ticketMeetingAttendances TicketMeetingAttendee[] @relation("TicketMeetingAttendeeUser")
+  ticketActivity TicketActivity[]
   ticketTeamMemberships TicketTeamMember[]
   notificationPreference UserNotificationPreference?
   notifications       Notification[]
@@ -902,6 +935,7 @@ model Contact {
   tickets               Ticket[]
   eventServiceRequests  EventServiceRequest[]
   ticketConversationParticipations TicketConversationParticipant[]
+  ticketMeetingAttendances TicketMeetingAttendee[]
 
   @@unique([clientId, email])
   @@index([email])
@@ -1012,6 +1046,8 @@ model Ticket {
   externalSpecialists        TicketExternalSpecialist[]
   watchers                   TicketWatcher[]
   conversationParticipants   TicketConversationParticipant[]
+  meetings                   TicketMeeting[]
+  activity                   TicketActivity[]
   notifications              Notification[]
   aiRequestLogs              AiRequestLog[]
   aiAnalyses                 TicketAiAnalysis[]
@@ -1265,6 +1301,93 @@ model TicketConversationParticipant {
   @@index([userId])
   @@index([contactId])
   @@map("ticket_conversation_participants")
+}
+
+model TicketMeeting {
+  id                     String               @id @default(uuid()) @db.Uuid
+  organizationId         String               @db.Uuid
+  ticketId               String               @db.Uuid
+  organizerUserId        String?              @db.Uuid
+  createdByUserId        String?              @db.Uuid
+  updatedByUserId        String?              @db.Uuid
+  title                  String
+  agenda                 String?
+  startAt                DateTime
+  endAt                  DateTime
+  timeZone               String
+  location               String?
+  isOnlineMeeting        Boolean              @default(false)
+  status                 TicketMeetingStatus  @default(DRAFT)
+  syncStatus             CalendarSyncStatus   @default(NOT_SYNCED)
+  organizerCalendarEmail String?
+  providerEventId        String?
+  transactionId          String               @unique @default(uuid()) @db.Uuid
+  providerChangeKey      String?
+  providerICalUId        String?
+  providerWebLink        String?
+  onlineMeetingJoinUrl   String?
+  syncError              String?
+  syncAttemptedAt        DateTime?
+  syncedAt               DateTime?
+  cancelledAt            DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  organization           Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ticket                 Ticket               @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  organizer              User?                @relation("TicketMeetingOrganizer", fields: [organizerUserId], references: [id], onDelete: SetNull)
+  createdBy              User?                @relation("TicketMeetingCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy              User?                @relation("TicketMeetingUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  attendees              TicketMeetingAttendee[]
+  activity               TicketActivity[]
+
+  @@index([organizationId, startAt])
+  @@index([ticketId, startAt])
+  @@index([organizerUserId, startAt])
+  @@index([syncStatus, syncAttemptedAt])
+  @@index([providerEventId])
+  @@map("ticket_meetings")
+}
+
+model TicketMeetingAttendee {
+  id             String                @id @default(uuid()) @db.Uuid
+  meetingId      String                @db.Uuid
+  userId         String?               @db.Uuid
+  contactId      String?               @db.Uuid
+  email          String
+  displayName    String?
+  type           MeetingAttendeeType   @default(REQUIRED)
+  source         MeetingAttendeeSource @default(MANUAL)
+  responseStatus String?
+  responseAt     DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  meeting        TicketMeeting         @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user           User?                 @relation("TicketMeetingAttendeeUser", fields: [userId], references: [id], onDelete: SetNull)
+  contact        Contact?              @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@unique([meetingId, email])
+  @@index([userId])
+  @@index([contactId])
+  @@map("ticket_meeting_attendees")
+}
+
+model TicketActivity {
+  id              String         @id @default(uuid()) @db.Uuid
+  ticketId        String         @db.Uuid
+  userId          String?        @db.Uuid
+  ticketMeetingId String?        @db.Uuid
+  action          String
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  ticket          Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user            User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ticketMeeting   TicketMeeting? @relation(fields: [ticketMeetingId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([userId])
+  @@index([ticketMeetingId])
+  @@map("ticket_activity")
 }
 
 model Notification {

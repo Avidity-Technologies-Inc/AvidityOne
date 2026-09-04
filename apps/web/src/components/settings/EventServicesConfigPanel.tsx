@@ -662,14 +662,14 @@ export function EventServicesConfigPanel() {
         <div className="nested-panel settings-section">
           <div className="section-heading">
             <div>
-              <h3>Microsoft Calendar Sync</h3>
-              <p className="muted">Allow event tasks to be added to the assigned specialist's Microsoft calendar on demand.</p>
+              <h3>Microsoft Calendar & Ticket Meetings</h3>
+              <p className="muted">Shared Microsoft 365 connection for event tasks and ticket meetings. Calendar writes happen only after an explicit user action.</p>
             </div>
             <span className="status-pill">{calendarSettings.eventCalendarSyncEnabled ? "Enabled" : "Disabled"}</span>
           </div>
           <label className="checkbox-row">
             <input type="checkbox" checked={calendarSettings.eventCalendarSyncEnabled} onChange={(event) => setCalendarSettings((current) => ({ ...current, eventCalendarSyncEnabled: event.target.checked }))} />
-            Enable task calendar sync
+            Enable Microsoft calendar sync and ticket meeting invitations
           </label>
           <div className="grid columns-2">
             <label className="field">
@@ -706,7 +706,7 @@ export function EventServicesConfigPanel() {
             </label>
             <p className="muted">Available placeholders: {"{{specialistName}}"}, {"{{taskTitle}}"}, {"{{eventName}}"}, {"{{trackingNumber}}"}, {"{{dateTime}}"}, {"{{location}}"}, {"{{notes}}"}, {"{{googleCalendarLink}}"}, {"{{outlookCalendarLink}}"}.</p>
           </div>
-          <p className="muted">Use environment variable references for secrets. Calendar events are created only when a specialist chooses to sync a task.</p>
+          <p className="muted">Use environment variable references for secrets. Microsoft Graph requires Calendars.ReadWrite application permission with administrator consent; scope the app to approved organizer mailboxes.</p>
           <button className="button" type="button" onClick={saveCalendarSettings} disabled={busy === "calendar"}>Save Calendar Sync</button>
         </div>
       ) : null}

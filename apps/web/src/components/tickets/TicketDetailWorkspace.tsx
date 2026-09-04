@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowLeft, ArrowUp, BookOpen, ChevronDown, ChevronUp, CircleHelp, Download, ExternalLink, Eye, Files, GitMerge, Info, ListChecks, MessageSquareReply, Plus, RefreshCcw, Save, Search, ShieldAlert, Sparkles, Target, Trash2, UsersRound, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, BookOpen, CalendarClock, ChevronDown, ChevronUp, CircleHelp, Download, ExternalLink, Eye, Files, GitMerge, Info, ListChecks, MessageSquareReply, Plus, RefreshCcw, Save, Search, ShieldAlert, Sparkles, Target, Trash2, UsersRound, Video, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { apiBaseUrl, apiFetch } from "@/lib/api";
@@ -10,6 +10,7 @@ import { enhanceEmailMessageBody, splitPlainMessage } from "@/lib/message-conten
 import { TicketStatusDefinition, ticketStatusDefinition, ticketStatusName, ticketStatusStyle } from "@/lib/ticket-statuses";
 import { AssignableTicketUser, TicketAssigneePicker } from "./TicketAssigneePicker";
 import { TicketReplyEditor } from "./TicketReplyEditor";
+import { TicketMeetingActivity, TicketMeetingCollection, TicketMeetingDrawer } from "./TicketMeetingDrawer";
 
 interface User {
   id: string;
@@ -252,6 +253,9 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
   const [externalAssignmentId, setExternalAssignmentId] = useState("");
   const [externalDraft, setExternalDraft] = useState({ name: "", email: "", phone: "", company: "" });
   const [externalCreateOpen, setExternalCreateOpen] = useState(false);
+  const [meetingData, setMeetingData] = useState<TicketMeetingCollection | null>(null);
+  const [meetingDrawerOpen, setMeetingDrawerOpen] = useState(false);
+  const [meetingTargetId, setMeetingTargetId] = useState<string | null>(null);
   const [sideTab, setSideTab] = useState<"DETAILS" | "GOAL" | "ASSIGNMENT" | "FILES">("DETAILS");
   const [composerCollapsed, setComposerCollapsed] = useState(false);
   const [composerScrollState, setComposerScrollState] = useState<"NORMAL" | "PINNED" | "HIDDEN">("NORMAL");
@@ -332,14 +336,19 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       mailDeliveryAcceptedAt: null
     }];
   }, [ticket]);
-  const displayedMessages = useMemo(() => {
+  const displayedTimeline = useMemo(() => {
     const query = messageSearch.trim().toLowerCase();
-    return [...conversationMessages].reverse().filter((message) => {
+    return [
+      ...conversationMessages.map((message) => ({ kind: "MESSAGE" as const, id: message.id, createdAt: message.createdAt, message })),
+      ...(meetingData?.activity ?? []).map((activity) => ({ kind: "MEETING" as const, id: activity.id, createdAt: activity.createdAt, activity }))
+    ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()).filter((item) => {
       if (!query) return true;
+      if (item.kind === "MEETING") return `${item.activity.action} ${item.activity.metadata?.title ?? ""} ${item.activity.metadata?.error ?? ""}`.toLowerCase().includes(query);
+      const message = item.message;
       const author = message.authorUser ? `${message.authorUser.firstName} ${message.authorUser.lastName}` : message.authorContact ? `${message.authorContact.firstName} ${message.authorContact.lastName}` : message.senderEmail ?? "";
       return `${author} ${message.bodyText} ${message.ccEmails.join(" ")}`.toLowerCase().includes(query);
     });
-  }, [conversationMessages, messageSearch]);
+  }, [conversationMessages, meetingData?.activity, messageSearch]);
 
   async function load() {
     setLoading(true);
@@ -367,6 +376,11 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       setTicketStatuses(statusData);
       setExternalSpecialists(externalData);
       setCurrentUser(authData.user);
+      if (authData.user.permissions.includes("ticket_meetings.view")) {
+        setMeetingData(await apiFetch<TicketMeetingCollection>(`/tickets/${ticketData.ticketNumber}/meetings`).catch(() => null));
+      } else {
+        setMeetingData(null);
+      }
       void loadAiBrief(ticketData.ticketNumber, authData.user);
       if (ticketData.client?.id) {
         try {
@@ -385,6 +399,11 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadMeetings() {
+    if (!ticket?.ticketNumber || !currentUser?.permissions.includes("ticket_meetings.view")) return;
+    setMeetingData(await apiFetch<TicketMeetingCollection>(`/tickets/${ticket.ticketNumber}/meetings`));
   }
 
   async function loadAiBrief(ticketRef: string, user: CurrentUser) {
@@ -959,7 +978,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           ) : null}
           <div className="panel ticket-conversation-panel">
             <div className="ticket-conversation-heading">
-              <div><h2>Conversation</h2><span>{displayedMessages.length} of {conversationMessages.length}</span></div>
+              <div><h2>Ticket Timeline</h2><span>{displayedTimeline.length} of {conversationMessages.length + (meetingData?.activity.length ?? 0)}</span></div>
               <div className="ticket-conversation-controls">
                 <label><Search size={14} aria-hidden="true" /><input value={messageSearch} onChange={(event) => setMessageSearch(event.target.value)} placeholder="Search conversation" aria-label="Search conversation" /></label>
                 <button className="button secondary icon-button" type="button" onClick={() => scrollConversation("TOP")} title="Newest message" aria-label="Go to newest message"><ArrowUp size={14} aria-hidden="true" /></button>
@@ -968,9 +987,14 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             </div>
             <div className="ticket-conversation-scroll" ref={conversationRef}>
               <div className="timeline ticket-timeline">
-              {conversationMessages.length === 0 ? <p className="ticket-detail-empty">No messages yet.</p> : null}
-              {conversationMessages.length > 0 && displayedMessages.length === 0 ? <p className="ticket-detail-empty">No messages match this search.</p> : null}
-              {displayedMessages.map((message) => (
+              {conversationMessages.length === 0 && !meetingData?.activity.length ? <p className="ticket-detail-empty">No ticket activity yet.</p> : null}
+              {conversationMessages.length + (meetingData?.activity.length ?? 0) > 0 && displayedTimeline.length === 0 ? <p className="ticket-detail-empty">No timeline items match this search.</p> : null}
+              {displayedTimeline.map((item) => {
+                if (item.kind === "MEETING") {
+                  return <TicketMeetingActivityCard activity={item.activity} key={item.id} onOpen={() => { setMeetingTargetId(item.activity.metadata?.meetingId ?? null); setMeetingDrawerOpen(true); }} />;
+                }
+                const message = item.message;
+                return (
                 <article className={`message ${message.direction === "INBOUND" ? "inbound" : "outbound"} ${message.visibility === "INTERNAL" ? "internal" : ""}`} key={message.id}>
                   <header className="message-header">
                     <div className="message-author-block">
@@ -1018,7 +1042,8 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
                     variant="message"
                   />
                 </article>
-              ))}
+                );
+              })}
               </div>
             </div>
           </div>
@@ -1027,6 +1052,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           <div className="panel ticket-rail-panel">
             <div className="ticket-tools-heading"><h3>Ticket Tools</h3>{permissionSet.has("tickets.delete") ? <button className="button danger icon-button" type="button" onClick={() => void deleteCurrentTicket()} disabled={toolBusy === "DELETE"} title="Delete ticket" aria-label="Delete ticket"><Trash2 size={14} aria-hidden="true" /></button> : null}</div>
             <div className="ticket-tools-grid">
+              {permissionSet.has("ticket_meetings.view") ? <button className="button secondary" type="button" onClick={() => { setMeetingTargetId(null); setMeetingDrawerOpen(true); }} disabled={!meetingData} title="Schedule and manage ticket meetings"><CalendarClock size={14} aria-hidden="true" /><span>Meetings{meetingData?.meetings.length ? ` (${meetingData.meetings.length})` : ""}</span></button> : null}
               {permissionSet.has("tickets.merge") ? <button className="button secondary" type="button" onClick={openMergeModal} disabled={isMergedTicket} title="Merge tickets"><GitMerge size={14} aria-hidden="true" /><span>Merge</span></button> : null}
               {permissionSet.has("knowledge_base.create") ? <button className="button secondary" type="button" onClick={() => void createKnowledgeArticleDraft()} disabled={toolBusy === "KB"} title="Create Knowledge Base draft"><BookOpen size={14} aria-hidden="true" /><span>KB Draft</span></button> : null}
               {permissionSet.has("spam.manage") ? <button className="button secondary" type="button" onClick={() => blockSender("EMAIL")} disabled={!ticket.senderEmail || toolBusy === "EMAIL"} title="Block sender"><X size={14} aria-hidden="true" /><span>Sender</span></button> : null}
@@ -1247,6 +1273,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           </div>
         </aside>
       </section>
+      <TicketMeetingDrawer open={meetingDrawerOpen} ticketId={ticketRef} data={meetingData} initialMeetingId={meetingTargetId} users={users} permissions={permissionSet} onClose={() => setMeetingDrawerOpen(false)} onChanged={loadMeetings} />
       {showMergeModal ? (
         <div className="modal-backdrop" role="presentation">
           <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="ticket-detail-merge-modal-title">
@@ -1306,6 +1333,29 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       ) : null}
     </>
   );
+}
+
+function TicketMeetingActivityCard({ activity, onOpen }: { activity: TicketMeetingActivity; onOpen: () => void }) {
+  const title = activity.metadata?.title ?? "Ticket meeting";
+  const action = activity.action.split(".").at(-1)?.replace(/_/g, " ") ?? "updated";
+  const actor = activity.user ? `${activity.user.firstName} ${activity.user.lastName}`.trim() || activity.user.email : "System";
+  let scheduled = "Date not available";
+  if (activity.metadata?.startAt) {
+    try {
+      scheduled = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short", timeZone: activity.metadata.timeZone }).format(new Date(activity.metadata.startAt));
+    } catch {
+      scheduled = new Date(activity.metadata.startAt).toLocaleString();
+    }
+  }
+  return <article className={`ticket-meeting-activity${activity.action.endsWith("sync_failed") ? " failed" : ""}`}>
+    <div className="ticket-meeting-activity-icon">{activity.metadata?.status === "SCHEDULED" ? <Video size={16} aria-hidden="true" /> : <CalendarClock size={16} aria-hidden="true" />}</div>
+    <div>
+      <header><span><strong>{title}</strong><small>Meeting {action}</small></span><time>{new Date(activity.createdAt).toLocaleString()}</time></header>
+      <p>{scheduled} · {activity.metadata?.attendeeCount ?? 0} attendee{activity.metadata?.attendeeCount === 1 ? "" : "s"} · {actor}</p>
+      {activity.metadata?.error ? <p className="ticket-meeting-activity-error">{activity.metadata.error}</p> : null}
+      <button className="button secondary compact-button" type="button" onClick={onOpen}>View Meeting</button>
+    </div>
+  </article>;
 }
 
 function MessageAttachments({

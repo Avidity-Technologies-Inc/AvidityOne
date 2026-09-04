@@ -63,4 +63,6 @@ Reply-To address: support@aviditytechnologies.com
 
 Use the initial sync date in Settings before the first real sync so historical resolved email is not imported. Changing this date clears the stored sync cursor so the next sync starts from that date.
 
-Microsoft Graph application permissions expected for production are `Mail.Read`, `Mail.Send`, and admin consent for the relevant tenant. The mailbox used for outbound sending must have Send As or Send on Behalf permission for the configured public support address.
+Microsoft Graph application permissions expected for production mail are `Mail.Read`, `Mail.Send`, and admin consent for the relevant tenant. The mailbox used for outbound sending must have Send As or Send on Behalf permission for the configured public support address.
+
+Ticket meetings and Event Services calendar synchronization additionally require the Microsoft Graph application permission `Calendars.ReadWrite` with administrator consent. Limit application calendar access to approved organizer mailboxes through Exchange Online App RBAC. Calendar credentials remain stored as environment-variable references, and calendar invitations, updates, and cancellations require an explicit user action.

@@ -45,6 +45,10 @@ export const INITIAL_PERMISSIONS = [
   "tickets.reopen",
   "tickets.merge",
   "tickets.delete",
+  "ticket_meetings.view",
+  "ticket_meetings.create",
+  "ticket_meetings.update",
+  "ticket_meetings.cancel",
   "ticket_statuses.view",
   "ticket_statuses.manage",
   "ticket_workflows.manage",
@@ -126,6 +130,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, readonly string[]> = {
   Technician: INITIAL_PERMISSIONS.filter(
     (permission) =>
       permission.startsWith("tickets.") ||
+      permission.startsWith("ticket_meetings.") ||
       permission === "ticket_statuses.view" ||
       permission === "operations.view" ||
       permission === "projects.view" ||
@@ -145,7 +150,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     (permission) => permission.startsWith("clients.") || permission.startsWith("client_domains.") || permission.startsWith("contacts.") || permission.startsWith("tickets.") || permission === "ticket_statuses.view" || permission.startsWith("ticket_messages.")
   ),
   "Client User": ["tickets.view", "tickets.create", "ticket_statuses.view", "ticket_messages.view", "ticket_messages.create_public", "ticket_attachments.view", "ticket_attachments.upload", "ticket_attachments.download"],
-  Auditor: ["tickets.view", "ticket_statuses.view", "ticket_messages.view", "ticket_attachments.view", "clients.view", "contacts.view", "devices.view", "reports.view", "audit_logs.view"]
+  Auditor: ["tickets.view", "ticket_meetings.view", "ticket_statuses.view", "ticket_messages.view", "ticket_attachments.view", "clients.view", "contacts.view", "devices.view", "reports.view", "audit_logs.view"]
 };
 
 export const BLOCKED_ATTACHMENT_EXTENSIONS = [

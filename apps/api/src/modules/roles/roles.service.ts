@@ -14,6 +14,7 @@ const KNOWN_PERMISSION_NAMES = new Set([
   "client_domains.view", "client_domains.create", "client_domains.update", "client_domains.delete",
   "contacts.view", "contacts.create", "contacts.update", "contacts.delete",
   "tickets.view", "tickets.create", "tickets.update", "tickets.assign", "tickets.reply", "tickets.close", "tickets.reopen", "tickets.merge", "tickets.delete",
+  "ticket_meetings.view", "ticket_meetings.create", "ticket_meetings.update", "ticket_meetings.cancel",
   "ticket_statuses.view", "ticket_statuses.manage", "ticket_workflows.manage",
   "event_services.view", "event_services.create", "event_services.update", "event_services.assign", "event_services.manage_forms", "event_services.delete",
   "external_specialists.view", "external_specialists.manage",
