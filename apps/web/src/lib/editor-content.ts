@@ -1,5 +1,8 @@
 export const INLINE_AUTOCOMPLETE_CLASS = "ai-inline-suggestion";
 export const EDITOR_SIGNATURE_SELECTOR = "[data-editor-signature]";
+export const EDITOR_DRAFT_SELECTOR = "[data-editor-draft]";
+
+const EMPTY_DRAFT_HTML = '<div data-editor-draft="true"><br /></div>';
 
 export function normalizeEditorText(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -21,15 +24,19 @@ export function composeEditorHtml(draft: string, signatureHtml: string) {
   const draftHtml = textToEditorHtml(normalizedDraft);
   if (!signature) return draftHtml;
   const protectedSignature = `<div data-editor-signature="true" contenteditable="false">${signature}</div>`;
-  return normalizedDraft ? `${draftHtml}<br /><br />${protectedSignature}` : protectedSignature;
+  return normalizedDraft ? `${draftHtml}<br /><br />${protectedSignature}` : `${EMPTY_DRAFT_HTML}${protectedSignature}`;
 }
 
 export function markLegacySignature(editor: HTMLElement, signatureHtml: string) {
-  if (editor.querySelector(EDITOR_SIGNATURE_SELECTOR)) return;
+  if (editor.querySelector(EDITOR_SIGNATURE_SELECTOR)) {
+    ensureEditableDraftBeforeSignature(editor);
+    return;
+  }
   const signature = signatureHtml.trim();
   if (!signature || !editor.innerHTML.trim().endsWith(signature)) return;
   const draftHtml = editor.innerHTML.trim().slice(0, -signature.length).replace(/(?:<br\s*\/?>(?:\s|&nbsp;)*){1,2}$/i, "");
   editor.innerHTML = `${draftHtml}${draftHtml ? "<br /><br />" : ""}<div data-editor-signature="true" contenteditable="false">${signature}</div>`;
+  ensureEditableDraftBeforeSignature(editor);
 }
 
 export function setEditorSignature(editor: HTMLElement, signatureHtml: string) {
@@ -51,6 +58,13 @@ export function setEditorSignature(editor: HTMLElement, signatureHtml: string) {
     "beforeend",
     `${hasDraft ? "<br /><br />" : ""}<div data-editor-signature="true" contenteditable="false">${signature}</div>`
   );
+  ensureEditableDraftBeforeSignature(editor);
+}
+
+export function ensureEditableDraftBeforeSignature(editor: HTMLElement) {
+  const signature = editor.querySelector(EDITOR_SIGNATURE_SELECTOR);
+  if (!signature || signature.previousSibling) return;
+  signature.insertAdjacentHTML("beforebegin", EMPTY_DRAFT_HTML);
 }
 
 export function getEditorText(editor: HTMLElement, includeSignature = true) {

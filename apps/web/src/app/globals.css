@@ -15638,6 +15638,10 @@ button.operations-summary-card {
   user-select: text;
 }
 
+.editor-surface [data-editor-draft] {
+  min-height: 64px;
+}
+
 @supports not (overflow-wrap: anywhere) {
   .message-body,
   .message-body :is(a, code),

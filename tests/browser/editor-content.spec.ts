@@ -29,6 +29,65 @@ test("keeps the signature outside the editable AI draft", async ({ page }) => {
   expect(result.protectedSignature).toBe(true);
 });
 
+test("keeps an empty signed composer writable before the protected signature", async ({ page }) => {
+  await page.addStyleTag({ content: '[data-editor-draft] { display: block; min-height: 64px; }' });
+  await page.evaluate(() => {
+    const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+    const editor = document.querySelector<HTMLElement>("#editor")!;
+    editor.innerHTML = api.composeEditorHtml("", "<p>Support Team</p>");
+  });
+
+  await page.locator('[data-editor-draft]').click();
+  await page.keyboard.type("Hello customer");
+
+  const result = await page.evaluate(() => {
+    const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+    const editor = document.querySelector<HTMLElement>("#editor")!;
+    return {
+      draft: api.getEditorTextWithoutSignature(editor),
+      signature: editor.querySelector('[data-editor-signature]')?.textContent,
+      signatureProtected: editor.querySelector('[data-editor-signature]')?.getAttribute("contenteditable")
+    };
+  });
+
+  expect(result.draft).toBe("Hello customer");
+  expect(result.signature).toBe("Support Team");
+  expect(result.signatureProtected).toBe("false");
+});
+
+test("repairs a stored signature-only draft with an editable area", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+    const editor = document.querySelector<HTMLElement>("#editor")!;
+    editor.innerHTML = '<div data-editor-signature="true" contenteditable="false"><p>Support Team</p></div>';
+    api.markLegacySignature(editor, "<p>Support Team</p>");
+    return {
+      draftExists: Boolean(editor.querySelector(api.EDITOR_DRAFT_SELECTOR)),
+      draftBeforeSignature: editor.firstElementChild?.matches(api.EDITOR_DRAFT_SELECTOR),
+      signatureCount: editor.querySelectorAll(api.EDITOR_SIGNATURE_SELECTOR).length
+    };
+  });
+
+  expect(result.draftExists).toBe(true);
+  expect(result.draftBeforeSignature).toBe(true);
+  expect(result.signatureCount).toBe(1);
+});
+
+test("adds an editable area when enabling a signature in an empty composer", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+    const editor = document.querySelector<HTMLElement>("#editor")!;
+    api.setEditorSignature(editor, "<p>Support Team</p>");
+    return {
+      draftBeforeSignature: editor.firstElementChild?.matches(api.EDITOR_DRAFT_SELECTOR),
+      signatureProtected: editor.querySelector(api.EDITOR_SIGNATURE_SELECTOR)?.getAttribute("contenteditable")
+    };
+  });
+
+  expect(result.draftBeforeSignature).toBe(true);
+  expect(result.signatureProtected).toBe("false");
+});
+
 test("replaces a captured selection without modifying the protected signature", async ({ page }) => {
   const result = await page.evaluate(() => {
     const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
