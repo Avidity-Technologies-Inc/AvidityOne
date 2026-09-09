@@ -8,7 +8,8 @@ test.beforeEach(async ({ page }) => {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
   }).outputText;
-  await page.setContent('<div id="editor" contenteditable="true"></div>');
+  await page.setContent('<div class="ticket-composer-panel"><div id="editor" class="editor-surface signature-render" contenteditable="true"></div></div>');
+  await page.addStyleTag({ path: path.resolve("apps/web/src/app/globals.css") });
   await page.addScriptTag({ content: `const exports = {}; ${compiled}; window.EditorContent = exports;` });
 });
 
@@ -30,7 +31,6 @@ test("keeps the signature outside the editable AI draft", async ({ page }) => {
 });
 
 test("keeps an empty signed composer writable before the protected signature", async ({ page }) => {
-  await page.addStyleTag({ content: '[data-editor-draft] { display: block; min-height: 64px; }' });
   await page.evaluate(() => {
     const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
     const editor = document.querySelector<HTMLElement>("#editor")!;
@@ -54,6 +54,55 @@ test("keeps an empty signed composer writable before the protected signature", a
   expect(result.signature).toBe("Support Team");
   expect(result.signatureProtected).toBe("false");
 });
+
+for (const withSignature of [true, false]) {
+  test(`uses normal line spacing for Enter and Shift+Enter ${withSignature ? "with" : "without"} a signature`, async ({ page }) => {
+    await page.evaluate((signed) => {
+      const api = (window as unknown as { EditorContent: typeof import("../../apps/web/src/lib/editor-content") }).EditorContent;
+      document.querySelector<HTMLElement>("#editor")!.innerHTML = api.composeEditorHtml("", signed ? "<p>Support Team</p>" : "");
+    }, withSignature);
+
+    await page.locator(withSignature ? "[data-editor-draft]" : "#editor").click();
+    await page.keyboard.type("First line");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Second line");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Third line");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("Fourth line");
+
+    const result = await page.evaluate(() => {
+      const editor = document.querySelector<HTMLElement>("#editor")!;
+      const lineTops: number[] = [];
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        if (/^(First|Second|Third|Fourth) line$/.test(node.textContent ?? "")) {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          lineTops.push(range.getBoundingClientRect().top);
+        }
+        node = walker.nextNode();
+      }
+      return {
+        lineTops,
+        lineHeight: parseFloat(getComputedStyle(editor).lineHeight),
+        text: editor.innerText,
+        signature: editor.querySelector("[data-editor-signature]")?.outerHTML ?? null
+      };
+    });
+
+    expect(result.lineTops).toHaveLength(4);
+    expect(result.lineTops[1] - result.lineTops[0]).toBeCloseTo(result.lineHeight, 0);
+    expect(result.lineTops[2] - result.lineTops[1]).toBeCloseTo(result.lineHeight * 2, 0);
+    expect(result.lineTops[3] - result.lineTops[2]).toBeCloseTo(result.lineHeight, 0);
+    // Browsers serialize an empty editable block with different newline counts.
+    // The geometry assertions above verify the single visible blank line.
+    expect(result.text).toMatch(/First line\nSecond line\n{2,3}Third line\nFourth line/);
+    expect(result.signature).toBe(withSignature ? '<div data-editor-signature="true" contenteditable="false"><p>Support Team</p></div>' : null);
+  });
+}
 
 test("repairs a stored signature-only draft with an editable area", async ({ page }) => {
   const result = await page.evaluate(() => {
