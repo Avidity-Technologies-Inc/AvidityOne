@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented locally on `codex/access-management-ux`, based on `e6ef778`. The canonical origin was fetched and the working tree was clean and synchronized before implementation. The user authorized publication to the canonical repository and a production update on September 10. Production verification is recorded in the deployment follow-up once completed.
+Published to canonical `main` and `codex/access-management-ux` as `895ac09d304e2764b7917dd568b2c4f39690acf4`, based on `e6ef778`. The canonical origin was fetched and the working tree was clean and synchronized before implementation. The user authorized publication and production deployment on September 10. Production verification is recorded below.
 
 ## Behavior
 
@@ -30,6 +30,13 @@ The existing user list endpoint returns at most 250 users. The UI identifies thi
 - Screenshots reviewed at desktop and mobile sizes, including dark mode. These are synthetic component previews, not production acceptance or evidence of changes to actual account grants.
 - `git diff --check`: passed.
 
-## Release follow-up
+## Production deployment
 
-Publish the validated branch, then deploy through the established native systemd release procedure under the user's authorization. No additional migration or environment change is required by this UX patch. Verify the real Settings and Profile flows with an authorized test account after deployment; do not alter a live administrator's grants merely to test the UI.
+- Deployment completed on `avidityhelpdesk` at `2026-09-10T17:41:16Z`, under `/opt/avidity/app`. The clean checkout fast-forwarded from `e6ef7789a9c37e2f61347de6b64a88f53c18c049` to the published application commit `895ac09d304e2764b7917dd568b2c4f39690acf4`.
+- Persistent server Git credentials remain pending. Tactical RMM transferred the incremental Git bundle; SHA-256 `9c195b00047e1e0bfc47e08e51ca4cb6010073c8552b05dc54a4b587dd45bf4f` and Git prerequisites were verified before the fast-forward. No credentials were copied or changed.
+- Recovery files are retained at `/opt/avidity/access-backup-895ac09.gBqxQi`, including the previous source archive, previous commit, web build and environment checksum. Deployment log: `/tmp/deploy-access-895ac09.log`.
+- Only the web application was rebuilt and `avidity-web` restarted. `avidity-api` remained running. Both services are active. No migrations, dependency installation, environment edits, infrastructure changes or real access assignments were performed.
+- The production web build passed compilation and TypeScript checks. The built API rewrite points to `http://localhost:4000/api/:path*`; the production environment checksum remained unchanged.
+- Main login, public API health, Event Portal and Support Portal returned HTTP 200. No error-priority API/web journal entries were observed after the deployment completion timestamp.
+- Authenticated production smoke checks verified Settings Users, Groups and Roles, role search and the bounded editor with visible Save/Cancel, and Profile > My Access. The existing session showed 10 users, 4 groups, 9 roles, and its existing 97 effective permissions. No save or account-grant mutation was used for acceptance testing; write behavior was validated by the local browser scenarios above.
+- No GitHub Actions run was listed for the application commit; local validation and the observed production build are the release evidence. A follow-up records this deployment and removes a trailing blank line only; it does not change application behavior.

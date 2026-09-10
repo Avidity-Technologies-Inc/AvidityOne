@@ -1,5 +1,11 @@
 # Project Handoff
 
+## People & Access Production Update — 2026-09-10
+
+- Application release `895ac09d304e2764b7917dd568b2c4f39690acf4` is published on canonical `main` and deployed to `/opt/avidity/app`. Settings now has separate Users, Groups and Roles tabs, bounded editors with visible save actions, inheritance previews and Profile > My Access.
+- Only the web build/service was updated. Both services are active; API health, login and both public portals returned HTTP 200. Authenticated Settings and My Access were verified without changing actual account grants. Production configuration and database were unchanged.
+- Recovery files: `/opt/avidity/access-backup-895ac09.gBqxQi`. Persistent server Git credentials remain pending; a verified incremental bundle was used. See [access UX and deployment record](docs/ACCESS_UX_REVIEW_2026-09-10.md) for validation and operational details. QC configuration and permission assignment remain separate pending work.
+
 ## QC Production Update — 2026-09-10
 
 - QC application release `b43bb7298b26be7fb9f7782367153425bfac1160` is published on canonical `main` and deployed to `/opt/avidity/app`, following explicit user authorization. Eight additive migrations, Prisma generation and the full shared/API/web build succeeded; both services are active.
