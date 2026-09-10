@@ -1,5 +1,12 @@
 # Project Handoff
 
+## QC Operational Preparation Production Update — 2026-09-10
+
+- Application release `4119f61d2418750b8ec7b32bb1bda0c99c57c7df` is published and deployed. QC setup supports partial configuration with clear pending items and save actions; the ticket link now appears as **QC reviews** in Ticket Tools and opens its contextual review queue.
+- **QC Administrator** contains all 15 existing QC permissions and is assigned to **Administrators**, preserving its existing roles and memberships. Configuration revision 1 includes retained historical evidence. Capture, processing and delivery remain off; operating targets and criteria must be configured later.
+- Full production build succeeded, both services are active, all four public health/entry checks returned HTTP 200, and authenticated setup/ticket navigation checks passed. No migration or environment change was made. Recovery: `/opt/avidity/qc-readiness-backup-4119f61.0GNbFb`.
+- See [QC operational preparation and deployment](docs/QC_OPERATIONAL_PREPARATION_2026-09-10.md) for validation and remaining activation work. Earlier entries below describe historical release states.
+
 ## People & Access Production Update — 2026-09-10
 
 - Application release `895ac09d304e2764b7917dd568b2c4f39690acf4` is published on canonical `main` and deployed to `/opt/avidity/app`. Settings now has separate Users, Groups and Roles tabs, bounded editors with visible save actions, inheritance previews and Profile > My Access.

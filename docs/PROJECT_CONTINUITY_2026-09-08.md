@@ -1,5 +1,7 @@
 # Avidity One — New Session Handoff
 
+**Latest September 10 update:** QC operational preparation release `4119f61` is deployed. Administrators now inherit the separate QC Administrator role; historical measurement scope is saved, while capture, processing and delivery remain off. Read [the latest QC preparation/deployment record](QC_OPERATIONAL_PREPARATION_2026-09-10.md) and [current handoff](../PROJECT_HANDOFF.md). The older activation and permission statements below are historical.
+
 **September 10 production update:** QC release `b43bb72` is now published and deployed, with eight additive migrations and successful full production build. QC remains unconfigured and inactive; permissions were cataloged but no existing memberships were expanded. Read [the QC deployment record](QC_DEPLOYMENT_2026-09-10.md) and [current handoff](../PROJECT_HANDOFF.md) before acting. The September 8/9 statements below are historical. `.env.production` remains unchanged; actual API routing uses `INTERNAL_API_ORIGIN` at port 4000, while legacy `API_URL` is not consumed by current code.
 
 Prepared on 2026-09-08 for a new chat that will define a significant new module. This is project continuity, not a specification or approval to build an unnamed module. Repository artifacts are in English; user-facing collaboration is normally in Spanish.

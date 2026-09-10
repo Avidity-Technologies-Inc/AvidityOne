@@ -4,7 +4,7 @@
 
 The user approved the browser-led QC review recommendations, then clarified that operating targets and evaluation criteria are not available yet. Implement configurable preparation and clear next steps; do not invent values or activate measurement or delivery.
 
-Application changes are local on `codex/qc-operational-readiness`, based on canonical `main` at `c226446`. The worktree was clean and the canonical remote was fetched with zero divergence before editing. The user has authorized publication and deployment of this patch. Production verification will be recorded after deployment.
+Application release `4119f61d2418750b8ec7b32bb1bda0c99c57c7df` is published on canonical `main` and deployed to production with explicit user authorization. It was based on `c226446`; the canonical remote was fetched with zero divergence and the existing worktree was preserved before publication.
 
 ## Application changes
 
@@ -25,7 +25,7 @@ Using the existing authenticated Settings interface:
 3. Confirmed successful role creation, group update and access to QC Settings with the current session.
 4. Saved configuration revision **1** with `historicalMeasurement = INCLUDE_HISTORY`, recording the previously approved historical scope. Capture, processing and delivery all remain **false**. The save was acknowledged and its values read back in the UI.
 
-No customer messages, Teams/Outlook notices, ticket mutations, actual inspections, provider verification, historical processing, production migrations or service restarts were performed. No operating owner, percentage, threshold, rubric or SLA value was invented. The new application layout remains local until its release is published and deployed; the role and historical-scope changes above are already in production.
+The configuration work did not send customer messages or Teams/Outlook notices, mutate tickets, create inspections, verify providers, process history or run production migrations. No operating owner, percentage, threshold, rubric or SLA value was invented. The application deployment below subsequently updated and restarted API and web.
 
 ## Remaining activation work
 
@@ -49,4 +49,16 @@ The retained-historical setting alone does not import or process history while c
 - The disposable database container and the local preview server were stopped after validation.
 - The initial browser failure was a new test's exact label locator; the visible control was correctly named as a combobox. The locator was corrected to use its role and accessible name; the full suite then passed.
 
-The next application deployment must update both API and web because the web uses the new readiness endpoint. No additional migration or environment change is required.
+## Production deployment and verification
+
+- Published application release `4119f61` to canonical `main` and `codex/qc-operational-readiness`; GitHub advertised the exact expected SHA. No GitHub Actions run was listed for this commit; the local validation above and production checks below provide release evidence.
+- Inspected the native `avidityhelpdesk` server through Tactical RMM: clean checkout at `c226446`, both services active and sufficient disk space before release.
+- Transferred an incremental Git bundle through Tactical File Browser, checked SHA-256 and Git prerequisites, then fast-forwarded to the published commit. Persistent server Git credentials remain pending; no credentials were copied or created.
+- Preserved previous source and shared/API/web build artifacts under `/opt/avidity/qc-readiness-backup-4119f61.0GNbFb`. The deployment script includes recovery to the previous source and artifacts if build or health checks fail.
+- Stopped API and web for the in-place build, ran the full shared/API/web production build as `avidity`, then started both services. No dependency installation, database migration, infrastructure change or environment edit was needed.
+- Verified the unchanged `.env.production` checksum and built API rewrite to `http://localhost:4000/api/:path*`.
+- API health, main login, Event Portal and Support Portal returned HTTP 200. Both services are active, Git is clean, and no error-priority API/web journal entries were observed in the post-deployment check. Unauthenticated `/api/qc/readiness` returned HTTP 401.
+- Authenticated Chrome checks confirmed the new setup guide and save bar, revision 1 with retained historical evidence, six pending program settings, and capture/processing/delivery all off.
+- Verified the real ticket header and composer layout, **QC reviews** in Ticket Tools, and navigation to that ticket's actual filtered review queue. The queue displays the selected ticket, setup status, permission-aware links and manual inspection form. No inspection request was submitted and no customer message or ticket change was made.
+
+QC remains in configurable preparation. Real business-rule activation, historical processing and provider pilot acceptance remain pending as listed above.
