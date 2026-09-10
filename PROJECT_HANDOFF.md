@@ -1,5 +1,34 @@
 # Project Handoff
 
+## QC Production Update — 2026-09-10
+
+- QC application release `b43bb7298b26be7fb9f7782367153425bfac1160` is published on canonical `main` and deployed to `/opt/avidity/app`, following explicit user authorization. Eight additive migrations, Prisma generation and the full shared/API/web build succeeded; both services are active.
+- API health, main login, Event Portal and Support Portal returned HTTP 200. Unauthenticated QC API returned 401. Authenticated Tickets and Dashboard loaded; the system health panel reports all checks OK. No error-priority API/web journal entries were observed after startup.
+- QC remains unconfigured/inactive: no program rows or captured events. The migration installed 15 QC permissions and an unassigned QC Reviewer role. Existing access grants were preserved; the current administrator session cannot open QC until the intended QC permissions are assigned through Settings. No provider notices, historical processing or billing holds were activated.
+- Database, runtime and file recovery copies are retained under `/opt/avidity/qc-backup-b43bb72.p3iPyr`. Persistent server Git credentials remain pending; the exact published commit was transferred through a SHA-256-verified Git bundle and fast-forwarded.
+- Production `.env.production` was not changed. Its legacy `API_URL` contains port 400, but current code does not use that variable. Actual Next rewrites use `INTERNAL_API_ORIGIN` (default `http://localhost:4000`); the built production route was verified at port 4000. Do not treat the legacy value as a deployment blocker or change it automatically.
+- See [QC deployment record](docs/QC_DEPLOYMENT_2026-09-10.md), [configuration/runbook](docs/QC_RELEASE_READINESS_2026-09-10.md) and [requirements acceptance matrix](docs/QC_REQUIREMENTS_MATRIX.md). Business configuration and real Teams/Outlook/RMM pilot remain pending. The older dated entries below remain historical evidence.
+
+## Production Update — 2026-09-09
+
+- Ticket reply editor spacing fix `113955d` is published on canonical `main` and deployed to `/opt/avidity/app`. Native Enter cloned a draft block with a 64px minimum height; removing that rule restores normal line spacing while preserving the editable draft and protected signature.
+- Local validation passed: web type check, full build, 45 browser tests, and 114 API tests. A mounted React composer smoke check passed in Chromium, Firefox, and WebKit using a mocked local API.
+- Deployment was explicitly authorized and performed through Tactical RMM. The server was clean at `fb62bb5`; the checksum-verified incremental bundle fast-forwarded it to `113955d`. Only the web build/service was updated; no migrations, dependency installs, environment changes, or API restart were needed.
+- Production verification: API health, main login, Event Portal, and Support Portal returned HTTP 200; both services were active; the last five minutes of error-priority service journal entries were empty. The authenticated Tickets page loaded and its stylesheet no longer contained the draft-height rule. Customer-message sending and native Enter were not exercised in production; user acceptance remains the next check.
+- The previous web build was retained in the deployment script's `/tmp/avidity-web-113955d.*` backup directory. The persistent server Git credential remains pending; the bundle was used for this deployment.
+- QC remains at planning stage. Existing continuity and QC documents remain local and uncommitted.
+
+## Continuity Update — 2026-09-08
+
+Read [the current new-session handoff](docs/PROJECT_CONTINUITY_2026-09-08.md) before starting a new module. It supplements the historical overview below with the current source map, Operations/Projects, ticket meetings, regression boundaries, deployment evidence, and unresolved acceptance checks.
+
+- Verified on 2026-09-08: local `main` and freshly fetched `origin/main` both point to `fb62bb5`; ahead/behind is `0/0`. The worktree was clean before this documentation update.
+- Canonical repository: `Avidity-Technologies-Inc/AvidityOne`; local origin uses SSH.
+- Last production verification was on 2026-09-04 at `fb62bb5`, with the ticket-meetings migration applied and both native systemd services healthy. Production was not re-inspected for this documentation-only update.
+- Ticket meetings are implemented and deployed. A real Microsoft Calendar invitation lifecycle still needs a controlled production acceptance test.
+- This documentation update is local and uncommitted. No new application changes or deployment were performed on 2026-09-08.
+- Older setup commands below are reference material, not instructions to overwrite an existing `.env`, recreate an initial migration, seed an existing database, or deploy Docker onto the native production host.
+
 This document is the continuity handoff for moving Avidity One development to another machine. It is intentionally focused on current project state, decisions already made, and commands future Codex sessions should know before editing.
 
 ## 1. Project Purpose And Business Goal
@@ -99,14 +128,15 @@ Completed work visible from repo docs, migrations, and continuity notes includes
 Latest local Git state checked during this handoff:
 
 - Branch: `main`.
-- Remote: `https://github.com/Avidity-Technologies-Inc/AvidityOne.git`.
+- Remote: `git@github.com:Avidity-Technologies-Inc/AvidityOne.git`.
 - Latest visible commits:
-  - `14579d6 Preserve autocomplete cursor spacing`
-  - `2e4ae20 Refine inline writing suggestions`
-  - `125bf43 Improve live writing assistance`
-  - `ea1a2e5 Support modern OpenAI token limits`
-  - `7eda7cd Add AI provider management actions`
-- Working tree was clean before these documentation files were created.
+  - `fb62bb5 Add ticket meeting scheduling`
+  - `a5d22ad Fix AI draft selection boundary`
+  - `d1e28a6 Fix empty ticket reply composer`
+  - `7a602c8 Fix ticket conversation and AI reply handling`
+  - `57d8ca0 Update repository ownership references`
+- Verified against freshly fetched origin on 2026-09-08; working tree was clean before this documentation update.
+- Operations and Projects are implemented in the current source, including project templates, milestones, decisions, ticket/event work items, and dependencies. See the current new-session handoff for entry points.
 
 ## 6. Pending Work
 
@@ -178,7 +208,7 @@ Important enum/model areas include:
 - AI: request logs, provider configs, model configs, action settings.
 - Operations: spam entries, blocked inbound email, notifications, audit logs, system health snapshots, maintenance-related records.
 
-Migration history currently runs from `20260528174347_init` through `20260630120000_email_operational_hours`. Before changing `prisma/schema.prisma`, inspect the existing migration pattern and add a focused migration.
+Migration history currently runs from `20260528174347_init` through `20260904120000_ticket_meetings`. Before changing `prisma/schema.prisma`, inspect the existing migration pattern and add a focused migration.
 
 Commands:
 

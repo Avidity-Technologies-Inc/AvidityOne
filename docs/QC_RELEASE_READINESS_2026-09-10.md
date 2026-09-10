@@ -1,5 +1,7 @@
 # QC local release candidate and activation runbook
 
+**Production update:** The application release `b43bb72` was subsequently published and deployed with authorization on September 10. See [deployment evidence](QC_DEPLOYMENT_2026-09-10.md). The local validation snapshot below precedes that release; operational activation and provider acceptance remain pending.
+
 Updated September 10, 2026. Canonical repository: `Avidity-Technologies-Inc/AvidityOne`. Working branch: `codex/qc-module`; base `113955d42179f33e9c3300942f5f562224250e31`. This is local, uncommitted implementation. No QC push, production migration, server restart, external message or provider registration was performed.
 
 The source specification, [implementation plan](QC_IMPLEMENTATION_PLAN.md) and [requirements matrix](QC_REQUIREMENTS_MATRIX.md) remain the scope ledger. The local application paths are implemented; **controlled production pilot and full business/provider acceptance (M5) remain pending**. Do not equate synthetic validation with production acceptance.
@@ -128,7 +130,7 @@ The final command removes only that test container and its synthetic data. Leave
 
 Publication and server update are separate next actions after review. Recheck canonical Git divergence and preserve the two handoff files before composing the QC commit. This document intentionally contains no invented release SHA. Review and publish a concrete commit, then record its SHA and CI result.
 
-On a future authorized maintenance window, inspect `/opt/avidity/app`, revision, Git status, ownership, runtime versions, `.env.production` key names, backup/restore readiness, pending migrations, API/web service health and real database target without printing secrets. Preserve `API_URL=http://localhost:4000` unless inspected topology proves otherwise. No Nginx/systemd/DNS changes are required by QC.
+On a future authorized maintenance window, inspect `/opt/avidity/app`, revision, Git status, ownership, runtime versions, `.env.production` key names, backup/restore readiness, pending migrations, API/web service health and real database target without printing secrets. Verify `INTERNAL_API_ORIGIN` (default `http://localhost:4000`), which controls the current Next API rewrite. The legacy `API_URL` is not read by current application code; preserve existing environment values unless a change is separately authorized. No Nginx/systemd/DNS changes are required by QC.
 
 The following existing commands are the application update steps **after** the reviewed release is published, the server target and backup are verified, and deployment is authorized. Do not run the initial-install seed or Docker section of the older deployment guide. Avoid building Next into a running checkout during user traffic; use the approved maintenance window and stop services before the in-place build.
 
