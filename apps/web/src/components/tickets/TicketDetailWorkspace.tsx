@@ -935,7 +935,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             <ArrowLeft size={15} aria-hidden="true" />
             <span>Tickets</span>
           </Link>
-          <div className="ticket-detail-title-row"><QcContextLink permissions={currentUser?.permissions} href={`/qc/reviews?ticketId=${ticket.id}`} />
+          <div className="ticket-detail-title-row">
             <h1>#{ticket.ticketNumber}</h1>
             {canChangeStatus && !isMergedTicket && statusOptions.length ? <select className="ticket-header-select ticket-header-status" style={ticketStatusStyle(ticket, ticketStatuses)} value={currentStatusDefinition?.id ?? ""} onChange={(event) => void updateTicketState({ statusDefinitionId: event.target.value })} disabled={toolBusy === "STATE"} aria-label="Ticket status">
               {statusOptions.map((status) => <option value={status.id} key={status.id}>{status.name}</option>)}
@@ -1064,6 +1064,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           <div className="panel ticket-rail-panel">
             <div className="ticket-tools-heading"><h3>Ticket Tools</h3>{permissionSet.has("tickets.delete") ? <button className="button danger icon-button" type="button" onClick={() => void deleteCurrentTicket()} disabled={toolBusy === "DELETE"} title="Delete ticket" aria-label="Delete ticket"><Trash2 size={14} aria-hidden="true" /></button> : null}</div>
             <div className="ticket-tools-grid">
+              <QcContextLink permissions={currentUser?.permissions} href={`/qc/reviews?ticketId=${ticket.id}`} label="QC reviews" title="View quality reviews and request an inspection for this ticket" />
               {permissionSet.has("ticket_meetings.view") ? <button className="button secondary" type="button" onClick={() => { setMeetingTargetId(null); setMeetingDrawerOpen(true); }} disabled={!meetingData} title="Schedule and manage ticket meetings"><CalendarClock size={14} aria-hidden="true" /><span>Meetings{meetingData?.meetings.length ? ` (${meetingData.meetings.length})` : ""}</span></button> : null}
               {permissionSet.has("tickets.merge") ? <button className="button secondary" type="button" onClick={openMergeModal} disabled={isMergedTicket} title="Merge tickets"><GitMerge size={14} aria-hidden="true" /><span>Merge</span></button> : null}
               {permissionSet.has("knowledge_base.create") ? <button className="button secondary" type="button" onClick={() => void createKnowledgeArticleDraft()} disabled={toolBusy === "KB"} title="Create Knowledge Base draft"><BookOpen size={14} aria-hidden="true" /><span>KB Draft</span></button> : null}

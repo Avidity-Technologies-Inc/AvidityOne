@@ -39,6 +39,11 @@ export class QcService {
     const configuration = { ...emptyQcConfiguration(), ...((record?.configuration ?? {}) as object) } as QcProgramConfiguration;
     return { lastProcessingAt: record?.lastProcessingAt ?? null, processingErrorCode: record?.processingErrorCode ?? null, version: record?.version ?? 0, captureEnabled: record?.captureEnabled ?? false, processingEnabled: record?.processingEnabled ?? false, deliveryEnabled: record?.deliveryEnabled ?? false, startedAt: record?.startedAt ?? null, configuration, readiness: this.readiness(configuration) };
   }
+  async programStatus(user: AuthenticatedUser) {
+    const program = await this.program(user);
+    // Expose operational state without configuration identities or provider references.
+    return { captureEnabled: program.captureEnabled, processingEnabled: program.processingEnabled, deliveryEnabled: program.deliveryEnabled, readiness: program.readiness };
+  }
   readiness(config: QcProgramConfiguration) {
     const missing: string[] = [];
     if (!config.ownerId) missing.push("QC owner");

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { apiFetch } from "@/lib/api";
-export function QcContextLink({ href = "/qc", label = "Quality Control", permission = "qc.view", permissions }: { href?: string; label?: string; permission?: string; permissions?: string[] }) {
+export function QcContextLink({ href = "/qc", label = "Quality Control", permission = "qc.view", permissions, title }: { href?: string; label?: string; permission?: string; permissions?: string[]; title?: string }) {
   const [grants, setGrants] = useState<string[]>(permissions ?? []);
   useEffect(() => {
     if (permissions) { setGrants(permissions); return; }
@@ -14,5 +14,5 @@ export function QcContextLink({ href = "/qc", label = "Quality Control", permiss
     const unsubscribe = subscribeAccessRefresh(refresh);
     return () => { mounted = false; unsubscribe(); };
   }, [permissions]);
-  return grants.includes("qc.view") && grants.includes(permission) ? <Link className="button secondary" href={href}><ClipboardCheck size={15} aria-hidden="true" /><span>{label}</span></Link> : null;
+  return grants.includes("qc.view") && grants.includes(permission) ? <Link className="button secondary" href={href} title={title}><ClipboardCheck size={15} aria-hidden="true" /><span>{label}</span></Link> : null;
 }

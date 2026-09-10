@@ -60,6 +60,37 @@ suite("QC authenticated local runtime", () => {
   });
   afterAll(async () => { await app?.close(); await prisma?.$disconnect(); });
   const http = (path: string, method = "GET", body?: unknown, token = session) => fetch(`${base}${path}`, { method, headers: { Cookie: `qc_test_session=${token}`, "Content-Type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  it("returns scoped readiness without configuration identities and preserves incomplete setup without activation", async () => {
+    expect((await http("/qc/readiness", "GET", undefined, "invalid")).status).toBe(401);
+    const org = await prisma.organization.create({ data: { name: `Readiness ${randomUUID()}` } });
+    const person = await prisma.user.create({ data: { organizationId: org.id, email: `${randomUUID()}@example.invalid`, firstName: "Setup", lastName: "Administrator", passwordHash: "unusable", forcePasswordChange: false } });
+    const viewerRole = await prisma.role.create({ data: { organizationId: org.id, name: "Readiness viewer", permissions: { create: (await prisma.permission.findMany({ where: { name: "qc.view" } })).map(permission => ({ permissionId: permission.id })) } } });
+    await prisma.group.create({ data: { organizationId: org.id, name: "Readiness viewers", roles: { create: { roleId: viewerRole.id } }, users: { create: { userId: person.id } } } });
+    const viewerSession = randomUUID();
+    await prisma.session.create({ data: { userId: person.id, tokenHash: createHash("sha256").update(viewerSession).digest("hex"), expiresAt: new Date(Date.now() + 3600000) } });
+    const initial = await http("/qc/readiness", "GET", undefined, viewerSession);
+    expect(initial.status).toBe(200);
+    const state = await initial.json();
+    expect(Object.keys(state).sort()).toEqual(["captureEnabled", "deliveryEnabled", "processingEnabled", "readiness"]);
+    expect(state).toMatchObject({ captureEnabled: false, processingEnabled: false, deliveryEnabled: false });
+    expect(state.readiness).toContain("Historical measurement decision");
+    expect((await http("/qc/settings", "GET", undefined, viewerSession)).status).toBe(403);
+    const configuration = { ...emptyQcConfiguration(), historicalMeasurement: "INCLUDE_HISTORY" as const };
+    const body = { version: 0, captureEnabled: false, processingEnabled: false, deliveryEnabled: false, configuration, reason: "Record only the approved historical scope" };
+    expect((await http("/qc/settings", "PATCH", body, viewerSession)).status).toBe(403);
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { name: "qc.settings_manage" } });
+    await prisma.rolePermission.create({ data: { roleId: viewerRole.id, permissionId: permission.id } });
+    expect((await http("/qc/settings", "PATCH", body, viewerSession)).status).toBe(200);
+    const saved = await prisma.qcProgram.findUniqueOrThrow({ where: { organizationId: org.id } });
+    expect(saved).toMatchObject({ version: 1, captureEnabled: false, processingEnabled: false, deliveryEnabled: false, startedAt: null });
+    expect(saved.configuration).toEqual(configuration);
+    const updated = await (await http("/qc/readiness", "GET", undefined, viewerSession)).json();
+    expect(updated.readiness).not.toContain("Historical measurement decision");
+    expect(updated.readiness).toContain("Sampling policy");
+    expect((await http("/qc/settings", "PATCH", { ...body, version: 1, captureEnabled: true, processingEnabled: true }, viewerSession)).status).toBe(400);
+    expect(await prisma.qcConfigRevision.count({ where: { organizationId: org.id } })).toBe(1);
+    expect(await prisma.qcWorkEvent.count({ where: { organizationId: org.id } })).toBe(0);
+  });
   it("boots the actual QC module and serves reviewer evidence through session authentication", async () => {
     expect(user.permissions).toContain("qc.reviews_perform"); expect(user.permissions).not.toContain("tickets.update"); expect(user.permissions).not.toContain("tickets.reply");
     expect((await http(`/qc/reviews/${reviewId}/evidence`)).status).toBe(200);

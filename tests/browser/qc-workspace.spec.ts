@@ -14,16 +14,20 @@ const program = { version: 0, captureEnabled: false, processingEnabled: false, d
 const service = { cycles: 0, completeCycles: 0, incompleteCycles: 0, firstResponseSample: 0, averageFirstResponseBusinessMinutes: null, resolutionSample: 0, averageResolutionBusinessMinutes: null, evaluatedObligations: 0, breachedObligations: 0, slaCompliancePercent: null, historical: { cycles: 0, firstResponseSample: 0, averageFirstResponseElapsedMinutes: null, resolutionSample: 0, averageResolutionElapsedMinutes: null, basis: "Retained evidence" } };
 const overview = { generatedAt: "2026-09-10T14:00:00Z", period: { cohort: "Synthetic work cycles" }, program, pendingSourceEvents: 0, service, quality: { selected: 0, scored: 0, averageScore: null, passed: 0, pending: 0, flags: 0, bulkCleared: 0 }, followUp: { open: 0, overdue: 0, recognition: 0 }, creative: { total: 0, delivered: 0, onTime: 0, overdue: 0, averageRevisionRounds: null }, trends: [] };
 // Mount the real QC React components; only Next navigation and server responses are isolated.
-const bundled = buildSync({ absWorkingDir: root, stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QcWorkspace} from './apps/web/src/components/qc/QcWorkspace'; createRoot(document.getElementById('root')).render(<QcWorkspace section={location.pathname.split('/').filter(Boolean).slice(1)} />);`, resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", jsx: "automatic", alias: { "next/link": "./tests/browser/fixtures/qc-link.tsx" }, define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' } });
+const bundled = buildSync({ absWorkingDir: root, stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QcWorkspace} from './apps/web/src/components/qc/QcWorkspace'; createRoot(document.getElementById('root')).render(<QcWorkspace section={location.pathname.split('/').filter(Boolean).slice(1)} initialFilters={Object.fromEntries(new URLSearchParams(location.search))} />);`, resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", jsx: "automatic", alias: { "next/link": "./tests/browser/fixtures/qc-link.tsx" }, define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' } });
 async function mount(page: Page, route = "/qc", overrides: Record<string, unknown> = {}) {
   const requests: Array<{ path: string; body: unknown }> = [];
-  const responses: Record<string, unknown> = { "/qc/lookups": lookups, "/qc/overview": overview, "/qc/settings": { ...lookups, program, policies: [], statuses: [], mailboxes: [], agreementTypes: [] }, "/qc/reviews": { items: [], total: 0, page: 1, pageSize: 25 }, ...overrides };
+  const responses: Record<string, unknown> = { "/qc/lookups": lookups, "/qc/readiness": program, "/qc/overview": overview, "/qc/settings": { ...lookups, program, policies: [], statuses: [], mailboxes: [], agreementTypes: [] }, "/qc/reviews": { items: [], total: 0, page: 1, pageSize: 25 }, ...overrides };
   await page.route("https://qc.test/**", async intercepted => {
     const url = new URL(intercepted.request().url());
     if (url.pathname === "/fixture.js") return intercepted.fulfill({ contentType: "application/javascript", body: bundled.outputFiles[0].text });
     if (url.pathname.startsWith("/api/")) {
       const key = url.pathname.slice(4);
-      if (intercepted.request().method() !== "GET") { requests.push({ path: key, body: intercepted.request().headers()["content-type"]?.includes("multipart/form-data") ? intercepted.request().postData() : intercepted.request().postDataJSON() }); return intercepted.fulfill({ json: { updated: true } }); }
+      if (intercepted.request().method() !== "GET") { requests.push({ path: key, body: intercepted.request().headers()["content-type"]?.includes("multipart/form-data") ? intercepted.request().postData() : intercepted.request().postDataJSON() }); if (key === "/qc/settings" && intercepted.request().method() === "PATCH") {
+        const saved = intercepted.request().postDataJSON();
+        responses["/qc/settings"] = { ...responses["/qc/settings"] as object, program: { ...program, ...saved, version: saved.version + 1 } };
+      }
+      return intercepted.fulfill({ json: responses[`POST ${key}`] ?? { updated: true } }); }
       return intercepted.fulfill({ json: responses[key] ?? {} });
     }
     return intercepted.fulfill({ contentType: "text/html", body: '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0"><main id="root" style="padding:20px;max-width:1600px;margin:auto"></main><script src="/fixture.js"></script></body></html>' });
@@ -58,7 +62,7 @@ test("QC configuration sends selected real record IDs and keeps activation off",
   await page.getByLabel("Minimum per cohort", { exact: true }).fill("2");
   await page.getByRole("combobox", { name: "Historical measurement", exact: true }).selectOption("INCLUDE_HISTORY");
   await page.getByLabel("Reason for configuration change").fill("Synthetic configuration validation");
-  await page.getByRole("button", { name: "Validate & save configuration" }).click();
+  await page.getByRole("button", { name: "Save setup draft" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0]).toMatchObject({ path: "/qc/settings", body: { version: 0, captureEnabled: false, processingEnabled: false, deliveryEnabled: false, configuration: { ownerId: user.id, samplingPercent: 17, samplingMinimum: 2, historicalMeasurement: "INCLUDE_HISTORY" } } });
 });
@@ -104,4 +108,74 @@ test("creative work uploads private proofs and exposes authenticated evidence li
   await expect(page.locator("html")).toHaveAttribute("data-proof-upload", "Synthetic revised proof");
   await expect(page.getByRole("button", { name: "Save private proof" })).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath("qc-creative.png"), fullPage: true, animations: "disabled" });
+});
+
+const contextTicket = { id: "55555555-5555-4555-8555-555555555555", ticketNumber: "SYN-QC-1", subject: "Synthetic ticket context" };
+test("ticket review context preserves its source and lets an authorized user open the requested inspection", async ({ page }, testInfo) => {
+  const reviewId = "44444444-4444-4444-8444-444444444444";
+  const requests = await mount(page, `/qc/reviews?ticketId=${contextTicket.id}`, {
+    "/qc/lookups": { ...lookups, permissions: [...permissions, "tickets.view"] },
+    [`/qc/tickets/${contextTicket.id}`]: contextTicket,
+    "POST /qc/reviews": { id: reviewId }
+  });
+  await expect(page.getByRole("heading", { name: "QC reviews for SYN-QC-1" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Back to ticket" })).toHaveAttribute("href", `/tickets/${contextTicket.id}`);
+  await expect(page.getByRole("link", { name: "Ticket work records", exact: true })).toHaveAttribute("href", `/qc/work?ticketId=${contextTicket.id}`);
+  await expect(page.getByRole("button", { name: "Request inspection", exact: true })).toBeDisabled();
+  await page.getByLabel("Reason for manual QC review").fill("Verify the documented resolution");
+  await page.getByRole("button", { name: "Request inspection", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Open inspection", exact: true })).toHaveAttribute("href", `/qc/reviews/${reviewId}`);
+  expect(requests).toEqual([{ path: "/qc/reviews", body: { ticketId: contextTicket.id, reason: "Verify the documented resolution" } }]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("qc-ticket-context-mobile.png"), fullPage: true });
+});
+
+test("reviewer access explains configuration limits and retains read-only ticket context", async ({ page }) => {
+  const requests = await mount(page, `/qc/reviews?ticketId=${contextTicket.id}`, {
+    "/qc/lookups": { ...lookups, permissions: ["qc.view", "qc.view_all", "qc.reviews_perform"] },
+    [`/qc/tickets/${contextTicket.id}`]: contextTicket
+  });
+  await expect(page.getByText("Your current access does not include program configuration.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Request inspection", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Back to ticket" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Ticket work records", exact: true })).toBeVisible();
+  await page.getByText("Your QC access", { exact: true }).click();
+  await expect(page.getByText("You can claim and evaluate available inspections.", { exact: false })).toBeVisible();
+  expect(requests).toEqual([]);
+});
+
+test("failed manual requests preserve the reason and never report success", async ({ page }) => {
+  await mount(page, `/qc/reviews?ticketId=${contextTicket.id}`, { [`/qc/tickets/${contextTicket.id}`]: contextTicket });
+  await page.route("https://qc.test/api/qc/reviews", async route => {
+    if (route.request().method() === "POST") return route.fulfill({ status: 403, json: { message: "QC assignment permission was revoked." } });
+    return route.fallback();
+  });
+  await page.getByLabel("Reason for manual QC review").fill("Preserve this request on failure");
+  await page.getByRole("button", { name: "Request inspection", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("QC assignment permission was revoked.");
+  await expect(page.getByLabel("Reason for manual QC review")).toHaveValue("Preserve this request on failure");
+  await expect(page.getByRole("link", { name: "Open inspection", exact: true })).toHaveCount(0);
+});
+
+test("partial setup persists without invented targets or activation and guards unsaved changes", async ({ page }, testInfo) => {
+  const requests = await mount(page, "/qc/settings");
+  await page.getByRole("combobox", { name: "Historical measurement", exact: true }).selectOption("INCLUDE_HISTORY");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByRole("button", { name: "Agreements", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Historical measurement", exact: true })).toHaveValue("INCLUDE_HISTORY");
+  await page.getByLabel("Reason for configuration change").fill("Retain the agreed history scope; targets are pending");
+  await page.getByRole("button", { name: "Save setup draft", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Saved. Published revisions remain available for historical inspections.");
+  expect(requests[0]).toMatchObject({ body: { captureEnabled: false, processingEnabled: false, deliveryEnabled: false, configuration: { ownerId: null, samplingPercent: null, laborThresholdMinutes: null, failureConsequence: null, historicalMeasurement: "INCLUDE_HISTORY" } } });
+  await page.getByRole("button", { name: "Agreements", exact: true }).click();
+  await page.getByRole("button", { name: "Program", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Historical measurement", exact: true })).toHaveValue("INCLUDE_HISTORY");
+  await expect(page.getByRole("button", { name: "Save setup draft", exact: true })).toBeDisabled();
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole("button", { name: "Save setup draft", exact: true }).scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  }
+  await page.screenshot({ path: testInfo.outputPath("qc-setup-draft.png"), fullPage: true });
 });

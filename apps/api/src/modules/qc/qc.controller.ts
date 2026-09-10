@@ -23,6 +23,7 @@ import { QcReportsService } from "./qc.reports.service";
 @UseGuards(SessionAuthGuard, PermissionsGuard)
 export class QcController {
   constructor(private readonly qc: QcService, private readonly work: QcWorkService, private readonly reports: QcReportsService, private readonly notifications: QcNotificationsService, private readonly sourceEvidence: QcEvidenceService, private readonly attachments: TicketAttachmentsService, private readonly teams: QcTeamsService, private readonly creativeAttachments: QcAttachmentsService) {}
+  @Get("readiness") @RequirePermissions("qc.view") readiness(@CurrentUser() user: AuthenticatedUser) { return this.qc.programStatus(user); }
   @Post("deliverables/:id/attachments") @RequirePermissions("qc.view", "qc.work_record")
   @UseInterceptors(FileInterceptor("file", singleFileUploadOptions(Number(process.env.MAX_UPLOAD_SIZE_MB ?? 25) * 1024 * 1024)))
   uploadEvidence(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser, @UploadedFile() file?: { originalname: string; mimetype: string; buffer: Buffer }) {
