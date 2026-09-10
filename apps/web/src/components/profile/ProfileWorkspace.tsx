@@ -1,4 +1,5 @@
 "use client";
+import { ProfileAccess } from "./ProfileAccess";
 import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import {
@@ -26,10 +27,11 @@ import {
 import { ClipboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { apiFetch } from "@/lib/api";
 import { ThemePreference, useTheme } from "@/components/providers/ThemeProvider";
 
-type ProfileSection = "account" | "password" | "appearance" | "notifications" | "signature";
+type ProfileSection = "access" | "account" | "password" | "appearance" | "notifications" | "signature";
 
 interface ProfileUser {
   id: string;
@@ -124,6 +126,7 @@ const EVENT_NOTIFICATION_FIELDS: Array<{ label: string; inAppKey: keyof Notifica
 
 const SECTIONS: Array<{ key: ProfileSection; label: string; icon: typeof UserRound }> = [
   { key: "account", label: "Account", icon: UserRound },
+  { key: "access", label: "My Access", icon: KeyRound },
   { key: "password", label: "Password", icon: KeyRound },
   { key: "appearance", label: "Appearance", icon: SunMoon },
   { key: "notifications", label: "Notifications", icon: Mail },
@@ -279,6 +282,14 @@ export function ProfileWorkspace() {
 
   useEffect(() => {
     void loadProfile();
+    let mounted = true;
+    const unsubscribe = subscribeAccessRefresh(() => {
+      void apiFetch<ProfileResponse>("/profile").then(response => {
+        // Refresh inherited access without overwriting account, signature or notification drafts.
+        if (mounted) setProfile(current => current ? { ...current, user: { ...current.user, groups: response.user.groups } } : current);
+      }).catch(() => {});
+    });
+    return () => { mounted = false; unsubscribe(); };
   }, []);
 
   async function loadProfile() {
@@ -603,6 +614,8 @@ export function ProfileWorkspace() {
               </div>
             </section>
           ) : null}
+
+          {activeSection === "access" ? <ProfileAccess /> : null}
 
           {activeSection === "password" ? (
             <section className="panel profile-panel">

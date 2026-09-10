@@ -21,7 +21,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { useBranding } from "@/components/providers/BrandingProvider";
-import { apiFetch } from "@/lib/api";
+import { subscribeAccessRefresh } from "@/lib/access-refresh";
+import { ApiError, apiFetch } from "@/lib/api";
 import { NotificationBell } from "./NotificationBell";
 import { SystemStatusClock } from "./SystemStatusClock";
 import { ThemeToggle } from "./ThemeToggle";
@@ -71,18 +72,27 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
-    apiFetch<{ user: CurrentUser }>("/auth/me")
-      .then((response) => {
-        if (mounted) {
-          setUser(response.user);
-        }
-      })
-      .catch(() => {
-        window.location.assign("/login");
-      });
+    let pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const response = await apiFetch<{ user: CurrentUser }>("/auth/me");
+        if (mounted) setUser(response.user);
+      } catch (error) {
+        if (mounted && error instanceof ApiError && (error.status === 401 || error.status === 403)) window.location.assign("/login");
+        // A connection failure must not discard the user's open work.
+        // Protected API requests continue to validate the current session.
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
+    const unsubscribe = subscribeAccessRefresh(() => { void refresh(); });
 
     return () => {
       mounted = false;
+      unsubscribe();
     };
   }, []);
 

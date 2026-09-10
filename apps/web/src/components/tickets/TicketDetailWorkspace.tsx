@@ -1,4 +1,5 @@
 "use client";
+import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import Link from "next/link";
@@ -303,6 +304,16 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
         contradictions: "Contradictions",
         risks: "Risks"
       };
+
+  useEffect(() => {
+    let mounted = true;
+    const unsubscribe = subscribeAccessRefresh(() => {
+      void apiFetch<{ user: CurrentUser }>("/auth/me").then(({ user }) => {
+        if (mounted) setCurrentUser(user);
+      }).catch(() => {});
+    });
+    return () => { mounted = false; unsubscribe(); };
+  }, []);
 
   const requester = useMemo(() => {
     if (!ticket) {

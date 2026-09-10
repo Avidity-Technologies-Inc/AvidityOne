@@ -1,0 +1,74 @@
+.access-workspace { min-width: 0; display: grid; gap: 16px; }
+.access-workspace h1, .access-workspace h2, .access-editor h2, .access-editor h3 { margin: 0; }
+.access-workspace .section-heading { flex-wrap: wrap; }
+.access-workspace .section-heading > div { flex: 1 1 260px; }
+.access-workspace .compact-page-header { flex-wrap: wrap; gap: 12px; }
+.access-workspace .compact-page-header > div { flex: 1 1 260px; }
+.access-tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.access-tabs button { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font: inherit; font-weight: 650; cursor: pointer; }
+.access-tabs button.active { background: var(--surface-raised); border-color: var(--line); color: var(--brand-primary); }
+.access-tabs button span { font-size: 12px; background: var(--surface-subtle); padding: 2px 6px; border-radius: 4px; }
+.access-search { display: grid; gap: 6px; font-weight: 650; font-size: 13px; max-width: 480px; }
+.access-row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.access-row-actions .button { white-space: nowrap; }
+.access-secondary { display: block; color: var(--text-muted); margin-top: 5px; }
+.access-workspace .access-table td { max-width: 340px; overflow-wrap: anywhere; }
+.access-editor { box-sizing: border-box; width: min(960px, calc(100vw - 32px)); height: min(850px, calc(100dvh - 48px)); max-width: none; max-height: none; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-raised); color: var(--text); box-shadow: 0 24px 80px #0005; }
+.access-editor::backdrop { background: #08132699; }
+.access-editor > form { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.access-editor header, .access-editor footer { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 0 0 auto; background: var(--surface-raised); }
+.access-editor header { border-bottom: 1px solid var(--line); }
+.access-editor header h2 { margin-bottom: 4px; font-size: 19px; }
+.access-editor footer { border-top: 1px solid var(--line); }
+.access-editor footer > span, .access-editor header span { font-size: 12px; }
+.access-editor > form > .error-banner { margin: 10px 20px 0; flex: 0 0 auto; max-height: 100px; overflow: auto; }
+.access-editor-body { overflow: auto; overscroll-behavior: contain; padding: 20px; flex: 1; min-height: 0; }
+.access-editor fieldset { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.access-editor h3 { font-size: 14px; }
+.access-editor p { margin: 0; line-height: 1.5; }
+.access-editor .input { width: 100%; min-width: 0; }
+.access-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.access-fields > label:not(.checkbox-row) { display: grid; gap: 6px; font-size: 13px; font-weight: 650; }
+.access-fields small { font-weight: 400; }
+.access-unsaved { color: var(--warning); font-weight: 700; }
+.access-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 8px; }
+.access-choice { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius-xs); padding: 12px; min-width: 0; background: var(--surface-raised); font-size: 13px; }
+label.access-choice { cursor: pointer; }
+.access-choice:has(input:checked) { border-color: var(--brand-primary); background: color-mix(in srgb, var(--brand-primary) 5%, var(--surface-raised)); }
+.access-choice input { flex: 0 0 auto; margin-top: 3px; }
+.access-choice > span { min-width: 0; display: grid; gap: 5px; overflow-wrap: anywhere; }
+.access-choice small, .access-choice code { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.access-impact, .access-preview { border: 1px solid var(--line); padding: 14px; background: var(--surface-subtle); border-radius: var(--radius-xs); display: grid; gap: 8px; font-size: 13px; min-width: 0; }
+.access-impact small { color: var(--text-muted); }
+.access-permission-tools { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; }
+.access-permission-tools .access-search { flex: 1 1 240px; }
+.access-permission-tools > strong { font-size: 12px; padding-bottom: 8px; }
+.access-permission-list { display: grid; gap: 8px; }
+.access-permission-module { border: 1px solid var(--line); border-radius: var(--radius-xs); min-width: 0; }
+.access-permission-module summary { cursor: pointer; padding: 14px; font-size: 13px; }
+.access-permission-module summary span { float: right; color: var(--text-muted); font-size: 12px; }
+.access-permission-module .access-choices { padding: 0 12px 12px; }
+.access-select-visible { margin: 0 12px 12px; font-size: 12px; }
+.access-preview h3, .access-preview p { margin: 0; }
+.access-preview summary { cursor: pointer; padding: 6px 0; }
+.access-preview ul { margin: 4px 0; padding-left: 20px; }
+.access-preview li { padding: 4px 0; overflow-wrap: anywhere; }
+.access-preview code { display: block; font-size: 11px; color: var(--text-muted); }
+@media (max-width: 600px) {
+  .access-editor { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  .access-editor header, .access-editor footer { padding: 12px; }
+  .access-editor-body { padding: 12px; }
+  .access-editor footer { flex-wrap: wrap; }
+  .access-editor footer .access-row-actions { width: 100%; justify-content: flex-end; }
+  .access-fields { grid-template-columns: minmax(0, 1fr); }
+  .access-tabs button { padding: 8px; font-size: 12px; }
+  .access-permission-module summary span { float: none; display: block; margin: 5px 0 0 16px; }
+}
+/* Access tables retain their own horizontal scrolling on small screens; they do not have the card alternative used by other Settings sections. */
+.settings-page .access-workspace .table-scroll { display: block; max-width: 100%; overflow-x: auto; }
+.access-workspace .access-table { min-width: 560px; }
+.access-editor .input { background: var(--control-bg); color: var(--text); }
+.access-editor .button.secondary, .access-editor .icon-button { background: var(--surface-elevated); color: var(--text); }
+.access-editor .access-read-only { padding: 12px 20px 0; font-size: 13px; }
+.profile-access { display: grid; gap: 16px; }
+.profile-access h3, .profile-access > p { margin: 0; }

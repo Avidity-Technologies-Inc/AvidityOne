@@ -1,3 +1,7 @@
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) { super(message); this.name = "ApiError"; }
+}
+
 export const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 export function getApiBaseUrl() {
@@ -37,7 +41,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
           ? "The server timed out while processing the request. Try a smaller selection or try again."
           : `Request failed with status ${response.status}. The server returned an HTML error page instead of JSON.`;
     }
-    throw new Error(parsedMessage || text || `Request failed with status ${response.status}`);
+    throw new ApiError(parsedMessage || text || `Request failed with status ${response.status}`, response.status);
   }
 
   if (response.status === 204) {

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ClipboardCheck, RefreshCw, Settings, Download } from "lucide-react";
 import { QC_REVIEW_STATES } from "@avidity/shared";
+import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { apiFetch } from "@/lib/api";
 import { Lookups, Overview, Page, Review, Action, label, metric, personName, formatDate } from "./qc.types";
 import { QcSettings } from "./QcSettings";
@@ -33,6 +34,15 @@ export function QcWorkspace({ section, initialFilters = {} }: { section: string[
     finally { setBusy(false); }
   }, [view, section[1], query]);
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    let mounted = true;
+    const unsubscribe = subscribeAccessRefresh(() => {
+      void apiFetch<{ user: { permissions: string[] } }>("/auth/me").then(({ user }) => {
+        if (mounted) setLookups(current => current ? { ...current, permissions: user.permissions } : current);
+      }).catch(() => {});
+    });
+    return () => { mounted = false; unsubscribe(); };
+  }, []);
   const can = (permission: string) => lookups?.permissions.includes(permission) ?? false;
   async function bulk() {
     setBusy(true); setError("");
