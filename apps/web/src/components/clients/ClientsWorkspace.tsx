@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import {
   ArrowLeft,
@@ -553,7 +554,7 @@ export function ClientsWorkspace() {
                       <span className={`status-pill ${selectedClient.status === "ACTIVE" ? "success" : "muted-pill"}`}>
                         {selectedClient.status === "ACTIVE" ? "Active" : "Inactive"}
                       </span>
-                      <h2>{selectedClient.name}</h2>
+                      <h2>{selectedClient.name}</h2><QcContextLink href={`/qc/clients?clientId=${selectedClient.id}`} label="Service quality" />
                       <p className="muted">{selectedClient.shortName || "No short name"}</p>
                     </div>
                   </div>

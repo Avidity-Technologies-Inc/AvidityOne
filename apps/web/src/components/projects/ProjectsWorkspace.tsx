@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import { AlertTriangle, ArrowDown, ArrowUp, CalendarRange, ChevronLeft, ChevronRight, ClipboardCheck, Eye, Filter, Link2, Milestone, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import Link from "next/link";
@@ -612,7 +613,7 @@ export function ProjectsWorkspace() {
         </section>
 
         {selected ? <section className="panel projects-detail-panel">
-            <div className="section-heading projects-detail-heading"><div><h2>{selected.name}</h2><p>Owner: {selected.owner ? `${selected.owner.firstName} ${selected.owner.lastName}` : "Unassigned"}</p></div><div className="projects-detail-actions"><button className="button secondary icon-button" type="button" onClick={closeProject} title="Close project detail" aria-label="Close project detail"><X size={16} aria-hidden="true" /></button>{data?.capabilities.delete ? <button className="button secondary icon-button" type="button" onClick={() => void removeProject()} disabled={saving} title="Archive project" aria-label="Archive project"><Trash2 size={16} aria-hidden="true" /></button> : null}</div></div>
+            <div className="section-heading projects-detail-heading"><div><h2>{selected.name}</h2><p>Owner: {selected.owner ? `${selected.owner.firstName} ${selected.owner.lastName}` : "Unassigned"}</p></div><div className="projects-detail-actions"><QcContextLink href={`/qc/creative?projectId=${selected.id}`} label="Creative QC" /><button className="button secondary icon-button" type="button" onClick={closeProject} title="Close project detail" aria-label="Close project detail"><X size={16} aria-hidden="true" /></button>{data?.capabilities.delete ? <button className="button secondary icon-button" type="button" onClick={() => void removeProject()} disabled={saving} title="Archive project" aria-label="Archive project"><Trash2 size={16} aria-hidden="true" /></button> : null}</div></div>
             {data?.capabilities.create ? <div className="projects-save-template"><input className="input" value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="Template name" maxLength={120} /><button className="button secondary" type="button" onClick={() => void saveTemplate()} disabled={saving || !templateName.trim()}><ClipboardCheck size={15} aria-hidden="true" /> Save as template</button></div> : null}
             {data?.capabilities.update ? <form className="projects-detail-form" onSubmit={(event) => void saveProject(event)}><ProjectFields draft={draft} clients={data?.clients ?? []} owners={data?.assignableUsers ?? []} onChange={updateDraft} /><div className="form-actions"><button className="button" type="submit" disabled={saving || !draft.name.trim()}><Save size={16} aria-hidden="true" /> Save Plan</button></div></form> : null}
 

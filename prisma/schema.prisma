@@ -329,6 +329,28 @@ enum EventServiceFieldType {
 }
 
 model Organization {
+  qcAttachments QcAttachment[]
+  qcRmmEvidence QcRmmEvidence[]
+  qcTeamsConversations QcTeamsConversation[]
+  qcTeamsActions QcTeamsAction[]
+  qcCycles QcCycle[]
+  qcSamplingRuns QcSamplingRun[]
+  qcAgreementTypes QcAgreementType[]
+  qcProgram QcProgram? @relation("QcProgram_organization")
+  qcConfigRevisions QcConfigRevision[] @relation("QcConfigRevision_organization")
+  qcCategories QcCategory[] @relation("QcCategory_organization")
+  qcPolicies QcPolicy[] @relation("QcPolicy_organization")
+  qcRubrics QcRubric[] @relation("QcRubric_organization")
+  qcTicketProfiles QcTicketProfile[] @relation("QcTicketProfile_organization")
+  qcDeliverables QcDeliverable[] @relation("QcDeliverable_organization")
+  qcTimeEntries QcTimeEntry[] @relation("QcTimeEntry_organization")
+  qcWorkEvents QcWorkEvent[] @relation("QcWorkEvent_organization")
+  qcReviews QcReview[] @relation("QcReview_organization")
+  qcFindings QcFinding[] @relation("QcFinding_organization")
+  qcActions QcAction[] @relation("QcAction_organization")
+  qcReinspections QcReinspection[] @relation("QcReinspection_organization")
+  qcHistory QcHistory[] @relation("QcHistory_organization")
+  qcDeliveries QcDelivery[] @relation("QcDelivery_organization")
   id             String             @id @default(uuid()) @db.Uuid
   name           String
   createdAt      DateTime           @default(now())
@@ -539,6 +561,17 @@ model SystemSetting {
 }
 
 model User {
+  qcAttachments QcAttachment[]
+  qcConfigRevisions QcConfigRevision[] @relation("QcConfigRevision_createdBy")
+  qcDeliverables QcDeliverable[] @relation("QcDeliverable_owner")
+  qcTimeEntries QcTimeEntry[] @relation("QcTimeEntry_technician")
+  qcOwnedReviews QcReview[] @relation("QcReview_owner")
+  qcPerformedReviews QcReview[] @relation("QcReview_reviewer")
+  qcOverrides QcFinding[] @relation("QcFinding_overriddenBy")
+  qcActions QcAction[] @relation("QcAction_owner")
+  qcReinspections QcReinspection[] @relation("QcReinspection_technician")
+  qcHistory QcHistory[] @relation("QcHistory_actor")
+  qcDeliveries QcDelivery[] @relation("QcDelivery_recipient")
   id                  String    @id @default(uuid()) @db.Uuid
   organizationId      String    @db.Uuid
   email               String    @unique
@@ -853,6 +886,7 @@ model RolePermission {
 }
 
 model Client {
+  qcPolicies QcPolicy[] @relation("QcPolicy_client")
   id                  String       @id @default(uuid()) @db.Uuid
   organizationId      String       @db.Uuid
   name                String
@@ -991,6 +1025,12 @@ model TicketSequence {
 }
 
 model Ticket {
+  qcRmmEvidence QcRmmEvidence[]
+  qcCycles QcCycle[]
+  qcProfile QcTicketProfile? @relation("QcTicketProfile_ticket")
+  qcTimeEntries QcTimeEntry[] @relation("QcTimeEntry_ticket")
+  qcWorkEvents QcWorkEvent[] @relation("QcWorkEvent_ticket")
+  qcReviews QcReview[] @relation("QcReview_ticket")
   id                         String         @id @default(uuid()) @db.Uuid
   organizationId             String         @db.Uuid
   ticketNumber               String         @unique
@@ -1529,6 +1569,7 @@ model TicketMessage {
 }
 
 model StoredFile {
+  qcAttachment QcAttachment?
   id               String              @id @default(uuid()) @db.Uuid
   storageProvider  FileStorageProvider @default(LOCAL)
   storageKey       String              @unique
@@ -2003,6 +2044,8 @@ model ReportSchedule {
 }
 
 model Device {
+  qcRmmTickets QcTicketProfile[]
+  qcRmmEvidence QcRmmEvidence[]
   id                   String               @id @default(uuid()) @db.Uuid
   clientId             String               @db.Uuid
   deviceGroupId        String?
@@ -2253,6 +2296,7 @@ model SupportPortalFormField {
 }
 
 model EventServiceRequest {
+  qcDeliverables QcDeliverable[] @relation("QcDeliverable_event")
   id                 String                    @id @default(uuid()) @db.Uuid
   organizationId     String                    @db.Uuid
   trackingNumber     String                    @unique
@@ -2416,6 +2460,8 @@ model EventServiceTask {
 }
 
 model Project {
+  qcPolicies QcPolicy[] @relation("QcPolicy_project")
+  qcDeliverables QcDeliverable[] @relation("QcDeliverable_project")
   id             String        @id @default(uuid()) @db.Uuid
   organizationId String        @db.Uuid
   clientId       String?       @db.Uuid
@@ -2653,4 +2699,475 @@ model EventServiceActivity {
   @@index([requestId, createdAt])
   @@index([userId])
   @@map("event_service_activity")
+}
+
+
+model QcProgram {
+  lastProcessingAt DateTime?
+  processingErrorCode String?
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @unique @db.Uuid
+  captureEnabled Boolean @default(false)
+  processingEnabled Boolean @default(false)
+  deliveryEnabled Boolean @default(false)
+  startedAt DateTime?
+  version Int @default(0)
+  configuration Json @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcProgram_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@map("qc_programs")
+}
+
+model QcConfigRevision {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  version Int
+  configuration Json
+  reason String
+  createdById String @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcConfigRevision_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy User @relation("QcConfigRevision_createdBy", fields: [createdById], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, version])
+  @@map("qc_config_revisions")
+}
+
+model QcCategory {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name String
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcCategory_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  policies QcPolicy[] @relation("QcPolicy_category")
+  tickets QcTicketProfile[] @relation("QcTicketProfile_category")
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, name])
+  @@map("qc_categories")
+}
+
+model QcPolicy {
+  cycles QcCycle[]
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  clientId String @db.Uuid
+  projectId String? @db.Uuid
+  categoryId String? @db.Uuid
+  name String
+  agreementType String
+  revision Int
+  publishedAt DateTime?
+  effectiveFrom DateTime
+  effectiveUntil DateTime?
+  configuration Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcPolicy_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  client Client @relation("QcPolicy_client", fields: [clientId], references: [id], onDelete: Restrict)
+  project Project? @relation("QcPolicy_project", fields: [projectId], references: [id], onDelete: Restrict)
+  category QcCategory? @relation("QcPolicy_category", fields: [categoryId], references: [id], onDelete: Restrict)
+  reviews QcReview[] @relation("QcReview_policy")
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, name, revision])
+  @@map("qc_policies")
+}
+
+model QcRubric {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name String
+  kind String
+  revision Int
+  publishedAt DateTime?
+  criteria Json
+  passThreshold Float
+  reinspectionCount Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcRubric_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  reviews QcReview[] @relation("QcReview_rubric")
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, name, revision])
+  @@map("qc_rubrics")
+}
+
+model QcTicketProfile {
+  rmmDeviceId String? @db.Uuid
+  rmmDevice Device? @relation(fields: [rmmDeviceId], references: [id], onDelete: Restrict)
+  rmmAlertReference String?
+  rmmTriggeredAt DateTime?
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String @unique @db.Uuid
+  categoryId String? @db.Uuid
+  resolutionNote String?
+  version Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcTicketProfile_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  ticket Ticket @relation("QcTicketProfile_ticket", fields: [ticketId], references: [id], onDelete: Restrict)
+  category QcCategory? @relation("QcTicketProfile_category", fields: [categoryId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@map("qc_ticket_profiles")
+}
+
+model QcDeliverable {
+  attachments QcAttachment[]
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  projectId String @db.Uuid
+  eventId String? @db.Uuid
+  ownerId String @db.Uuid
+  name String
+  kind String
+  status String @default("DRAFT")
+  dueAt DateTime
+  deliveredAt DateTime?
+  version Int @default(0)
+  evidence Json @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcDeliverable_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  project Project @relation("QcDeliverable_project", fields: [projectId], references: [id], onDelete: Restrict)
+  event EventServiceRequest? @relation("QcDeliverable_event", fields: [eventId], references: [id], onDelete: Restrict)
+  owner User @relation("QcDeliverable_owner", fields: [ownerId], references: [id], onDelete: Restrict)
+  timeEntries QcTimeEntry[] @relation("QcTimeEntry_deliverable")
+  reviews QcReview[] @relation("QcReview_deliverable")
+  history QcHistory[] @relation("QcHistory_deliverable")
+  @@index([organizationId, createdAt])
+  @@map("qc_deliverables")
+}
+
+model QcTimeEntry {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String? @db.Uuid
+  deliverableId String? @db.Uuid
+  technicianId String @db.Uuid
+  startedAt DateTime
+  minutes Int
+  description String
+  correctionOfId String? @unique @db.Uuid
+  correctionOf QcTimeEntry? @relation("QcTimeCorrection", fields: [correctionOfId], references: [id], onDelete: Restrict)
+  correction QcTimeEntry? @relation("QcTimeCorrection")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcTimeEntry_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  ticket Ticket? @relation("QcTimeEntry_ticket", fields: [ticketId], references: [id], onDelete: Restrict)
+  deliverable QcDeliverable? @relation("QcTimeEntry_deliverable", fields: [deliverableId], references: [id], onDelete: Restrict)
+  technician User @relation("QcTimeEntry_technician", fields: [technicianId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@map("qc_time_entries")
+}
+
+model QcWorkEvent {
+  id String @id @default(uuid()) @db.Uuid
+  sequence BigInt @unique @default(autoincrement())
+  organizationId String @db.Uuid
+  ticketId String @db.Uuid
+  actorId String? @db.Uuid
+  kind String
+  occurredAt DateTime @default(now())
+  sourceId String?
+  origin String @default("CAPTURED")
+  snapshot Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcWorkEvent_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  ticket Ticket @relation("QcWorkEvent_ticket", fields: [ticketId], references: [id], onDelete: Restrict)
+  receipt QcEventReceipt? @relation("QcEventReceipt_event")
+  @@index([organizationId, createdAt])
+  @@index([ticketId, sequence])
+  @@unique([ticketId, sourceId, kind])
+  @@map("qc_work_events")
+}
+
+model QcEventReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  eventId String @unique @db.Uuid
+  processedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  event QcWorkEvent @relation("QcEventReceipt_event", fields: [eventId], references: [id], onDelete: Restrict)
+  @@map("qc_event_receipts")
+}
+
+model QcReview {
+  billingState String @default("NOT_HELD")
+  billingReleasedAt DateTime?
+  billingReleaseReason String?
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String? @db.Uuid
+  deliverableId String? @db.Uuid
+  ownerId String? @db.Uuid
+  reviewerId String? @db.Uuid
+  rubricId String? @db.Uuid
+  policyId String? @db.Uuid
+  cycleKey String
+  status String @default("PENDING")
+  version Int @default(0)
+  selectionReasons String[]
+  score Float?
+  results Json?
+  finalizedAt DateTime?
+  acknowledgedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcReview_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  ticket Ticket? @relation("QcReview_ticket", fields: [ticketId], references: [id], onDelete: Restrict)
+  deliverable QcDeliverable? @relation("QcReview_deliverable", fields: [deliverableId], references: [id], onDelete: Restrict)
+  owner User? @relation("QcReview_owner", fields: [ownerId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("QcReview_reviewer", fields: [reviewerId], references: [id], onDelete: Restrict)
+  rubric QcRubric? @relation("QcReview_rubric", fields: [rubricId], references: [id], onDelete: Restrict)
+  policy QcPolicy? @relation("QcReview_policy", fields: [policyId], references: [id], onDelete: Restrict)
+  findings QcFinding[] @relation("QcFinding_review")
+  actions QcAction[] @relation("QcAction_review")
+  reinspection QcReinspection? @relation("QcReinspection_review")
+  history QcHistory[] @relation("QcHistory_review")
+  deliveries QcDelivery[] @relation("QcDelivery_review")
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, cycleKey])
+  @@index([organizationId, ownerId, status])
+  @@map("qc_reviews")
+}
+
+model QcFinding {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  reviewId String @db.Uuid
+  code String
+  severity String
+  evidence Json
+  overrideReason String?
+  overriddenById String? @db.Uuid
+  overriddenAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcFinding_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  review QcReview @relation("QcFinding_review", fields: [reviewId], references: [id], onDelete: Restrict)
+  overriddenBy User? @relation("QcFinding_overriddenBy", fields: [overriddenById], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@unique([reviewId, code])
+  @@map("qc_findings")
+}
+
+model QcAction {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  reviewId String @db.Uuid
+  ownerId String @db.Uuid
+  kind String
+  title String
+  note String
+  dueAt DateTime?
+  status String @default("OPEN")
+  version Int @default(0)
+  acknowledgedAt DateTime?
+  completedAt DateTime?
+  verifiedAt DateTime?
+  completionEvidence String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcAction_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  review QcReview @relation("QcAction_review", fields: [reviewId], references: [id], onDelete: Restrict)
+  owner User @relation("QcAction_owner", fields: [ownerId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@map("qc_actions")
+}
+
+model QcReinspection {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  technicianId String @db.Uuid
+  reviewId String @unique @db.Uuid
+  remaining Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcReinspection_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  technician User @relation("QcReinspection_technician", fields: [technicianId], references: [id], onDelete: Restrict)
+  review QcReview @relation("QcReinspection_review", fields: [reviewId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@map("qc_reinspections")
+}
+
+model QcHistory {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  reviewId String? @db.Uuid
+  deliverableId String? @db.Uuid
+  actorId String? @db.Uuid
+  action String
+  metadata Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcHistory_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  review QcReview? @relation("QcHistory_review", fields: [reviewId], references: [id], onDelete: Restrict)
+  deliverable QcDeliverable? @relation("QcHistory_deliverable", fields: [deliverableId], references: [id], onDelete: Restrict)
+  actor User? @relation("QcHistory_actor", fields: [actorId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@map("qc_history")
+}
+
+model QcDelivery {
+  attemptEvents QcDeliveryAttempt[]
+  teamsActions QcTeamsAction[]
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  reviewId String? @db.Uuid
+  recipientId String @db.Uuid
+  deduplicationKey String @unique
+  channel String
+  state String @default("PENDING")
+  payload Json
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  acceptedAt DateTime?
+  acknowledgedAt DateTime?
+  providerMessageId String?
+  errorCode String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation("QcDelivery_organization", fields: [organizationId], references: [id], onDelete: Restrict)
+  review QcReview? @relation("QcDelivery_review", fields: [reviewId], references: [id], onDelete: Restrict)
+  recipient User @relation("QcDelivery_recipient", fields: [recipientId], references: [id], onDelete: Restrict)
+  @@index([organizationId, createdAt])
+  @@index([state, nextAttemptAt])
+  @@map("qc_deliveries")
+}
+
+model QcCycle {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String @db.Uuid
+  cycleKey String @unique
+  ownerId String? @db.Uuid
+  clientId String? @db.Uuid
+  categoryId String? @db.Uuid
+  startedAt DateTime
+  closedAt DateTime?
+  policyId String? @db.Uuid
+  complete Boolean
+  measurement Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  policy QcPolicy? @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  @@index([organizationId, closedAt])
+  @@index([organizationId, ownerId, startedAt])
+  @@map("qc_cycles")
+}
+
+model QcSamplingRun {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  periodStart DateTime
+  periodEnd DateTime
+  configurationVersion Int
+  population Json
+  selection Json
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  @@unique([organizationId, periodStart])
+  @@map("qc_sampling_runs")
+}
+
+model QcAgreementType {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  name String
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  @@unique([organizationId, name])
+  @@map("qc_agreement_types")
+}
+
+model QcTeamsConversation {
+  teamId String?
+  channelId String?
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  recipientId String? @db.Uuid
+  conversationId String
+  serviceUrl String
+  botAppId String
+  scope String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  @@unique([organizationId, conversationId])
+  @@index([organizationId, recipientId])
+  @@map("qc_teams_conversations")
+}
+
+model QcTeamsAction {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  deliveryId String @db.Uuid
+  reviewId String? @db.Uuid
+  recipientId String @db.Uuid
+  version Int?
+  verb String
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  delivery QcDelivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  @@index([organizationId, expiresAt])
+  @@map("qc_teams_actions")
+}
+
+model QcRmmEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String @db.Uuid
+  deviceId String @db.Uuid
+  actorId String @db.Uuid
+  alertReference String
+  result String
+  evidence Json
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  @@index([organizationId, ticketId, createdAt])
+  @@map("qc_rmm_evidence")
+}
+
+model QcDeliveryAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  deliveryId String @db.Uuid
+  attempt Int
+  outcome String
+  errorCode String?
+  providerMessageId String?
+  createdAt DateTime @default(now())
+  delivery QcDelivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  @@unique([deliveryId, attempt, outcome])
+  @@map("qc_delivery_attempts")
+}
+
+model QcAttachment {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  deliverableId String @db.Uuid
+  uploadedById String @db.Uuid
+  storedFileId String @unique @db.Uuid
+  deliverableVersion Int
+  scanStatus AttachmentScanStatus
+  scanResult AttachmentScanResult
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  deliverable QcDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Restrict)
+  uploadedBy User @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  storedFile StoredFile @relation(fields: [storedFileId], references: [id], onDelete: Restrict)
+  @@index([organizationId, deliverableId, createdAt])
+  @@map("qc_attachments")
 }

@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import { ChevronDown, ChevronRight, Download, Pencil, Plus, RefreshCcw, RotateCw, Search, TestTube2, Trash2, Upload, X } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -242,6 +243,7 @@ interface QuarantinedEmailResult {
 }
 
 interface MaintenanceSummary {
+  retainedForQc?: number;
   recycleBinRetentionDays: number;
   lastRecycleBinCleanupAt: string | null;
   deletedTickets: number;
@@ -2943,7 +2945,7 @@ export function SettingsWorkspace() {
       <div className="settings-command-header">
         <div>
           <span className="page-eyebrow">Administration</span>
-          <h1>Settings</h1>
+          <h1>Settings</h1><QcContextLink href="/qc/settings" label="QC configuration" permission="qc.settings_manage" />
           <span className="muted">{activeSettingsLabel}</span>
         </div>
         <button className="button secondary settings-refresh-button" type="button" onClick={loadSettingsData} disabled={loading}>
@@ -4545,7 +4547,7 @@ export function SettingsWorkspace() {
                         <strong>{maintenanceSummary?.eligibleTickets ?? 0}</strong>
                       </div>
                       <div className="panel subtle-panel metric">
-                        <span className="muted">Deleted attachments</span>
+                        <span className="muted">Retained tickets for QC</span><strong>{maintenanceSummary?.retainedForQc ?? 0}</strong></div><div className="panel subtle-panel metric"><span className="muted">Deleted attachments</span>
                         <strong>{maintenanceSummary?.deletedAttachments ?? 0}</strong>
                       </div>
                       <div className="panel subtle-panel metric">

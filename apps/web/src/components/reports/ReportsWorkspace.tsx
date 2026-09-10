@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import { CalendarClock, ChevronDown, ChevronUp, Download, FileSpreadsheet, FileText, Filter, History, Mail, RefreshCw, Save, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -668,7 +669,7 @@ export function ReportsWorkspace() {
             <h2>{isTicketReport ? "Ticket Reports" : "Event & Services Reports"}</h2>
             <p className="muted">{isTicketReport ? "Operational ticket performance, workload, status, and export reporting." : "Event request volume, service workload, task status, and export reporting."}</p>
           </div>
-          <div className="form-actions reports-header-actions">
+          <div className="form-actions reports-header-actions"><QcContextLink href="/qc/scorecards" label="Quality reports" />
             <div className="segmented-control reports-type-tabs">
               <button className={isTicketReport ? "active" : ""} type="button" aria-pressed={isTicketReport} onClick={() => setReportType("ticket-report")}>Tickets</button>
               <button className={!isTicketReport ? "active" : ""} type="button" aria-pressed={!isTicketReport} onClick={() => setReportType("event-service-report")}>Events & Services</button>

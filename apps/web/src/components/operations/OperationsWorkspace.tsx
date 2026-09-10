@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, CalendarClock, Check, ChevronLeft, ChevronRight, CircleAlert, ClipboardCheck, Download, Filter, FolderKanban, Mail, PenLine, RefreshCw, Ticket, UsersRound, X } from "lucide-react";
 import Link from "next/link";
@@ -366,7 +367,7 @@ export function OperationsWorkspace() {
         <div className="operations-toolbar-copy">
           <strong>Active work queue</strong>
         </div>
-        <div className="operations-toolbar-controls">
+        <div className="operations-toolbar-controls"><QcContextLink href="/qc/reviews" label="QC queue" />
           <div className="segmented-control" aria-label="Queue mode">
             <button type="button" className={queueMode === "ATTENTION" ? "active" : ""} aria-pressed={queueMode === "ATTENTION"} onClick={() => setQueueMode("ATTENTION")}>Needs attention</button>
             <button type="button" className={queueMode === "ALL" ? "active" : ""} aria-pressed={queueMode === "ALL"} onClick={() => setQueueMode("ALL")}>All work</button>

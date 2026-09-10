@@ -6,11 +6,28 @@ export const INITIAL_ROLES = [
   "Manager",
   "Technician",
   "Client Manager",
+  "QC Reviewer",
   "Client User",
   "Auditor"
 ] as const;
 
 export const INITIAL_PERMISSIONS = [
+  "qc.view",
+  "qc.view_all",
+  "qc.reviews_perform",
+  "qc.reviews_assign",
+  "qc.reviews_bulk",
+  "qc.rubrics_manage",
+  "qc.coaching_manage",
+  "qc.actions_complete_own",
+  "qc.flags_override",
+  "qc.settings_manage",
+  "qc.notifications_manage",
+  "qc.export_internal",
+  "qc.export_client",
+  "qc.work_record",
+  "qc.billing_release",
+
   "users.view",
   "users.create",
   "users.update",
@@ -111,10 +128,12 @@ export const INITIAL_PERMISSIONS = [
 ] as const;
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<string, readonly string[]> = {
+  "QC Reviewer": ["qc.view", "qc.view_all", "qc.reviews_perform"],
   "Super Admin": INITIAL_PERMISSIONS,
   Admin: INITIAL_PERMISSIONS,
   Manager: INITIAL_PERMISSIONS.filter(
     (permission) =>
+      !permission.startsWith("qc.") &&
       !permission.startsWith("system_settings.") &&
       !permission.startsWith("mailboxes.") &&
       !permission.startsWith("maintenance.") &&
@@ -251,3 +270,5 @@ export interface PublicBrandingSettings {
   loginFooterStyle?: string;
   loginFooterFontFamily?: string;
 }
+
+export * from "./qc";

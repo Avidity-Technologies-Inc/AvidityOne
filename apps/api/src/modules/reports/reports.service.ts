@@ -293,6 +293,9 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const range = this.resolveDateRange(query);
     const where = this.buildTicketWhere(user, query, range);
     const valuePerTicket = this.resolveValuePerTicket(query);
+    if (query.estimateMode === "perTicket" && await this.prisma.qcReview.count({ where: { organizationId: user.organizationId, billingState: "HELD", ticket: where } })) {
+      throw new ConflictException("This report includes work on a QC billing hold. Release the hold or narrow the report before generating a financial estimate.");
+    }
 
     const [tickets, clients, users, teams] = await Promise.all([
       this.prisma.ticket.findMany({

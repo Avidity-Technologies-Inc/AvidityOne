@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import {
   AlignCenter,
@@ -518,7 +519,7 @@ export function ProfileWorkspace() {
       <div className="compact-page-header profile-page-header">
         <div>
           <span className="page-eyebrow">Account Preferences</span>
-          <h1>Profile</h1>
+          <h1>Profile</h1><QcContextLink href="/qc/scorecards?scope=mine" label="My quality scorecard" />
           <p className="muted">Manage your account information, security, appearance, notifications, and ticket reply signature.</p>
         </div>
       </div>

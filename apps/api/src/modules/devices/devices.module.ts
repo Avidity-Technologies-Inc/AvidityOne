@@ -8,7 +8,8 @@ import { DevicesService } from "./devices.service";
 @Module({
   imports: [AuditLogsModule, AuthModule, ConfigModule],
   controllers: [DevicesController],
-  providers: [DevicesService]
+  providers: [DevicesService],
+  exports: [DevicesService]
 })
 export class DevicesModule {}
 

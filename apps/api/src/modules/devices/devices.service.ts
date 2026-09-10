@@ -697,6 +697,33 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     return this.getById(user, device.id);
   }
 
+  async qcObservation(user: AuthenticatedUser, deviceId: string, alertReference: string) {
+    const [device, settings] = await Promise.all([
+      this.prisma.device.findFirst({ where: { id: deviceId, deletedAt: null, client: { organizationId: user.organizationId } }, include: { remoteAccessProfile: true } }),
+      this.getSettingsRecord(user.organizationId)
+    ]);
+    if (!device || !settings.remoteAccessProviderEnabled) throw new BadRequestException("The RMM device or integration is unavailable.");
+    const identifier = device.remoteAccessProfile?.remoteIdentifier ?? device.remoteAccessId;
+    const apiKey = this.resolveSecret(settings.remoteAccessApiKeyReference);
+    if (!identifier || !apiKey || !settings.remoteAccessApiBaseUrl) throw new BadRequestException("Configure RMM before verifying QC evidence.");
+    const record = await this.fetchAgentDetail(settings.remoteAccessApiBaseUrl, settings.remoteAccessAgentsPath, identifier, apiKey);
+    const normalized = this.normalizeAgent(record, settings);
+    // Agent detail exposes aggregate check counts; query the agent-scoped check results.
+    const checksUrl = this.joinUrl(settings.remoteAccessApiBaseUrl, `${this.buildAgentDetailPath(settings.remoteAccessAgentsPath, identifier).replace(/\/$/, "")}/checks/`);
+    let match: Record<string, unknown> | undefined;
+    try {
+      const response = await fetch(checksUrl, { headers: this.buildTacticalHeaders(apiKey), redirect: "error", signal: AbortSignal.timeout(10000) });
+      if (response.ok) {
+        const checks: unknown = await response.json();
+        if (Array.isArray(checks)) match = checks.find((item: unknown): item is Record<string, unknown> => !!item && typeof item === "object" && "id" in item && String(item.id) === alertReference);
+      }
+    } catch { /* Missing provider check results remain unverified; check-in evidence is independent. */ }
+    const result = match?.check_result && typeof match.check_result === "object" && !Array.isArray(match.check_result) ? match.check_result as Record<string, unknown> : match;
+    const rawTime = result?.last_run;
+    const updated = typeof rawTime === "string" && Number.isFinite(Date.parse(rawTime)) ? new Date(rawTime) : null;
+    return { provider: "TACTICAL_RMM", remoteIdentifier: identifier, observedAt: new Date(), lastSeenAt: normalized?.lastSeenAt ?? null, alertReference, alertMatched: Boolean(match), alertStatus: typeof result?.status === "string" ? result.status : null, alertUpdatedAt: updated };
+  }
+
   private async fetchAgents(apiBaseUrl: string, agentsPath: string, apiKey: string) {
     const url = this.joinUrl(apiBaseUrl, agentsPath);
     const response = await fetch(url, {

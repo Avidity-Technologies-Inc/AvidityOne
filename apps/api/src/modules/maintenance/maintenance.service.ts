@@ -8,6 +8,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { AttachmentQuarantineQueryDto } from "./dto/attachment-quarantine-query.dto";
 import { BulkRescanPendingAttachmentsDto } from "./dto/bulk-rescan-pending-attachments.dto";
 
+const withoutQcRetention: Prisma.TicketWhereInput = { qcProfile: null, qcWorkEvents: { none: {} }, qcReviews: { none: {} }, qcTimeEntries: { none: {} }, qcCycles: { none: {} } };
+
 type PendingAttachmentScanTarget = {
   id: string;
   type: "ticket" | "event";
@@ -46,9 +48,9 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
     const cutoff = this.cutoffDate(settings.recycleBinRetentionDays);
     const [deletedTickets, eligibleTickets, deletedAttachments, eligibleAttachments, quarantine] = await Promise.all([
       this.prisma.ticket.count({ where: { organizationId: user.organizationId, deletedAt: { not: null } } }),
-      this.prisma.ticket.count({ where: { organizationId: user.organizationId, deletedAt: { lt: cutoff } } }),
+      this.prisma.ticket.count({ where: { organizationId: user.organizationId, ...withoutQcRetention, deletedAt: { lt: cutoff } } }),
       this.prisma.ticketAttachment.count({ where: { ticket: { organizationId: user.organizationId }, deletedAt: { not: null } } }),
-      this.prisma.ticketAttachment.count({ where: { ticket: { organizationId: user.organizationId }, deletedAt: { lt: cutoff } } }),
+      this.prisma.ticketAttachment.count({ where: { ticket: { organizationId: user.organizationId, ...withoutQcRetention }, deletedAt: { lt: cutoff } } }),
       this.getQuarantineCounts(user.organizationId)
     ]);
 
@@ -57,6 +59,7 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
       lastRecycleBinCleanupAt: settings.lastRecycleBinCleanupAt,
       deletedTickets,
       eligibleTickets,
+      retainedForQc: await this.prisma.ticket.count({ where: { organizationId: user.organizationId, deletedAt: { lt: cutoff }, NOT: withoutQcRetention } }),
       deletedAttachments,
       eligibleAttachments,
       quarantine,
@@ -318,7 +321,7 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
   private async cleanupOrganization(organizationId: string, retentionDays: number) {
     const cutoff = this.cutoffDate(retentionDays);
     const tickets = await this.prisma.ticket.findMany({
-      where: { organizationId, deletedAt: { lt: cutoff } },
+      where: { organizationId, ...withoutQcRetention, deletedAt: { lt: cutoff } },
       select: { id: true },
       take: 200
     });
@@ -326,7 +329,7 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
 
     const softDeletedAttachments = await this.prisma.ticketAttachment.findMany({
       where: {
-        ticket: { organizationId },
+        ticket: { organizationId, ...withoutQcRetention },
         OR: [{ deletedAt: { lt: cutoff } }, ...(ticketIds.length ? [{ ticketId: { in: ticketIds } }] : [])]
       },
       include: { storedFile: true }

@@ -141,6 +141,7 @@ export function NotificationBell() {
     if (item.ticket) {
       return `/tickets/${item.ticket.ticketNumber}`;
     }
+    if (item.metadata?.entityType === "QC") return item.metadata.href?.startsWith("/qc/") ? item.metadata.href : "/qc";
     if (item.metadata?.entityType === "EventServiceRequest") {
       if (item.metadata.trackingNumber) {
         return `/event-services/${encodeURIComponent(item.metadata.trackingNumber)}`;

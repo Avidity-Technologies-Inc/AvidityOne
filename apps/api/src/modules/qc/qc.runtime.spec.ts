@@ -1,0 +1,198 @@
+import { Readable } from "node:stream";
+import { FILE_STORAGE_PROVIDER, FileStorageProviderPort } from "../file-storage/file-storage.interfaces";
+import { FileScanService } from "../file-storage/file-scan.service";
+import { QcAttachmentsService } from "./qc.attachments.service";
+import { QcTeamsService, TeamsActivity } from "./qc.teams.service";
+import { INestApplication, ValidationPipe } from "@nestjs/common";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import { Test } from "@nestjs/testing";
+import { ThrottlerModule } from "@nestjs/throttler";
+import cookieParser from "cookie-parser";
+import { createHash, generateKeyPairSync, sign, randomUUID } from "node:crypto";
+import { PrismaService } from "../prisma/prisma.service";
+import { QcModule } from "./qc.module";
+import { QcService } from "./qc.service";
+import { QcWorkService } from "./qc.work.service";
+import { QcEngineService } from "./qc.engine.service";
+import { QcNotificationsService } from "./qc.notifications.service";
+import { QcReportsService } from "./qc.reports.service";
+import { QcEvidenceService } from "./qc.evidence.service";
+import { DevicesService } from "../devices/devices.service";
+import { MailDeliveryService } from "../mailboxes/mail-delivery.service";
+import { AuthService } from "../auth/auth.service";
+import { AuthenticatedUser } from "../auth/auth.types";
+import { QcProgramConfiguration, emptyQcConfiguration } from "@avidity/shared/dist";
+import { createOriginProtectionMiddleware } from "../../common/origin-protection.middleware";
+
+const url = process.env.QC_TEST_DATABASE_URL;
+const suite = url ? describe : describe.skip;
+suite("QC authenticated local runtime", () => {
+  let app: INestApplication, prisma: PrismaService, qc: QcService, work: QcWorkService, engine: QcEngineService;
+  let user: AuthenticatedUser, technician: AuthenticatedUser, clientId: string, base: string, session: string, ticketId: string, reviewId: string;
+  const observation = jest.fn(); const mail = jest.fn();
+  const scan = jest.fn().mockResolvedValue({ scanStatus: "CLEAN", scanResult: "PASSED" });
+  const files = new Map<string, Buffer>();
+  const storage: FileStorageProviderPort = {
+    async saveFile(input) { const storageKey = randomUUID(); files.set(storageKey, input.buffer); return { storageProvider: "LOCAL", storageKey, originalFilename: input.originalFilename, storedFilename: storageKey, mimeType: input.mimeType, fileExtension: ".txt", fileSize: input.buffer.length, sha256Hash: createHash("sha256").update(input.buffer).digest("hex") }; },
+    async getFileStream(key) { if (!files.has(key)) throw new Error("Synthetic file missing"); return Readable.from(files.get(key)!); },
+    async deleteFile(key) { files.delete(key); }
+  };
+  const calendar = { timeZone: "UTC", weekly: Array.from({ length: 7 }, (_, day) => ({ day, startMinute: 0, endMinute: 1440 })), holidays: [] };
+  beforeAll(async () => {
+    const target = new URL(url!);
+    if (target.hostname !== "127.0.0.1" || target.port !== "55473" || target.pathname !== "/qc_validation") throw new Error("A dedicated synthetic local database is required.");
+    prisma = new PrismaService({ datasources: { db: { url } } });
+    const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => ({ APP_URL: "http://localhost", SESSION_COOKIE_NAME: "qc_test_session" })] }), ThrottlerModule.forRoot([{ ttl: 60000, limit: 1000 }]), QcModule] }).overrideProvider(FILE_STORAGE_PROVIDER).useValue(storage).overrideProvider(FileScanService).useValue({ scanBuffer: scan }).overrideProvider(PrismaService).useValue(prisma).overrideProvider(DevicesService).useValue({ qcObservation: observation }).overrideProvider(MailDeliveryService).useValue({ sendTicketReply: mail }).compile();
+    app = module.createNestApplication({ logger: false }); app.use(cookieParser()); app.use(createOriginProtectionMiddleware(app.get(ConfigService))); app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true })); await app.listen(0, "127.0.0.1"); base = await app.getUrl();
+    qc = app.get(QcService); work = app.get(QcWorkService); engine = app.get(QcEngineService);
+    const org = await prisma.organization.create({ data: { name: `QC runtime ${randomUUID()}` } });
+    const person = await prisma.user.create({ data: { organizationId: org.id, email: `${randomUUID()}@example.invalid`, firstName: "Runtime", lastName: "Reviewer", passwordHash: "unusable", forcePasswordChange: false } });
+    const role = await prisma.role.create({ data: { organizationId: org.id, name: "Synthetic QC Reviewer", permissions: { create: (await prisma.permission.findMany({ where: { name: { startsWith: "qc." } } })).map(permission => ({ permissionId: permission.id })) } } });
+    const group = await prisma.group.create({ data: { organizationId: org.id, name: "Synthetic reviewers", roles: { create: { roleId: role.id } }, users: { create: { userId: person.id } } } });
+    expect(group.id).toBeTruthy();
+    session = randomUUID(); await prisma.session.create({ data: { userId: person.id, tokenHash: createHash("sha256").update(session).digest("hex"), expiresAt: new Date(Date.now() + 3600000) } });
+    user = (await app.get(AuthService).validateSessionToken(session))!;
+    const other = await prisma.user.create({ data: { organizationId: org.id, email: `${randomUUID()}@example.invalid`, firstName: "Runtime", lastName: "Technician", passwordHash: "unusable", forcePasswordChange: false } }); technician = { ...other, permissions: ["qc.view", "qc.work_record", "qc.actions_complete_own"] };
+    clientId = (await prisma.client.create({ data: { organizationId: org.id, name: "Runtime client" } })).id;
+    await qc.saveProgram({ version: 0, configuration: { ...emptyQcConfiguration(), ownerId: user.id, historicalMeasurement: "FORWARD_ONLY", samplingPeriodDays: 7 }, captureEnabled: true, processingEnabled: false, deliveryEnabled: false, reason: "Synthetic runtime" }, user);
+    ticketId = (await prisma.ticket.create({ data: { organizationId: org.id, clientId, assignedUserId: user.id, ticketNumber: `R-${randomUUID()}`, subject: "Runtime synthetic ticket" } })).id;
+    reviewId = (await qc.createReview({ ticketId, reason: "Runtime inspection" }, user)).id;
+  });
+  afterAll(async () => { await app?.close(); await prisma?.$disconnect(); });
+  const http = (path: string, method = "GET", body?: unknown, token = session) => fetch(`${base}${path}`, { method, headers: { Cookie: `qc_test_session=${token}`, "Content-Type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  it("boots the actual QC module and serves reviewer evidence through session authentication", async () => {
+    expect(user.permissions).toContain("qc.reviews_perform"); expect(user.permissions).not.toContain("tickets.update"); expect(user.permissions).not.toContain("tickets.reply");
+    expect((await http(`/qc/reviews/${reviewId}/evidence`)).status).toBe(200);
+    expect((await http(`/qc/reviews/${reviewId}`, "GET", undefined, "invalid")).status).toBe(401);
+    expect((await http(`/qc/reviews/${reviewId}`, "GET", undefined, "")).status).toBe(401);
+    expect((await http("/qc/reviews/not-a-uuid")).status).toBe(400);
+    expect((await http("/qc/settings", "PATCH", { version: 0, unsafeField: "reject" })).status).toBe(400);
+    expect((await http(`/qc/teams/${user.organizationId}/activities`, "POST", { type: "message" })).status).toBe(401);
+    expect(await prisma.qcWorkEvent.count({ where: { ticketId, kind: "TECHNICAL_TOUCH" } })).toBe(0);
+  });
+  it("keeps a selected policy and program revision when later configuration is published", async () => {
+    await qc.createAgreementType({ name: "Runtime support" }, user);
+    const input = { clientId, name: "Runtime policy", agreementType: "Runtime support", revision: 1, effectiveFrom: new Date(Date.now() - 86400000).toISOString(), configuration: { calendar, priority: null, firstResponseMetric: "PUBLIC_RESPONSE" as const, firstResponseMinutes: 30, resolutionMinutes: 60, subsequentResponseMinutes: null, warningPercent: 80, pauseStatusIds: [], pauseScheduledWork: true, pauseClockKinds: ["RESOLUTION" as const] } };
+    const first = await qc.createPolicy(input, user); await qc.publish("policy", first.id, user);
+    await engine.process(await prisma.qcProgram.findUniqueOrThrow({ where: { organizationId: user.organizationId } }));
+    const cycle = await prisma.qcCycle.findFirstOrThrow({ where: { ticketId } }); expect(cycle.policyId).toBe(first.id);
+    const revision = await qc.createPolicy({ ...input, revision: 2, effectiveFrom: new Date().toISOString(), configuration: { ...input.configuration, resolutionMinutes: 120 } }, user); await qc.publish("policy", revision.id, user);
+    const conflict = await qc.createPolicy({ ...input, name: "Conflicting policy", effectiveFrom: new Date().toISOString() }, user); await expect(qc.publish("policy", conflict.id, user)).rejects.toThrow("overlapping");
+    const program = await qc.program(user); await qc.saveProgram({ ...program, configuration: { ...program.configuration, samplingPercent: 50 }, reason: "Future configuration" }, user);
+    await engine.process(await prisma.qcProgram.findUniqueOrThrow({ where: { organizationId: user.organizationId } }));
+    const retained = await prisma.qcCycle.findUniqueOrThrow({ where: { id: cycle.id } }); expect(retained.policyId).toBe(first.id); expect((retained.measurement as { configurationVersion: number }).configurationVersion).toBe((cycle.measurement as { configurationVersion: number }).configurationVersion);
+  });
+  it("retains creative proof, revisions, approval and both delivery commitments", async () => {
+    const project = await prisma.project.create({ data: { organizationId: user.organizationId, name: "Runtime creative project", ownerId: user.id, clientId } });
+    const item = await work.createDeliverable({ projectId: project.id, ownerId: user.id, name: "Runtime brand proof", kind: "Brand layout", dueAt: new Date(Date.now() - 3600000).toISOString() }, user);
+    await expect(work.updateDeliverable(item.id, { version: 0, action: "DELIVER", note: "Without proof" }, user)).rejects.toThrow("Approve");
+    await work.updateDeliverable(item.id, { version: 0, action: "PROOF_SENT", note: "Proof sent; retained client correspondence" }, user);
+    await work.updateDeliverable(item.id, { version: 1, action: "REVISION", note: "Client requested revision" }, user);
+    await work.updateDeliverable(item.id, { version: 2, action: "RESCHEDULE", note: "Client agreed revised date", dueAt: new Date(Date.now() + 86400000).toISOString() }, user);
+    await work.updateDeliverable(item.id, { version: 3, action: "PROOF_SENT", note: "Revised proof sent" }, user);
+    await work.updateDeliverable(item.id, { version: 4, action: "APPROVED", note: "Client approval recorded" }, user);
+    await work.updateDeliverable(item.id, { version: 5, action: "DELIVER", note: "Final version delivered" }, user);
+    expect((await app.get(QcReportsService).overview({ projectId: project.id }, user)).creative).toMatchObject({ delivered: 1, onTime: 1, originalCommitmentOnTime: 0, originalCommitmentSample: 1, averageRevisionRounds: 1 });
+  });
+  it("uploads retained private creative evidence and enforces scanning, work scope and review scope", async () => {
+    const project = await prisma.project.create({ data: { organizationId: user.organizationId, name: "Private proof project", ownerId: user.id, clientId } });
+    const item = await work.createDeliverable({ projectId: project.id, ownerId: user.id, name: "Private proof", kind: "Artwork", dueAt: new Date(Date.now() + 86400000).toISOString() }, user);
+    const content = "Synthetic private proof bytes";
+    const form = new FormData(); form.append("file", new Blob([content], { type: "text/plain" }), "proof.txt");
+    const uploaded = await fetch(`${base}/qc/deliverables/${item.id}/attachments`, { method: "POST", headers: { Cookie: `qc_test_session=${session}` }, body: form });
+    expect(uploaded.status).toBe(201);
+    const asset = await uploaded.json() as { id: string; storedFile: { sha256Hash: string }; deliverableVersion: number };
+    expect(asset.storedFile.sha256Hash).toBe(createHash("sha256").update(content).digest("hex")); expect(asset.deliverableVersion).toBe(0);
+    const downloaded = await http(`/qc/deliverables/${item.id}/attachments/${asset.id}`);
+    expect(downloaded.status).toBe(200); expect(downloaded.headers.get("cache-control")).toBe("private, no-store"); expect(await downloaded.text()).toBe(content);
+    const attachments = app.get(QcAttachmentsService);
+    await expect(attachments.download(item.id, asset.id, technician)).rejects.toThrow("scope");
+    await expect(attachments.download(item.id, asset.id, { ...user, organizationId: randomUUID() })).rejects.toThrow("scope");
+    const inspection = await qc.createReview({ deliverableId: item.id, reason: "Inspect retained proof" }, user);
+    expect((await http(`/qc/reviews/${inspection.id}/creative-attachments/${asset.id}`)).status).toBe(200);
+    expect((await http(`/qc/reviews/${reviewId}/creative-attachments/${asset.id}`)).status).toBe(404);
+    await expect(prisma.qcAttachment.delete({ where: { id: asset.id } })).rejects.toThrow();
+    scan.mockResolvedValueOnce({ scanStatus: "BLOCKED", scanResult: "FAILED" });
+    const blocked = await attachments.upload(item.id, user, { originalname: "blocked.txt", mimetype: "text/plain", buffer: Buffer.from("Synthetic blocked fixture") });
+    expect((await http(`/qc/deliverables/${item.id}/attachments/${blocked.id}`)).status).toBe(403);
+    await expect(attachments.upload(item.id, user, { originalname: "blocked.exe", mimetype: "application/octet-stream", buffer: Buffer.from("Synthetic extension fixture") })).rejects.toThrow("blocked");
+    expect((await work.deliverable(item.id, user)).attachments).toHaveLength(2);
+  });
+  it("records a provider outage as unavailable and rejects cross-client RMM correlation", async () => {
+    const device = await prisma.device.create({ data: { clientId, name: "Runtime device", type: "DESKTOP", remoteAccessId: "synthetic-provider-id" } });
+    const config = await qc.program(user); await qc.saveProgram({ ...config, configuration: { ...config.configuration, rmmVerificationMode: "ALERT_CLEAR", rmmEvidenceFreshnessMinutes: 10, rmmClearedStatuses: ["passing"] }, reason: "Synthetic RMM rules" }, user);
+    const evidence = app.get(QcEvidenceService);
+    await evidence.link(ticketId, { version: 0, deviceId: device.id, alertReference: "123", triggeredAt: new Date(Date.now() - 60000).toISOString(), reason: "Actual test fixture correlation" }, user);
+    observation.mockRejectedValueOnce(new Error("Synthetic outage")); expect((await evidence.verifyRmm(ticketId, user)).result).toBe("UNAVAILABLE");
+    observation.mockResolvedValueOnce({ lastSeenAt: new Date(), alertStatus: "passing", alertUpdatedAt: new Date() }); expect((await evidence.verifyRmm(ticketId, user)).result).toBe("VERIFIED");
+    const otherClient = await prisma.client.create({ data: { organizationId: user.organizationId, name: "Other runtime client" } }); const foreignDevice = await prisma.device.create({ data: { clientId: otherClient.id, name: "Other device", type: "DESKTOP" } });
+    await expect(evidence.link(ticketId, { version: 1, deviceId: foreignDevice.id, alertReference: "123", triggeredAt: new Date().toISOString(), reason: "Wrong client" }, user)).rejects.toThrow("client");
+  });
+  it("deduplicates concurrent in-app delivery and stops the configured acknowledged escalation", async () => {
+    const notifications = app.get(QcNotificationsService);
+    const program = await prisma.qcProgram.findUniqueOrThrow({ where: { organizationId: user.organizationId } });
+    const configuration: QcProgramConfiguration = { ...emptyQcConfiguration(), ownerId: user.id, maxNotificationsPerHour: 1, deliveryCalendar: calendar, routes: [{ event: "REVIEW_FAILED", channel: "IN_APP", audiences: ["QC_OWNER"], delayMinutes: 0 }, { event: "REVIEW_FAILED", channel: "IN_APP", audiences: ["QC_OWNER"], delayMinutes: 1, stopOnAcknowledgment: true }] };
+    const synthetic = { ...program, configuration: JSON.parse(JSON.stringify(configuration)) };
+    const notice = { event: "REVIEW_FAILED" as const, source: randomUUID(), reviewId, ownerId: user.id, occurredAt: new Date(Date.now() - 120000), urgent: false, title: "Synthetic failed review" };
+    await notifications.enqueue(synthetic, notice); await notifications.enqueue(synthetic, notice);
+    expect(await prisma.qcDelivery.count({ where: { organizationId: user.organizationId } })).toBe(2);
+    await Promise.all([notifications.deliver(synthetic), notifications.deliver(synthetic)]);
+    expect(await prisma.notification.count({ where: { userId: user.id } })).toBe(1);
+    const accepted = await prisma.qcDelivery.findFirstOrThrow({ where: { organizationId: user.organizationId, state: "ACCEPTED" } });
+    expect(accepted.acknowledgedAt).toBeNull(); expect(await prisma.qcDeliveryAttempt.count({ where: { deliveryId: accepted.id } })).toBe(2);
+    await notifications.acknowledge(accepted.id, user);
+    await prisma.qcDelivery.updateMany({ where: { organizationId: user.organizationId, state: "PENDING" }, data: { nextAttemptAt: new Date(0) } });
+    await notifications.deliver(synthetic);
+    expect(await prisma.qcDelivery.count({ where: { organizationId: user.organizationId, state: "CANCELLED", errorCode: "ACKNOWLEDGED_ESCALATION_STOPPED" } })).toBe(1);
+    expect(mail).not.toHaveBeenCalled();
+  });
+  it("samples completed cohorts once and preserves selection across another processing pass", async () => {
+    const org = await prisma.organization.create({ data: { name: `Sampling runtime ${randomUUID()}` } });
+    const startedAt = new Date(Date.now() - 8 * 86400000), createdAt = new Date(startedAt.getTime() + 3600000), closedAt = new Date(createdAt.getTime() + 3600000);
+    const config = { ...emptyQcConfiguration(), samplingPercent: 50, samplingPeriodDays: 7, samplingMinimum: 0, samplingDimensions: ["CATEGORY"] };
+    const sourceIds: string[] = [];
+    for (let index = 0; index < 4; index++) {
+      const ticket = await prisma.ticket.create({ data: { organizationId: org.id, ticketNumber: `S-${randomUUID()}`, subject: "Sampling fixture", status: "CLOSED", createdAt, closedAt } }); sourceIds.push(ticket.id);
+      await prisma.qcWorkEvent.createMany({ data: [{ organizationId: org.id, ticketId: ticket.id, kind: "CREATED", occurredAt: createdAt, snapshot: { status: "NEW" } }, { organizationId: org.id, ticketId: ticket.id, kind: "TICKET_CHANGED", occurredAt: closedAt, snapshot: { status: "CLOSED" } }] });
+    }
+    const program = await prisma.qcProgram.create({ data: { organizationId: org.id, startedAt, captureEnabled: true, configuration: JSON.parse(JSON.stringify(config)) } });
+    await engine.process(program); await engine.process(program);
+    const reviews = await prisma.qcReview.findMany({ where: { organizationId: org.id }, select: { id: true, ticketId: true, selectionReasons: true } });
+    expect(reviews).toHaveLength(2); expect(reviews.every(review => review.ticketId && sourceIds.includes(review.ticketId) && review.selectionReasons.includes("SAMPLE"))).toBe(true);
+    await engine.process(program); expect(await prisma.qcSamplingRun.count({ where: { organizationId: org.id } })).toBe(1); expect(await prisma.qcReview.findMany({ where: { organizationId: org.id }, select: { id: true, ticketId: true, selectionReasons: true } })).toEqual(reviews);
+  });
+  it("paginates retained conversation evidence without altering source timestamps", async () => {
+    await prisma.ticketMessage.createMany({ data: Array.from({ length: 103 }, (_, index) => ({ ticketId, direction: "INBOUND" as const, visibility: "PUBLIC" as const, bodyText: `Synthetic evidence ${index}` })) });
+    const before = await prisma.qcWorkEvent.count({ where: { ticketId } });
+    const first = await qc.evidence(reviewId, user, { page: 1, pageSize: 100 }), second = await qc.evidence(reviewId, user, { page: 2, pageSize: 100 });
+    expect(first.ticket?.messages).toHaveLength(100); expect(second.ticket?.messages).toHaveLength(3); expect(first.hasMore).toBe(true); expect(second.hasMore).toBe(false);
+    expect(new Set([...first.ticket!.messages, ...second.ticket!.messages].map(message => message.id)).size).toBe(103);
+    expect(await prisma.qcWorkEvent.count({ where: { ticketId } })).toBe(before);
+  });
+
+  it("verifies signed Teams callbacks and rejects other tenants, replay, expiry and stale note versions", async () => {
+    const teams = app.get(QcTeamsService), pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const key = { ...pair.publicKey.export({ format: "jwk" }), kid: "runtime-signing-key", endorsements: ["msteams"] };
+    const discovery = jest.spyOn(teams as unknown as { connectorKeys(): Promise<unknown[]> }, "connectorKeys").mockResolvedValue([key]);
+    const tenant = randomUUID(), appId = randomUUID(), objectId = randomUUID();
+    await prisma.user.update({ where: { id: user.id }, data: { microsoftTenantId: tenant, microsoftObjectId: objectId, microsoftPrincipalName: "reviewer@internal.example.invalid" } });
+    const program = await qc.program(user); await qc.saveProgram({ ...program, configuration: { ...program.configuration, teamsTenantId: tenant, teamsAppId: appId }, reason: "Signed local callback validation" }, user);
+    const delivery = await prisma.qcDelivery.create({ data: { organizationId: user.organizationId, recipientId: user.id, reviewId, channel: "TEAMS_DIRECT", state: "ACCEPTED", acceptedAt: new Date(), deduplicationKey: randomUUID(), payload: {} } });
+    const action = await prisma.qcTeamsAction.create({ data: { organizationId: user.organizationId, deliveryId: delivery.id, recipientId: user.id, reviewId, verb: "ACKNOWLEDGE", expiresAt: new Date(Date.now() + 60000) } });
+    const activity: TeamsActivity = { type: "message", channelId: "msteams", serviceUrl: "https://smba.trafficmanager.net/amer/", conversation: { id: "runtime-personal", conversationType: "personal", tenantId: tenant }, from: { aadObjectId: objectId }, value: { qcActionId: action.id } };
+    const raw = `${Buffer.from(JSON.stringify({ alg: "RS256", kid: key.kid, typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify({ iss: "https://api.botframework.com", aud: appId, nbf: Math.floor(Date.now() / 1000) - 60, exp: Math.floor(Date.now() / 1000) + 600, serviceurl: activity.serviceUrl })).toString("base64url")}`;
+    const authorization = `Bearer ${raw}.${sign("RSA-SHA256", Buffer.from(raw), pair.privateKey).toString("base64url")}`;
+    await expect(teams.receive(user.organizationId, authorization, { ...activity, conversation: { ...activity.conversation, tenantId: randomUUID() } })).rejects.toThrow("tenant");
+    await teams.receive(user.organizationId, authorization, activity);
+    expect((await prisma.qcDelivery.findUniqueOrThrow({ where: { id: delivery.id } })).acknowledgedAt).not.toBeNull();
+    await expect(teams.receive(user.organizationId, authorization, activity)).rejects.toThrow("already used");
+    const expired = await prisma.qcTeamsAction.create({ data: { organizationId: user.organizationId, deliveryId: delivery.id, recipientId: user.id, reviewId, verb: "ACKNOWLEDGE", expiresAt: new Date(Date.now() - 1000) } });
+    await expect(teams.receive(user.organizationId, authorization, { ...activity, value: { qcActionId: expired.id } })).rejects.toThrow("expired");
+    const current = await qc.review(reviewId, user);
+    const stale = await prisma.qcTeamsAction.create({ data: { organizationId: user.organizationId, deliveryId: delivery.id, recipientId: user.id, reviewId, verb: "NOTE", version: current.version + 1, expiresAt: new Date(Date.now() + 60000) } });
+    await expect(teams.receive(user.organizationId, authorization, { ...activity, value: { qcActionId: stale.id, note: "Stale note must not persist" } })).rejects.toThrow("changed");
+    expect(await prisma.qcHistory.count({ where: { reviewId, action: "review_note_added" } })).toBe(0);
+    discovery.mockRestore();
+  });
+
+});

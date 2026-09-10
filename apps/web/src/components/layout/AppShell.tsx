@@ -4,6 +4,7 @@ import { dashboardNavigation } from "@avidity/ui";
 import {
   BarChart3,
   BookOpen,
+  ClipboardCheck,
   Building2,
   CalendarDays,
   Gauge,
@@ -29,6 +30,7 @@ import { UserMenu } from "./UserMenu";
 const iconMap = {
   Dashboard: Gauge,
   Operations: PanelsTopLeft,
+  "Quality Control": ClipboardCheck,
   Tickets: Ticket,
   "Event & Services": CalendarDays,
   Clients: Building2,

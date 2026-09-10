@@ -28,9 +28,24 @@ describe("FileScanService", () => {
   it("streams files to clamd using the null-terminated zINSTREAM command", async () => {
     const chunks: Buffer[] = [];
     const server = net.createServer((socket) => {
+      let replied = false;
       socket.on("data", (chunk) => {
         chunks.push(Buffer.from(chunk));
-        socket.end("stream: OK\0");
+        if (replied) return;
+        // TCP may split the command, length and payload into separate data events.
+        const received = Buffer.concat(chunks);
+        let offset = "zINSTREAM\0".length;
+        while (offset + 4 <= received.length) {
+          const size = received.readUInt32BE(offset);
+          offset += 4;
+          if (size === 0) {
+            replied = true;
+            socket.end("stream: OK\0");
+            return;
+          }
+          if (offset + size > received.length) return;
+          offset += size;
+        }
       });
     });
 
@@ -53,7 +68,10 @@ describe("FileScanService", () => {
         scanResult: "PASSED"
       });
 
-      expect(Buffer.concat(chunks).subarray(0, "zINSTREAM\0".length).toString("utf8")).toBe("zINSTREAM\0");
+      const payload = Buffer.from("clean file");
+      const size = Buffer.alloc(4);
+      size.writeUInt32BE(payload.length);
+      expect(Buffer.concat(chunks)).toEqual(Buffer.concat([Buffer.from("zINSTREAM\0"), size, payload, Buffer.alloc(4)]));
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

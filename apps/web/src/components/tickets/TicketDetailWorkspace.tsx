@@ -1,4 +1,5 @@
 "use client";
+import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -923,7 +924,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             <ArrowLeft size={15} aria-hidden="true" />
             <span>Tickets</span>
           </Link>
-          <div className="ticket-detail-title-row">
+          <div className="ticket-detail-title-row"><QcContextLink permissions={currentUser?.permissions} href={`/qc/reviews?ticketId=${ticket.id}`} />
             <h1>#{ticket.ticketNumber}</h1>
             {canChangeStatus && !isMergedTicket && statusOptions.length ? <select className="ticket-header-select ticket-header-status" style={ticketStatusStyle(ticket, ticketStatuses)} value={currentStatusDefinition?.id ?? ""} onChange={(event) => void updateTicketState({ statusDefinitionId: event.target.value })} disabled={toolBusy === "STATE"} aria-label="Ticket status">
               {statusOptions.map((status) => <option value={status.id} key={status.id}>{status.name}</option>)}

@@ -39,6 +39,7 @@ import { TicketMeetingsModule } from "./modules/ticket-meetings/ticket-meetings.
 import { TicketRoutingModule } from "./modules/ticket-routing/ticket-routing.module";
 import { TicketWorkflowModule } from "./modules/ticket-workflow/ticket-workflow.module";
 import { TicketsModule } from "./modules/tickets/tickets.module";
+import { QcModule } from "./modules/qc/qc.module";
 import { UsersModule } from "./modules/users/users.module";
 
 @Module({
@@ -100,7 +101,8 @@ import { UsersModule } from "./modules/users/users.module";
     EventServicesModule,
     ExternalSpecialistsModule,
     RemoteAccessModule,
-    NotificationsModule
+    NotificationsModule,
+    QcModule
   ]
 })
 export class AppModule {}
