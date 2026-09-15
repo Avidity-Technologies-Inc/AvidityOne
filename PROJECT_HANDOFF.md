@@ -1,5 +1,11 @@
 # Project Handoff
 
+## Scheduled Activities Release — 2026-09-15
+
+- Local branch `codex/ticket-scheduled-activities`, based on canonical `main` at `c083b19`, expands ticket Meetings to work sessions, service visits and meetings with explicit modality and organizer-only reservations. The ticket closeout panel separates actual completion, early work reservation release, cancellation and retaining future activities.
+- One additive migration is prepared; existing meeting modality remains unspecified and existing attendees/Teams details are preserved. Publication is authorized; production migration and deployment remain pending. The release includes a guarded native deployment helper with source/runtime/database backups and recovery.
+- API/web checks and full build passed; 155 API tests and 123 browser tests passed using synthetic fixtures and a disposable database. Real Microsoft acceptance is pending. See [scheduled activities implementation and release notes](docs/TICKET_SCHEDULED_ACTIVITIES_2026-09-15.md).
+
 ## QC Operational Preparation Production Update — 2026-09-10
 
 - Application release `4119f61d2418750b8ec7b32bb1bda0c99c57c7df` is published and deployed. QC setup supports partial configuration with clear pending items and save actions; the ticket link now appears as **QC reviews** in Ticket Tools and opens its contextual review queue.

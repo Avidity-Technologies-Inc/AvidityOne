@@ -16448,3 +16448,41 @@ button.ticket-workflow-toggle { border: 0; cursor: pointer; }
   .settings-page .spam-quarantine-filters { grid-template-columns: 1fr; }
   .settings-page .spam-quarantine-filters .form-actions { justify-content: stretch; }
 }
+
+/* Scheduled activities keep long forms contained and their primary action visible. */
+.ticket-meeting-drawer { width: min(1100px, 96vw); }
+.ticket-meeting-drawer-body.ticket-activities-empty { grid-template-columns: minmax(0, 1fr); }
+.ticket-activities-empty > .ticket-meeting-list { display: none; }
+.ticket-meeting-list > button { display: grid; gap: 8px; }
+.ticket-meeting-list strong { white-space: normal; line-height: 1.4; }
+.ticket-meeting-list small { font-size: 11px; overflow-wrap: anywhere; }
+.ticket-meeting-list .ticket-meeting-status { width: fit-content; }
+.ticket-activity-intro { margin-bottom: 18px; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.ticket-meeting-form { padding: 20px; }
+.ticket-meeting-fields { gap: 16px; }
+.ticket-meeting-fields .field > span { font-size: 12px; font-weight: 600; }
+.ticket-meeting-fields .input { font-size: 13px; }
+.ticket-activity-help { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.ticket-meeting-attendees { gap: 12px; margin-top: 22px; }
+.ticket-activity-audience { display: flex; flex-wrap: wrap; gap: 8px; }
+.ticket-meeting-attendee-list { max-height: 300px; overflow-y: auto; }
+.ticket-meeting-attendee-list strong { font-size: 12px; }
+.ticket-meeting-attendee-list small { font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+.ticket-meeting-attendee-list select { font-size: 12px; padding: 5px; }
+.ticket-meeting-actions { position: sticky; bottom: -20px; z-index: 1; padding: 14px 0; background: var(--surface-raised); align-items: center; }
+.ticket-meeting-actions > .ticket-activity-help { margin-right: auto; }
+.ticket-activity-closeout { padding: 16px; margin: 12px 0; border-left: 3px solid var(--brand-primary); }
+.ticket-activity-closeout h2 { margin: 0 0 8px; font-size: 15px; }
+.ticket-activity-closeout p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.ticket-activity-closeout article { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; display: grid; gap: 10px; }
+.ticket-activity-closeout small { display: block; color: var(--text-muted); margin-top: 4px; }
+.ticket-activity-closeout-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 700px) {
+  .ticket-meeting-drawer { width: 100vw; }
+  .ticket-meeting-form { padding: 14px; }
+  .ticket-meeting-actions { bottom: -14px; }
+  .ticket-meeting-drawer-header { flex-wrap: wrap; }
+}
+
+.ticket-activity-plan-summary { display: flex; align-items: center; gap: 8px; padding: 12px 16px; margin: 10px 0; font-size: 12px; }
+.ticket-activity-plan-summary button { border: 0; background: transparent; color: var(--brand-primary); text-align: left; cursor: pointer; font: inherit; }

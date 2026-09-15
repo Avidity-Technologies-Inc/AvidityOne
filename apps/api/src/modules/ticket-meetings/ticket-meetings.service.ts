@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { CalendarSyncStatus, MeetingAttendeeSource, MeetingAttendeeType, Prisma, TicketMeetingStatus } from "@prisma/client";
+import { CalendarSyncStatus, MeetingAttendeeSource, MeetingAttendeeType, Prisma, TicketMeetingStatus, TicketActivityType, TicketActivityMode } from "@prisma/client";
 import { ConfigService } from "@nestjs/config";
 import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
@@ -38,9 +38,10 @@ export class TicketMeetingsService {
     const ticket = await this.ensureTicket(ticketReference, user.organizationId);
     const organizer = await this.resolveOrganizer(input.organizerUserId || user.id, user.organizationId);
     const dates = this.validateWindow(input.startAt, input.endAt, input.timeZone);
+    this.validateActivity(input);
     const defaults = await this.buildDefaults(ticket, user, organizer);
     const attendees = await this.prepareAttendees(
-      input.attendees ?? defaults.attendees,
+      input.attendees ?? (input.activityType && input.activityType !== TicketActivityType.MEETING ? [] : defaults.attendees),
       organizer.calendarEmail,
       ticket,
       user.organizationId
@@ -60,6 +61,8 @@ export class TicketMeetingsService {
           endAt: dates.endAt,
           timeZone: input.timeZone.trim(),
           location: this.optionalTrim(input.location),
+          activityType: input.activityType,
+          modality: input.modality,
           isOnlineMeeting: input.isOnlineMeeting ?? false,
           attendees: { create: attendees }
         },
@@ -91,6 +94,7 @@ export class TicketMeetingsService {
     if (meeting.providerEventId && meeting.isOnlineMeeting && input.isOnlineMeeting === false) {
       throw new BadRequestException("A Microsoft Teams meeting cannot be converted to an offline meeting after it is created.");
     }
+    this.validateActivity({ ...meeting, ...input }, Boolean(meeting.providerEventId));
     const organizer = input.organizerUserId
       ? await this.resolveOrganizer(input.organizerUserId, user.organizationId)
       : await this.resolveOrganizer(meeting.organizerUserId || user.id, user.organizationId);
@@ -119,6 +123,8 @@ export class TicketMeetingsService {
           endAt: dates.endAt,
           timeZone: input.timeZone?.trim(),
           location: input.location === undefined ? undefined : this.optionalTrim(input.location),
+          activityType: input.activityType,
+          modality: input.modality,
           isOnlineMeeting: input.isOnlineMeeting,
           syncStatus: meeting.providerEventId ? CalendarSyncStatus.PENDING : CalendarSyncStatus.NOT_SYNCED,
           syncError: null,
@@ -161,12 +167,12 @@ export class TicketMeetingsService {
         data: { syncStatus: CalendarSyncStatus.PENDING, syncAttemptedAt: new Date(), syncError: null }
       });
       try {
-        await this.calendar.cancelEvent({
+        await (meeting.attendees.length ? this.calendar.cancelEvent({
           ...settings,
           organizerEmail: meeting.organizerCalendarEmail,
           eventId: meeting.providerEventId,
           comment
-        });
+        }) : this.calendar.deleteEvent({ ...settings, organizerEmail: meeting.organizerCalendarEmail, eventId: meeting.providerEventId }));
       } catch (error) {
         await this.recordSyncFailure(meeting.id, ticket.id, user.id, error);
         throw error;
@@ -195,17 +201,32 @@ export class TicketMeetingsService {
     return updated;
   }
 
-  async complete(ticketReference: string, meetingId: string, user: AuthenticatedUser) {
+  async complete(ticketReference: string, meetingId: string, user: AuthenticatedUser, releaseReservation = false) {
     const { ticket, meeting } = await this.ensureMeeting(ticketReference, meetingId, user.organizationId);
     if (meeting.status === TicketMeetingStatus.CANCELLED) throw new BadRequestException("A cancelled meeting cannot be completed.");
+    if (meeting.status === TicketMeetingStatus.COMPLETED) return meeting;
+    if (releaseReservation) {
+      if (meeting.activityType !== TicketActivityType.WORK_SESSION || meeting.attendees.length || meeting.startAt <= new Date()) {
+        throw new BadRequestException("Only future work reservations without invited attendees can be completed and released.");
+      }
+      if (meeting.providerEventId && meeting.organizerCalendarEmail) {
+        const settings = await this.calendarSettings(user.organizationId);
+        try {
+          await this.calendar.deleteEvent({ ...settings, organizerEmail: meeting.organizerCalendarEmail, eventId: meeting.providerEventId });
+        } catch (error) {
+          await this.recordSyncFailure(meeting.id, ticket.id, user.id, error);
+          throw error;
+        }
+      }
+    }
     const updated = await this.prisma.$transaction(async (tx) => {
       const saved = await tx.ticketMeeting.update({
         where: { id: meeting.id },
-        data: { status: TicketMeetingStatus.COMPLETED, completedAt: new Date(), updatedByUserId: user.id },
+        data: { ...(releaseReservation ? { providerWebLink: null, onlineMeetingJoinUrl: null, syncError: null, syncStatus: meeting.providerEventId ? CalendarSyncStatus.SYNCED : CalendarSyncStatus.NOT_SYNCED } : {}), status: TicketMeetingStatus.COMPLETED, completedAt: new Date(), updatedByUserId: user.id },
         include: this.meetingInclude()
       });
       await tx.ticketActivity.create({
-        data: { ticketId: ticket.id, userId: user.id, ticketMeetingId: meeting.id, action: "ticket.meeting.completed", metadata: this.activityMetadata(saved) }
+        data: { ticketId: ticket.id, userId: user.id, ticketMeetingId: meeting.id, action: "ticket.meeting.completed", metadata: { ...this.activityMetadata(saved), calendarReservationReleased: releaseReservation } }
       });
       return saved;
     });
@@ -219,6 +240,8 @@ export class TicketMeetingsService {
       include: { ticket: true, attendees: { orderBy: { email: "asc" } } }
     });
     if (!meeting) throw new NotFoundException("Meeting was not found.");
+    if (meeting.status === TicketMeetingStatus.CANCELLED || meeting.status === TicketMeetingStatus.COMPLETED) throw new BadRequestException("This activity is already concluded.");
+    this.validateActivity(meeting, true);
     const settings = await this.calendarSettings(user.organizationId);
     await this.prisma.ticketMeeting.update({
       where: { id: meeting.id },
@@ -228,7 +251,7 @@ export class TicketMeetingsService {
       ...settings,
       organizerEmail: meeting.organizerCalendarEmail || user.email,
       subject: meeting.title,
-      bodyHtml: this.calendarBody(meeting.ticket.ticketNumber, meeting.agenda),
+      bodyHtml: this.calendarBody(meeting.ticket.ticketNumber, meeting.agenda, meeting.activityType, meeting.modality),
       startDateTime: this.zonedDateTime(meeting.startAt, meeting.timeZone),
       endDateTime: this.zonedDateTime(meeting.endAt, meeting.timeZone),
       timeZone: meeting.timeZone,
@@ -425,11 +448,11 @@ export class TicketMeetingsService {
     return `${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}:${value("second")}`;
   }
 
-  private calendarBody(ticketNumber: string, agenda: string | null) {
+  private calendarBody(ticketNumber: string, agenda: string | null, activityType: TicketActivityType, modality: TicketActivityMode | null) {
     const appUrl = (this.config.get<string>("APP_URL") || "http://localhost:3000").replace(/\/$/, "");
     const ticketUrl = `${appUrl}/tickets/${encodeURIComponent(ticketNumber)}`;
-    const content = agenda ? `<p>${this.escapeHtml(agenda).replace(/\n/g, "<br>")}</p>` : "<p>Meeting related to this support ticket.</p>";
-    return `<!-- avidity-ticket-meeting:start --><div id="avidity-ticket-meeting-content">${content}<p><strong>Ticket:</strong> ${this.escapeHtml(ticketNumber)}<br><a href="${this.escapeHtml(ticketUrl)}">Open ticket in Avidity One</a></p></div><!-- avidity-ticket-meeting:end -->`;
+    const content = agenda ? `<p>${this.escapeHtml(agenda).replace(/\n/g, "<br>")}</p>` : "<p>Scheduled activity for this support ticket.</p>";
+    return `<!-- avidity-ticket-meeting:start --><div id="avidity-ticket-meeting-content">${content}<p><strong>Activity:</strong> ${this.escapeHtml(activityType.replace(/_/g, " ").toLowerCase())}${modality ? ` · ${this.escapeHtml(modality.replace(/_/g, " ").toLowerCase())}` : ""}</p><p><strong>Ticket:</strong> ${this.escapeHtml(ticketNumber)}<br><a href="${this.escapeHtml(ticketUrl)}">Open ticket in Avidity One</a></p></div><!-- avidity-ticket-meeting:end -->`;
   }
 
   private async recordSyncFailure(meetingId: string, ticketId: string, userId: string, error: unknown) {
@@ -444,8 +467,8 @@ export class TicketMeetingsService {
     return this.auditLogs.create({ organizationId: user.organizationId, userId: user.id, entityType: "TicketMeeting", entityId: meeting.id, action, metadata: { ticketId: meeting.ticketId, status: meeting.status, syncStatus: meeting.syncStatus } });
   }
 
-  private activityMetadata(meeting: { id: string; title: string; startAt: Date; endAt: Date; timeZone: string; status: TicketMeetingStatus; syncStatus: CalendarSyncStatus; organizerCalendarEmail: string | null; attendees?: Array<unknown> }) {
-    return { meetingId: meeting.id, title: meeting.title, startAt: meeting.startAt.toISOString(), endAt: meeting.endAt.toISOString(), timeZone: meeting.timeZone, status: meeting.status, syncStatus: meeting.syncStatus, organizerCalendarEmail: meeting.organizerCalendarEmail, attendeeCount: meeting.attendees?.length ?? 0 };
+  private activityMetadata(meeting: { id: string; title: string; startAt: Date; endAt: Date; timeZone: string; status: TicketMeetingStatus; syncStatus: CalendarSyncStatus; organizerCalendarEmail: string | null; attendees?: Array<unknown>; activityType?: TicketActivityType; modality?: TicketActivityMode | null; location?: string | null }) {
+    return { activityType: meeting.activityType, modality: meeting.modality, location: meeting.location, meetingId: meeting.id, title: meeting.title, startAt: meeting.startAt.toISOString(), endAt: meeting.endAt.toISOString(), timeZone: meeting.timeZone, status: meeting.status, syncStatus: meeting.syncStatus, organizerCalendarEmail: meeting.organizerCalendarEmail, attendeeCount: meeting.attendees?.length ?? 0 };
   }
 
   private meetingInclude() {
@@ -458,6 +481,18 @@ export class TicketMeetingsService {
 
   private userSelect() {
     return { id: true, firstName: true, lastName: true, email: true } as const;
+  }
+
+  private validateActivity(input: { modality?: TicketActivityMode | null; isOnlineMeeting?: boolean; location?: string | null }, scheduling = false) {
+    if (input.modality === TicketActivityMode.ON_SITE && input.isOnlineMeeting) {
+      throw new BadRequestException("On-site activities cannot include Teams. Select Hybrid to include both.");
+    }
+    if (scheduling && (input.modality === TicketActivityMode.ON_SITE || input.modality === TicketActivityMode.HYBRID) && !input.location?.trim()) {
+      throw new BadRequestException("Enter a location before scheduling an on-site or hybrid activity.");
+    }
+    if (input.modality === TicketActivityMode.HYBRID && !input.isOnlineMeeting) {
+      throw new BadRequestException("Hybrid activities require a Teams meeting.");
+    }
   }
 
   private optionalTrim(value: string | null | undefined) {

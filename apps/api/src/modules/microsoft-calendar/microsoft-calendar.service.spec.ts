@@ -64,8 +64,34 @@ describe("MicrosoftCalendarService", () => {
 
     const update = fetchMock.mock.calls[2][1] as RequestInit;
     const body = JSON.parse(String(update.body));
+    expect(body.isOnlineMeeting).toBe(true);
+    expect(body.onlineMeetingProvider).toBe("teamsForBusiness");
     expect(body.body.content).toContain("New agenda");
     expect(body.body.content).toContain("Join Teams");
     expect(body.body.content).not.toContain("Old agenda");
   });
+  it("creates on-site reservations without Teams and deletes personal reservations idempotently", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token-1", expires_in: 3600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "reservation" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "reservation", attendees: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const service = new MicrosoftCalendarService(config as never);
+    await service.createEvent({ organizerEmail: "tech@example.com", subject: "Site visit", bodyHtml: "<p>Visit</p>", startDateTime: "2026-09-16T10:00:00", endDateTime: "2026-09-16T11:00:00", timeZone: "America/Chicago", location: "Client office", attendees: [], isOnlineMeeting: false, transactionId: "visit" });
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(body.location).toEqual({ displayName: "Client office" });
+    expect(body.attendees).toEqual([]); expect(body.isOnlineMeeting).toBeUndefined(); expect(body.onlineMeetingProvider).toBeUndefined();
+    await service.deleteEvent({ organizerEmail: "tech@example.com", eventId: "reservation" });
+    await expect(service.deleteEvent({ organizerEmail: "tech@example.com", eventId: "reservation" })).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls[3][1].method).toBe("DELETE");
+  });
+
+  it("does not delete a reservation if Outlook has invitees missing from the local record", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token-1", expires_in: 3600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "reservation", attendees: [{ emailAddress: { address: "invited@example.invalid" } }] }), { status: 200 }));
+    const service = new MicrosoftCalendarService(config as never);
+    await expect(service.deleteEvent({ organizerEmail: "tech@example.com", eventId: "reservation" })).rejects.toThrow("audience");
+    expect(fetchMock.mock.calls.some(([, request]) => request.method === "DELETE")).toBe(false);
+  });
+
 });

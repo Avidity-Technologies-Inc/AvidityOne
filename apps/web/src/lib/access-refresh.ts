@@ -29,6 +29,7 @@ export function subscribeAccessRefresh(refresh: () => void) {
 }
 
 export function accessLabel(value: string) {
+  if (value === "ticket_meetings") return "Scheduled Activities";
   if (value === "qc") return "Quality Control";
   return value.replace(/[_.]/g, " ").replace(/\b\w/g, character => character.toUpperCase());
 }

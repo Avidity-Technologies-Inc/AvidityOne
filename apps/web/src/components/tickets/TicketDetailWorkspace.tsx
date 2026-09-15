@@ -12,7 +12,8 @@ import { enhanceEmailMessageBody, splitPlainMessage } from "@/lib/message-conten
 import { TicketStatusDefinition, ticketStatusDefinition, ticketStatusName, ticketStatusStyle } from "@/lib/ticket-statuses";
 import { AssignableTicketUser, TicketAssigneePicker } from "./TicketAssigneePicker";
 import { TicketReplyEditor } from "./TicketReplyEditor";
-import { TicketMeetingActivity, TicketMeetingCollection, TicketMeetingDrawer } from "./TicketMeetingDrawer";
+import { TicketActivityCloseout } from "./TicketActivityCloseout";
+import { activityTypeLabel, activityModeLabel, TicketMeetingActivity, TicketMeetingCollection, TicketMeetingDrawer } from "./TicketMeetingDrawer";
 
 interface User {
   id: string;
@@ -908,6 +909,9 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
   const uniqueInlineAttachments = dedupeInlineAttachments(inlineAttachments);
   const downloadableAttachmentCount = ticket.attachments.filter((attachment) => attachment.scanStatus !== "BLOCKED" && attachment.scanStatus !== "SUSPICIOUS").length;
   const attachmentImportFailures = ticket.messages.flatMap((message) => message.attachmentImportFailures ?? []);
+  const nextScheduledActivity = meetingData?.meetings
+    .filter(item => item.status === "SCHEDULED" && new Date(item.endAt) > new Date())
+    .sort((a, b) => a.startAt.localeCompare(b.startAt))[0];
   const ticketRef = ticket.ticketNumber;
   const downloadAllUrl = `${apiBaseUrl}/tickets/${ticketRef}/attachments/download-all`;
   const clientLabel = ticket.client?.name ?? (ticket.senderDomain ? `Unmapped: ${ticket.senderDomain}` : "Unassigned");
@@ -978,6 +982,12 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           ) : null}
         </div>
       ) : null}
+      {ticket.status === "CLOSED" && meetingData && <TicketActivityCloseout ticketId={ticketRef} meetings={meetingData.meetings} permissions={permissionSet} onChanged={loadMeetings} onOpen={id => { setMeetingTargetId(id); setMeetingDrawerOpen(true); }} />}
+      {ticket.status !== "CLOSED" && nextScheduledActivity && <div className="panel ticket-activity-plan-summary">
+        <CalendarClock size={16} /><span>Next activity: <button type="button" onClick={() => { setMeetingTargetId(nextScheduledActivity.id); setMeetingDrawerOpen(true); }}>
+          {nextScheduledActivity.title} · {new Intl.DateTimeFormat(undefined, { timeZone: nextScheduledActivity.timeZone, dateStyle: "medium", timeStyle: "short" }).format(new Date(nextScheduledActivity.startAt))} ({nextScheduledActivity.timeZone})
+        </button></span>
+      </div>}
       <section className="ticket-detail-layout">
         <div className="ticket-main-workspace">
           {!isMergedTicket ? (
@@ -1065,7 +1075,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             <div className="ticket-tools-heading"><h3>Ticket Tools</h3>{permissionSet.has("tickets.delete") ? <button className="button danger icon-button" type="button" onClick={() => void deleteCurrentTicket()} disabled={toolBusy === "DELETE"} title="Delete ticket" aria-label="Delete ticket"><Trash2 size={14} aria-hidden="true" /></button> : null}</div>
             <div className="ticket-tools-grid">
               <QcContextLink permissions={currentUser?.permissions} href={`/qc/reviews?ticketId=${ticket.id}`} label="QC reviews" title="View quality reviews and request an inspection for this ticket" />
-              {permissionSet.has("ticket_meetings.view") ? <button className="button secondary" type="button" onClick={() => { setMeetingTargetId(null); setMeetingDrawerOpen(true); }} disabled={!meetingData} title="Schedule and manage ticket meetings"><CalendarClock size={14} aria-hidden="true" /><span>Meetings{meetingData?.meetings.length ? ` (${meetingData.meetings.length})` : ""}</span></button> : null}
+              {permissionSet.has("ticket_meetings.view") ? <button className="button secondary" type="button" onClick={() => { setMeetingTargetId(null); setMeetingDrawerOpen(true); }} disabled={!meetingData} title="Schedule work, service visits, and meetings"><CalendarClock size={14} aria-hidden="true" /><span>Activities{meetingData?.meetings.length ? ` (${meetingData.meetings.length})` : ""}</span></button> : null}
               {permissionSet.has("tickets.merge") ? <button className="button secondary" type="button" onClick={openMergeModal} disabled={isMergedTicket} title="Merge tickets"><GitMerge size={14} aria-hidden="true" /><span>Merge</span></button> : null}
               {permissionSet.has("knowledge_base.create") ? <button className="button secondary" type="button" onClick={() => void createKnowledgeArticleDraft()} disabled={toolBusy === "KB"} title="Create Knowledge Base draft"><BookOpen size={14} aria-hidden="true" /><span>KB Draft</span></button> : null}
               {permissionSet.has("spam.manage") ? <button className="button secondary" type="button" onClick={() => blockSender("EMAIL")} disabled={!ticket.senderEmail || toolBusy === "EMAIL"} title="Block sender"><X size={14} aria-hidden="true" /><span>Sender</span></button> : null}
@@ -1349,7 +1359,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
 }
 
 function TicketMeetingActivityCard({ activity, onOpen }: { activity: TicketMeetingActivity; onOpen: () => void }) {
-  const title = activity.metadata?.title ?? "Ticket meeting";
+  const title = activity.metadata?.title ?? "Scheduled activity";
   const action = activity.action.split(".").at(-1)?.replace(/_/g, " ") ?? "updated";
   const actor = activity.user ? `${activity.user.firstName} ${activity.user.lastName}`.trim() || activity.user.email : "System";
   let scheduled = "Date not available";
@@ -1363,10 +1373,12 @@ function TicketMeetingActivityCard({ activity, onOpen }: { activity: TicketMeeti
   return <article className={`ticket-meeting-activity${activity.action.endsWith("sync_failed") ? " failed" : ""}`}>
     <div className="ticket-meeting-activity-icon">{activity.metadata?.status === "SCHEDULED" ? <Video size={16} aria-hidden="true" /> : <CalendarClock size={16} aria-hidden="true" />}</div>
     <div>
-      <header><span><strong>{title}</strong><small>Meeting {action}</small></span><time>{new Date(activity.createdAt).toLocaleString()}</time></header>
+      <header><span><strong>{title}</strong><small>{activityTypeLabel(activity.metadata?.activityType)} {action}</small></span><time>{new Date(activity.createdAt).toLocaleString()}</time></header>
       <p>{scheduled} · {activity.metadata?.attendeeCount ?? 0} attendee{activity.metadata?.attendeeCount === 1 ? "" : "s"} · {actor}</p>
+      {activity.metadata?.modality && <p>{activityModeLabel(activity.metadata.modality)}{activity.metadata.location ? ` · ${activity.metadata.location}` : ""}</p>}
+      {activity.metadata?.calendarReservationReleased && <p>Work completed early; future calendar reservation released.</p>}
       {activity.metadata?.error ? <p className="ticket-meeting-activity-error">{activity.metadata.error}</p> : null}
-      <button className="button secondary compact-button" type="button" onClick={onOpen}>View Meeting</button>
+      <button className="button secondary compact-button" type="button" onClick={onOpen}>View activity</button>
     </div>
   </article>;
 }

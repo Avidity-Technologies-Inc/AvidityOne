@@ -1,6 +1,6 @@
 import { Type } from "class-transformer";
 import { ArrayMaxSize, IsArray, IsBoolean, IsEmail, IsEnum, IsISO8601, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateNested } from "class-validator";
-import { MeetingAttendeeSource, MeetingAttendeeType } from "@prisma/client";
+import { MeetingAttendeeSource, MeetingAttendeeType, TicketActivityType, TicketActivityMode } from "@prisma/client";
 
 export class TicketMeetingAttendeeDto {
   @IsEmail()
@@ -52,6 +52,14 @@ export class CreateTicketMeetingDto {
   location?: string | null;
 
   @IsOptional()
+  @IsEnum(TicketActivityType)
+  activityType?: TicketActivityType;
+
+  @IsOptional()
+  @IsEnum(TicketActivityMode)
+  modality?: TicketActivityMode;
+
+  @IsOptional()
   @IsBoolean()
   isOnlineMeeting?: boolean;
 
@@ -96,6 +104,14 @@ export class UpdateTicketMeetingDto {
   @IsString()
   @MaxLength(240)
   location?: string | null;
+
+  @IsOptional()
+  @IsEnum(TicketActivityType)
+  activityType?: TicketActivityType;
+
+  @IsOptional()
+  @IsEnum(TicketActivityMode)
+  modality?: TicketActivityMode;
 
   @IsOptional()
   @IsBoolean()

@@ -79,6 +79,18 @@ enum TicketSource {
   SYSTEM
 }
 
+enum TicketActivityType {
+  MEETING
+  WORK_SESSION
+  SERVICE_VISIT
+}
+
+enum TicketActivityMode {
+  REMOTE
+  ON_SITE
+  HYBRID
+}
+
 enum TicketMeetingStatus {
   DRAFT
   SCHEDULED
@@ -1356,6 +1368,8 @@ model TicketMeeting {
   endAt                  DateTime
   timeZone               String
   location               String?
+  activityType           TicketActivityType   @default(MEETING)
+  modality               TicketActivityMode?
   isOnlineMeeting        Boolean              @default(false)
   status                 TicketMeetingStatus  @default(DRAFT)
   syncStatus             CalendarSyncStatus   @default(NOT_SYNCED)

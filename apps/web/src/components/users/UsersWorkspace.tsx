@@ -108,6 +108,7 @@ const permissionScopeLabels: Record<string, string> = {
   system_settings: "System Settings",
   ticket_attachments: "Ticket Attachments",
   ticket_messages: "Ticket Messages",
+  ticket_meetings: "Scheduled Activities",
   tickets: "Tickets",
   users: "Users"
 };

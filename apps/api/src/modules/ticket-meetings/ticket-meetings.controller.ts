@@ -48,6 +48,12 @@ export class TicketMeetingsController {
     return this.meetings.cancel(ticketId, meetingId, body.comment, user);
   }
 
+  @Post(":meetingId/complete-and-release")
+  @RequirePermissions("ticket_meetings.update", "ticket_meetings.cancel")
+  completeAndRelease(@Param("ticketId") ticketId: string, @Param("meetingId") meetingId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.meetings.complete(ticketId, meetingId, user, true);
+  }
+
   @Post(":meetingId/complete")
   @RequirePermissions("ticket_meetings.update")
   complete(@Param("ticketId") ticketId: string, @Param("meetingId") meetingId: string, @CurrentUser() user: AuthenticatedUser) {

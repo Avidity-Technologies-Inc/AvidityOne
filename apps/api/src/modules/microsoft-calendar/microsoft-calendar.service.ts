@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException } from "@nestjs/common";
+import { BadRequestException, Injectable, InternalServerErrorException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 export interface MicrosoftCalendarCredentials {
@@ -74,6 +74,7 @@ export class MicrosoftCalendarService {
       method: "PATCH",
       body: {
         subject: input.subject,
+        ...(input.isOnlineMeeting ? { isOnlineMeeting: true, onlineMeetingProvider: "teamsForBusiness" } : {}),
         body: { contentType: "HTML", content: bodyHtml },
         start: { dateTime: input.startDateTime, timeZone: input.timeZone },
         end: { dateTime: input.endDateTime, timeZone: input.timeZone },
@@ -84,6 +85,16 @@ export class MicrosoftCalendarService {
         }))
       }
     });
+  }
+
+  async deleteEvent(input: MicrosoftCalendarCredentials & { organizerEmail: string; eventId: string }) {
+    const eventPath = `/users/${encodeURIComponent(input.organizerEmail)}/events/${encodeURIComponent(input.eventId)}`;
+    const event = await this.request(input, `${eventPath}?$select=id,attendees`, { method: "GET", expectJson: true, allowNotFound: true }) as { attendees?: unknown[] } | null;
+    if (!event) return;
+    if (!Array.isArray(event.attendees) || event.attendees.length) {
+      throw new BadRequestException("The calendar event has invited participants or its audience could not be verified. Synchronize the activity before removing an organizer-only reservation.");
+    }
+    await this.request(input, eventPath, { method: "DELETE", expectJson: false, allowNotFound: true });
   }
 
   async cancelEvent(input: MicrosoftCalendarCredentials & { organizerEmail: string; eventId: string; comment?: string | null }) {
@@ -101,7 +112,7 @@ export class MicrosoftCalendarService {
   private async request(
     credentials: MicrosoftCalendarCredentials,
     path: string,
-    options: { method: string; body?: Record<string, unknown>; expectJson: boolean }
+    options: { method: string; body?: Record<string, unknown>; expectJson: boolean; allowNotFound?: boolean }
   ) {
     const token = await this.getAccessToken(credentials);
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -113,6 +124,7 @@ export class MicrosoftCalendarService {
         },
         body: options.body ? JSON.stringify(options.body) : undefined
       });
+      if (options.allowNotFound && response.status === 404) return null;
       if (response.ok) {
         if (!options.expectJson || response.status === 204) return null;
         return response.json();

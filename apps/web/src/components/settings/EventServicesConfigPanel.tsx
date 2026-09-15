@@ -662,7 +662,7 @@ export function EventServicesConfigPanel() {
         <div className="nested-panel settings-section">
           <div className="section-heading">
             <div>
-              <h3>Microsoft Calendar & Ticket Meetings</h3>
+              <h3>Microsoft Calendar & Scheduled Activities</h3>
               <p className="muted">Shared Microsoft 365 connection for event tasks and ticket meetings. Calendar writes happen only after an explicit user action.</p>
             </div>
             <span className="status-pill">{calendarSettings.eventCalendarSyncEnabled ? "Enabled" : "Disabled"}</span>
