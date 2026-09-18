@@ -1,5 +1,11 @@
 # Project Handoff
 
+## Main-only Repository Workflow — 2026-09-18
+
+- The owner authorized aligning local and canonical GitHub `main` and removing additional branches after a verified full-history backup. Application baseline is `409a48b`; this administrative change does not modify application code, dependencies, database migrations or production.
+- Work directly on `main`; new branches/worktrees require explicit authorization. Dependency proposals are archived for manual review; automatic update PR creation is disabled while vulnerability alerts remain enabled.
+- See [branch policy, archived proposals and recovery](docs/REPOSITORY_BRANCH_POLICY_2026-09-18.md). The ticket composer attachment/scroll fix remains pending.
+
 ## Scheduled Activities Release — 2026-09-15
 
 - Local branch `codex/ticket-scheduled-activities`, based on canonical `main` at `c083b19`, expands ticket Meetings to work sessions, service visits and meetings with explicit modality and organizer-only reservations. The ticket closeout panel separates actual completion, early work reservation release, cancellation and retaining future activities.

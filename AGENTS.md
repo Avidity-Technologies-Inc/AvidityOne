@@ -10,6 +10,9 @@ These instructions apply to future Codex sessions working in this repository.
 - Inspect relevant files before assuming how a feature works.
 - Check `git status --short` before editing.
 - Do not overwrite user changes.
+- Work directly on `main` for this repository. Do not create or publish additional branches or worktrees unless the user explicitly authorizes them for the current task.
+- Before editing, fetch canonical `origin`, compare local `main` with `origin/main`, and preserve any existing changes or divergence. Use fast-forward updates when possible; never force-push shared history.
+- Dependency upgrades are reviewed manually. Keep Dependabot vulnerability alerts enabled; do not re-enable automatic update PRs without explicit user authorization.
 - Do not modify application code when the user asks only for documentation, planning, review, or analysis.
 
 ## Repository Conventions

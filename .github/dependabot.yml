@@ -4,4 +4,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    # Dependency upgrades are reviewed manually under the main-only workflow.
+    # Security PR automation is separately disabled in repository settings; alerts stay enabled.
+    open-pull-requests-limit: 0
