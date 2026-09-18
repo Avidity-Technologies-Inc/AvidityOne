@@ -11,7 +11,7 @@ const bundled = buildSync({
   define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' }
 });
 
-async function mount(page: Page, fileCount = 24) {
+async function mount(page: Page, fileCount = 24, signatureHtml = "<p>Test Operator<br>Support Team<br>Example Company</p>") {
   const messages: Record<string, unknown>[] = [];
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -40,7 +40,7 @@ async function mount(page: Page, fileCount = 24) {
       "/api/tickets/LAYOUT-1": ticket,
       "/api/auth/me": { user: { id: "operator", firstName: "Test", lastName: "Operator", permissions: ["tickets.view", "tickets.reply"] } },
       "/api/tickets/assignment-options": [], "/api/ticket-teams": [], "/api/external-specialists": [], "/api/ticket-workflow/statuses": [],
-      "/api/profile/signature": { htmlSignature: "<p>Test Operator<br>Support Team<br>Example Company</p>", useSignatureByDefault: true },
+      "/api/profile/signature": { htmlSignature: signatureHtml, useSignatureByDefault: true },
       "/api/tickets/LAYOUT-1/ai/complete-draft": { text: "" }
     };
     if (url.pathname in data) return route.fulfill({ json: data[url.pathname] });
@@ -149,3 +149,19 @@ for (const viewport of [{ width: 390, height: 600 }, { width: 844, height: 390 }
     expect(state.errors).toEqual([]);
   });
 }
+
+
+test("submits the configured signature layout intact from the mounted ticket editor", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const signature = '<table style="width:500px"><tr><td style="width:143px;border-right:1px solid #123456">Test Operator</td><td style="width:26px"></td><td style="width:331px">Support Team</td></tr></table>';
+  const state = await mount(page, 0, signature);
+  await page.locator("[data-editor-draft]").first().fill("Please review the update.");
+  await expect(page.locator("[data-editor-signature] table")).toHaveCSS("width", "500px");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => state.messages.length).toBe(1);
+  const html = state.messages[0].bodyHtml as string;
+  expect(html).toContain("Please review the update.");
+  for (const value of ["500px", "143px", "26px", "331px"]) expect(html).toContain(value);
+  expect(html.match(/Test Operator/g)).toHaveLength(1);
+  expect(state.errors).toEqual([]);
+});

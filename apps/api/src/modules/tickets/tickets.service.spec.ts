@@ -1,6 +1,37 @@
 import { TicketsService } from "./tickets.service";
+import { HtmlSanitizerService } from "../../common/html/html-sanitizer.service";
 
 describe("TicketsService", () => {
+
+  it("rebuilds safe historical display HTML without rewriting stored messages", async () => {
+    const original = '<table width="500"><tr><td style="width:143px">Photo</td><td style="width:26px"></td><td>Contact</td></tr></table><script>bad()</script>';
+    const ticket = {
+      id: "ticket-1", firstReadAt: new Date(),
+      messages: [
+        { id: "old-outbound", bodyHtml: original, sanitizedBodyHtml: "<table><tr><td>Photo</td><td></td><td>Contact</td></tr></table>" },
+        { id: "old-inbound", bodyHtml: '<table align="left" width="100%"><tr><td>EXTERNAL</td></tr></table><p>Reply</p>', sanitizedBodyHtml: "<p>Old display</p>" },
+        { id: "fallback", bodyHtml: null, sanitizedBodyHtml: '<p onclick="bad()">Retained safe copy</p>' },
+        { id: "plain", bodyHtml: null, sanitizedBodyHtml: null, bodyText: "Plain text remains available" }
+      ]
+    };
+    const prisma = { ticket: { findFirst: jest.fn().mockResolvedValue(ticket), update: jest.fn() }, ticketMessage: { update: jest.fn(), updateMany: jest.fn() } };
+    const service = new TicketsService(prisma as never, {} as never, new HtmlSanitizerService(), {} as never, {} as never, {} as never, {} as never, {} as never);
+    const result = await service.getById("AIT-100001", {
+      id: "user-1", organizationId: "org-1", email: "tech@example.com", firstName: "Tech", lastName: "User", forcePasswordChange: false, permissions: ["tickets.view"]
+    });
+    expect(result.messages[0].sanitizedBodyHtml).toContain('width="500"');
+    expect(result.messages[0].sanitizedBodyHtml).toContain('width:26px');
+    expect(result.messages[0].sanitizedBodyHtml).not.toContain("<script");
+    expect(result.messages[1].sanitizedBodyHtml).toContain('width="100%"');
+    expect(result.messages[2].sanitizedBodyHtml).toBe("<p>Retained safe copy</p>");
+    expect(result.messages[3].bodyText).toBe("Plain text remains available");
+    expect(result.messages[3].sanitizedBodyHtml).toBeNull();
+    expect(ticket.messages[0].sanitizedBodyHtml).not.toContain("width");
+    expect(prisma.ticket.update).not.toHaveBeenCalled();
+    expect(prisma.ticketMessage.update).not.toHaveBeenCalled();
+    expect(prisma.ticketMessage.updateMany).not.toHaveBeenCalled();
+  });
+
   it("creates a ticket with the next human-readable ticket number", async () => {
     const ticket = {
       id: "ticket-1",
@@ -503,7 +534,8 @@ describe("TicketsService", () => {
       }
     };
     const auditLogs = { create: jest.fn() };
-    const sanitizer = { sanitize: jest.fn((value: string) => value) };
+    const sanitizer = new HtmlSanitizerService();
+    const signedHtml = '<p>Please try restarting the printer.</p><table style="width:500px"><tr><td style="width:143px">Photo</td><td style="width:26px"></td><td style="width:331px">Support</td></tr></table><script>bad()</script>';
     const contactsService = { resolveRequesterFromEmail: jest.fn() };
     const routing = { applyInboundRules: jest.fn() };
     const mailDelivery = {
@@ -531,7 +563,7 @@ describe("TicketsService", () => {
         "AIT-100001",
         {
           bodyText: "Please try restarting the printer.",
-          bodyHtml: "<p>Please try restarting the printer.</p>",
+          bodyHtml: signedHtml,
           visibility: "public",
           ccEmails: ["manager@example.com"],
           persistCc: true,
@@ -548,6 +580,12 @@ describe("TicketsService", () => {
         }
       )
     ).resolves.toEqual(message);
+
+    const deliveredHtml = mailDelivery.sendTicketReply.mock.calls[0][0].bodyHtml;
+    expect(deliveredHtml).toContain("width:500px");
+    expect(deliveredHtml).toContain("width:26px");
+    expect(deliveredHtml).not.toContain("<script");
+    expect(prisma.ticketMessage.create).toHaveBeenCalledWith({ data: expect.objectContaining({ bodyHtml: signedHtml, sanitizedBodyHtml: deliveredHtml }) });
 
     expect(prisma.ticket.update).toHaveBeenCalledWith({
       where: { id: "ticket-1" },

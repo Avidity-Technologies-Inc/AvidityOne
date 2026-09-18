@@ -7534,7 +7534,6 @@ select.public-event-input[multiple] {
 
 .signature-render table,
 .message-body table {
-  width: auto;
   max-width: 100%;
   border-collapse: collapse;
 }
@@ -14782,11 +14781,8 @@ button.operations-summary-card {
   }
 
   .editor-surface table,
-  .signature-render table,
-  .message-body table {
-    width: 100% !important;
+  .signature-render table {
     max-width: 100% !important;
-    table-layout: fixed;
   }
 
   .editor-surface img,
@@ -15627,6 +15623,19 @@ button.operations-summary-card {
 
 .message-body table {
   max-width: 100% !important;
+  /* Legacy email align attributes otherwise float banners into the following paragraph. */
+  float: none !important;
+  table-layout: auto;
+}
+
+@media (max-width: 640px) {
+  .message-body table,
+  .ticket-reply-editor .editor-surface table,
+  .signature-editor table {
+    /* Let email columns shrink on small screens, including WebKit's fixed-width tables. */
+    width: auto !important;
+    table-layout: auto;
+  }
 }
 
 .message-body img {

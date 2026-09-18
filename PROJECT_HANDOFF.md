@@ -1,5 +1,15 @@
 # Project Handoff
 
+## Ticket Email Formatting Fix — 2026-09-18
+
+- Implemented locally on clean canonical `main` at `3060467`, after fetching and confirming no upstream divergence. Publication on `main` is authorized; production deployment remains pending.
+- Email sanitization preserves safe table/column widths and signature spacing, plus safe fractional pixel/point borders. Scripts, event handlers, unsafe URLs, arbitrary styles and active embedded content remain blocked. Outbound replies use the corrected sanitized HTML.
+- Ticket detail responses rebuild `sanitizedBodyHtml` from retained `bodyHtml` (or the sanitized copy when no original exists). Stored messages are not rewritten; plain-text messages retain their null HTML value. Historical formatting absent from both stored copies cannot be reconstructed, and previously delivered emails are not changed.
+- Conversation tables no longer float alongside following paragraphs through legacy `align` attributes. Safe widths are retained on desktop, with automatic table sizing on small screens; oversized content remains contained. Existing composer action/attachment behavior is preserved.
+- Validation: API/web type checks and full build passed, followed by an API rebuild and 22 focused ticket tests after preserving the null-HTML contract. Full API run: 130 passed; 28 existing database-gated QC/activity integration tests skipped because `QC_TEST_DATABASE_URL` was not supplied. All 147 browser cases verified across Chromium/Firefox/WebKit (145 full-run passes, then three focused passes after fixing an ambiguous selector in the new composer test). New cases cover actual sanitizer output, signature columns, external banners, themes, responsive layouts, editor submission, safe historical projection and unsafe HTML removal. Desktop Chromium and mobile WebKit screenshots reviewed.
+- Guarded native deployment helper: `scripts/deploy-ticket-email-formatting.sh <full-release-sha>`. Accepts clean `main` at `409a48b`, `43a5222`, `3060467`, or the target for retries. Backs up source and API/web runtime, builds both components, and checks local/public health. On failure it restores runtime artifacts and leaves Git at the attempted revision; inspect before retrying. Syntax-checked locally; not executed on production.
+- Requires API and web deployment; no dependency, schema, migration or environment change. No production data edits or real emails were sent. Controlled Outlook receipt verification remains pending after deployment.
+
 ## Ticket Composer Layout Release — 2026-09-18
 
 - Implemented locally on `main` after verifying a clean checkout synchronized with canonical `origin/main` at `43a5222`. Publication is authorized; production deployment remains pending.

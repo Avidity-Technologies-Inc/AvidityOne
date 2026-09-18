@@ -892,7 +892,16 @@ export class TicketsService {
       });
     }
 
-    return ticket;
+    // Rebuild the safe display copy from retained originals without rewriting message history.
+    return {
+      ...ticket,
+      messages: ticket.messages.map((message) => ({
+        ...message,
+        sanitizedBodyHtml: message.bodyHtml || message.sanitizedBodyHtml
+          ? this.sanitizeTicketMessageHtml(message.bodyHtml || message.sanitizedBodyHtml || "")
+          : null
+      }))
+    };
   }
 
   async create(input: CreateTicketDto, user: AuthenticatedUser) {
