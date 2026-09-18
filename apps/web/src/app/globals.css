@@ -15344,13 +15344,25 @@ button.operations-summary-card {
 .ticket-timeline .message::before { inset: 10px auto 10px 0; }
 .ticket-timeline .message-header { margin-bottom: 7px; font-size: 11px; }
 .ticket-composer-slot { min-width: 0; min-height: var(--ticket-composer-height, 0); }
-.ticket-composer-panel { position: relative; z-index: 8; width: 100%; overflow: visible; box-shadow: var(--shadow-sm); transform: translateY(0); opacity: 1; transition: transform 180ms ease, opacity 140ms ease, box-shadow 180ms ease; will-change: transform; }
+.ticket-composer-panel { display: flex; flex-direction: column; max-height: var(--ticket-composer-available-height, calc(100dvh - 16px)); position: relative; z-index: 8; width: 100%; overflow: visible; box-shadow: var(--shadow-sm); transform: translateY(0); opacity: 1; transition: transform 180ms ease, opacity 140ms ease, box-shadow 180ms ease; will-change: transform; }
 .ticket-composer-panel.scroll-hidden,
 .ticket-composer-panel.scroll-pinned { position: fixed; top: 8px; left: var(--ticket-composer-left); width: var(--ticket-composer-width); }
 .ticket-composer-panel.scroll-hidden { pointer-events: none; box-shadow: none; transform: translateY(calc(-100% - 16px)); opacity: 0; }
 .ticket-composer-panel.scroll-pinned { transform: translateY(0); opacity: 1; }
 .ticket-composer-panel.collapsed { max-height: 40px; overflow: hidden; }
-.ticket-composer-panel .ticket-reply-editor { gap: 7px; padding: 8px 10px 10px; }
+.ticket-composer-panel .ticket-composer-heading { flex-shrink: 0; }
+.ticket-composer-panel .ticket-reply-editor { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; gap: 0; padding: 0; }
+.ticket-composer-panel.collapsed > .ticket-reply-editor { display: none; }
+.ticket-reply-scroll-content { display: grid; min-width: 0; gap: inherit; }
+.ticket-composer-panel .ticket-reply-scroll-content { min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; align-content: start; gap: 7px; padding: 8px 10px; }
+.ticket-composer-panel .editor-submit-toolbar { position: relative; z-index: 2; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--surface-raised); }
+.ticket-composer-panel .editor-submit-toolbar .error { flex-basis: 100%; order: 1; max-height: 64px; overflow-y: auto; overflow-wrap: anywhere; }
+.ticket-composer-panel .split-action-menu { right: 0; left: auto; min-width: min(210px, calc(100vw - 40px)); max-height: calc(100dvh - 120px); overflow-y: auto; }
+.ticket-composer-panel .ticket-editor-attachments { align-items: start; }
+.ticket-composer-panel .attachment-row { flex-wrap: wrap; }
+.ticket-composer-panel .attachment-row > span { min-width: 0; overflow-wrap: anywhere; }
+.ticket-composer-panel .attachment-row > span:first-child { flex: 1 1 auto; }
+.ticket-composer-panel .attachment-row > .button { flex-shrink: 0; }
 .ticket-composer-panel .editor-surface { min-height: 105px; max-height: 220px; padding: 10px; font-size: 12px; }
 .ticket-composer-panel .dropzone,
 .ticket-composer-panel .ticket-attachment-preview-panel { min-height: 72px; padding: 8px; font-size: 11px; }
@@ -16029,7 +16041,7 @@ button.operations-summary-card {
   .ticket-composer-slot { min-height: 0; }
   .ticket-composer-panel,
   .ticket-composer-panel.scroll-hidden,
-  .ticket-composer-panel.scroll-pinned { position: static; max-height: none; width: 100%; transform: none; opacity: 1; }
+  .ticket-composer-panel.scroll-pinned { position: static; max-height: calc(100dvh - 16px); width: 100%; transform: none; opacity: 1; pointer-events: auto; }
   .ticket-side-panel { position: static; max-height: none; }
   .ticket-rail-panel { max-height: none; }
   .ticket-rail-content { overflow: visible; }

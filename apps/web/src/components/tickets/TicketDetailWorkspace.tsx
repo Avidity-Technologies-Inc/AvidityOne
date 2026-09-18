@@ -812,6 +812,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
   }, [showMergeModal, mergeSearch]);
 
   useEffect(() => {
+    if (!composerRef.current || !composerSlotRef.current) return;
     const desktopQuery = window.matchMedia("(min-width: 1101px)");
     let lastScrollY = window.scrollY;
     let accumulatedDistance = 0;
@@ -826,7 +827,12 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       const slotRect = slot.getBoundingClientRect();
       slot.style.setProperty("--ticket-composer-left", `${slotRect.left}px`);
       slot.style.setProperty("--ticket-composer-width", `${slotRect.width}px`);
-      slot.style.setProperty("--ticket-composer-height", `${composer.offsetHeight}px`);
+      // Reserve the normal-flow height; resizing a floating panel must not move the timeline.
+      if (!desktopQuery.matches || composer.classList.contains("scroll-normal")) {
+        slot.style.setProperty("--ticket-composer-height", `${composer.offsetHeight}px`);
+      }
+      // Keep the action bar inside the viewport in both normal and floating states.
+      slot.style.setProperty("--ticket-composer-available-height", `${Math.max(240, window.innerHeight - Math.max(8, slotRect.top) - 8)}px`);
     };
 
     const updateComposerPosition = () => {
@@ -895,7 +901,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
       resizeObserver.disconnect();
       if (frameId !== null) window.cancelAnimationFrame(frameId);
     };
-  }, []);
+  }, [loading, currentUser?.permissions, ticket?.status]);
 
   if (loading) {
     return <div className="panel ticket-detail-loading">Loading ticket...</div>;
@@ -994,7 +1000,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
             <div className="ticket-composer-slot" ref={composerSlotRef}>
               <div className={`panel ticket-composer-panel${composerCollapsed ? " collapsed" : ""} ${composerScrollState === "HIDDEN" ? "scroll-hidden" : composerScrollState === "PINNED" ? "scroll-pinned" : "scroll-normal"}`} ref={composerRef} tabIndex={-1}>
                 <div className="ticket-composer-heading"><div><MessageSquareReply size={16} aria-hidden="true" /><h2>Reply Composer</h2></div><button className="button secondary icon-button" type="button" onClick={() => setComposerCollapsed((current) => !current)} title={composerCollapsed ? "Expand composer" : "Collapse composer"} aria-label={composerCollapsed ? "Expand composer" : "Collapse composer"}>{composerCollapsed ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronUp size={15} aria-hidden="true" />}</button></div>
-                {!composerCollapsed ? <TicketReplyEditor ticketId={ticketRef} ccUsers={users} ccContacts={ccContacts} conversationParticipants={ticket.conversationParticipants ?? []} insertRequest={draftInsertRequest} onSaved={load} /> : null}
+                <TicketReplyEditor ticketId={ticketRef} ccUsers={users} ccContacts={ccContacts} conversationParticipants={ticket.conversationParticipants ?? []} insertRequest={draftInsertRequest} onSaved={load} />
               </div>
             </div>
           ) : null}

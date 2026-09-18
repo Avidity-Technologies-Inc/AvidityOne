@@ -1,5 +1,13 @@
 # Project Handoff
 
+## Ticket Composer Layout Release — 2026-09-18
+
+- Implemented locally on `main` after verifying a clean checkout synchronized with canonical `origin/main` at `43a5222`. Publication is authorized; production deployment remains pending.
+- The reply panel is bounded by available viewport height, with independently scrolling content and a persistent action bar. Floating geometry starts after the ticket loads and retains the normal-flow placeholder height to avoid moving the conversation while scrolling. Collapsing the composer preserves the mounted editor, draft and uploaded attachment selection.
+- Validation: web TypeScript check and production web build passed; all 135 browser tests passed across Chromium, Firefox and WebKit. New tests mount the actual ticket workspace and cover 24 uploads, long signed drafts, CCs, send failure/retry, public/internal action menus, collapse/expand, scroll hiding and responsive layouts. Desktop and dark mobile screenshots were reviewed. API interactions were synthetic; no real ticket or customer message was changed.
+- No backend, schema, dependency, permission or production configuration changes. Application code is limited to the ticket workspace, reply editor and scoped styles; tests are in `tests/browser/ticket-composer-layout.spec.ts`.
+- Web-only deployment helper: `scripts/deploy-ticket-composer.sh <full-release-sha>`, run as root from the native host after fetching the exact release. It expects a clean `main` at `409a48b` or `43a5222` (or the target for retries), backs up the source and Next build, stops only `avidity-web`, builds web and checks local/public health. It leaves API/database/configuration unchanged. On failure it attempts to restore the old Next build while leaving Git at the attempted release for a retry. The helper was syntax-checked locally; it has not been executed against production.
+
 ## Main-only Repository Workflow — 2026-09-18
 
 - The owner authorized aligning local and canonical GitHub `main` and removing additional branches after a verified full-history backup. Application baseline is `409a48b`; this administrative change does not modify application code, dependencies, database migrations or production.

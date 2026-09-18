@@ -715,6 +715,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
 
   return (
     <div className="editor ticket-reply-editor">
+      <div className="ticket-reply-scroll-content">
       <div className="editor-toolbar editor-format-toolbar" aria-label="Reply tools">
         {toolbar.map((item) => {
           const Icon = item.icon;
@@ -871,7 +872,8 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
           </div>
         </div>
       </details>
-      <div className="editor-toolbar editor-submit-toolbar">
+      </div>
+      <div className="editor-toolbar editor-submit-toolbar" role="group" aria-label="Reply actions">
         <SignatureInserter onInsert={(html) => {
           if (!editorRef.current) return;
           clearWritingSuggestions();
