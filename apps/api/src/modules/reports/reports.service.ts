@@ -1,12 +1,17 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { Workbook } from "exceljs";
-import PDFDocument from "pdfkit";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { REPORT_COLUMNS, ReportKind } from "@avidity/shared/dist";
+import { plainToInstance } from "class-transformer";
+import { validateSync } from "class-validator";
+import sharp from "sharp";
+import { LocalFileStorageProvider } from "../file-storage/providers/local-file-storage.provider";
+import { renderReport, selectedColumns, reportSections, ReportDocument } from "./report-renderer";
+import { localDay, nextReportRun, periodKey, reportRange, ScheduleTiming, shiftDay, validZone } from "./report-time";
 import { EventServiceRequestStatus, EventServiceTaskStatus, Prisma, ProjectDecisionStatus, ProjectHealth, ProjectMilestoneStatus, ProjectStatus, TicketPriority, TicketSource, TicketStatus } from "@prisma/client";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { MailDeliveryService } from "../mailboxes/mail-delivery.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateReportDefinitionDto, CreateReportScheduleDto, SendReportDto, UpdateReportDefinitionDto, UpdateReportScheduleDto } from "./dto/report-definition.dto";
-import { EventServiceReportExportQueryDto, EventServiceReportQueryDto, TicketReportExportQueryDto, TicketReportQueryDto } from "./dto/ticket-report-query.dto";
+import { EventServiceReportExportQueryDto, EventServiceReportQueryDto, ReportPresentationDto, TicketReportExportQueryDto, TicketReportQueryDto } from "./dto/ticket-report-query.dto";
 
 const ACTIVE_STATUSES: TicketStatus[] = [
   TicketStatus.NEW,
@@ -42,15 +47,17 @@ type EventSummaryOptions = { detailMode?: "paged" | "all" };
 export class ReportsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ReportsService.name);
   private scheduleTimer?: NodeJS.Timeout;
+  private schedulesRunning = false;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly mailDelivery: MailDeliveryService
+    private readonly mailDelivery: MailDeliveryService,
+    private readonly brandingStorage: LocalFileStorageProvider
   ) {}
 
   onModuleInit() {
     this.scheduleTimer = setInterval(() => {
-      void this.runDueSchedules();
+      void this.runDueSchedules().catch((error: unknown) => this.logger.error(error instanceof Error ? error.message : "Report scheduler failed."));
     }, 60_000);
   }
 
@@ -62,13 +69,15 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
 
   async listDefinitions(user: AuthenticatedUser, reportType = "ticket-report") {
     const definitions = await this.prisma.reportDefinition.findMany({
-      where: { organizationId: user.organizationId, reportType },
+      where: { organizationId: user.organizationId, reportType, OR: [{ isShared: true }, { createdById: user.id }] },
       select: {
         id: true,
         name: true,
         description: true,
         reportType: true,
         filters: true,
+        isShared: true,
+        createdById: true,
         createdAt: true,
         updatedAt: true,
         createdBy: { select: { firstName: true, lastName: true } }
@@ -123,17 +132,17 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         id: "client-report",
         name: "Client Report",
         description: "Client-focused activity, status, workload, and estimate view.",
-        filters: { groupBy: "month", estimateMode: "perTicket", valuePerTicket: "0" }
+        filters: { groupBy: "month", estimateMode: "none" }
       },
       {
         id: "technician-productivity",
-        name: "Technician Productivity",
+        name: "Technician Workload",
         description: "Workload by assigned technician and operational team.",
         filters: { groupBy: "week", estimateMode: "none" }
       },
       {
         id: "aging-tickets",
-        name: "Aging Tickets",
+        name: "Active Tickets",
         description: "Active tickets and tickets without recent closure.",
         filters: {
           groupBy: "day",
@@ -143,13 +152,12 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       },
       {
         id: "billing-estimate",
-        name: "Closed Tickets Billing Estimate",
+        name: "Closed / Resolved Tickets",
         description: "Closed/resolved tickets with optional per-ticket value.",
         filters: {
           groupBy: "month",
           statuses: [TicketStatus.CLOSED, TicketStatus.RESOLVED],
-          estimateMode: "perTicket",
-          valuePerTicket: "0"
+          estimateMode: "none"
         }
       }
     ];
@@ -159,10 +167,8 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const exports = await this.prisma.reportExport.findMany({
       where: {
         reportType,
-        OR: [
-          { organizationId: user.organizationId },
-          { requestedBy: { organizationId: user.organizationId } }
-        ]
+        organizationId: user.organizationId,
+        requestedById: user.id
       },
       select: {
         id: true,
@@ -189,17 +195,17 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
 
   async createDefinition(user: AuthenticatedUser, input: CreateReportDefinitionDto) {
     try {
-      return await this.prisma.reportDefinition.create({
+      return await this.audited(user, "createDefinition", (db) => db.reportDefinition.create({
         data: {
           organizationId: user.organizationId,
           createdById: user.id,
           name: input.name.trim(),
           description: input.description?.trim() || null,
           reportType: input.reportType?.trim() || "ticket-report",
-          filters: input.filters as Prisma.InputJsonValue,
-          isShared: input.isShared ?? true
+          filters: this.validateFilters(input.reportType ?? "ticket-report", input.filters) as Prisma.InputJsonValue,
+          isShared: input.isShared ?? false
         }
-      });
+      }));
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         throw new ConflictException("A report with this name already exists.");
@@ -209,17 +215,17 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async updateDefinition(user: AuthenticatedUser, definitionId: string, input: UpdateReportDefinitionDto) {
-    await this.ensureDefinitionAccess(user, definitionId);
+    const existing = await this.ensureDefinitionAccess(user, definitionId);
     try {
-      return await this.prisma.reportDefinition.update({
+      return await this.audited(user, "updateDefinition", (db) => db.reportDefinition.update({
         where: { id: definitionId },
         data: {
           ...(input.name !== undefined ? { name: input.name.trim() } : {}),
           ...(input.description !== undefined ? { description: input.description.trim() || null } : {}),
-          ...(input.filters !== undefined ? { filters: input.filters as Prisma.InputJsonValue } : {}),
+          ...(input.filters !== undefined ? { filters: this.validateFilters(existing.reportType, input.filters) as Prisma.InputJsonValue } : {}),
           ...(input.isShared !== undefined ? { isShared: input.isShared } : {})
         }
-      });
+      }));
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         throw new ConflictException("A report with this name already exists.");
@@ -230,7 +236,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
 
   async deleteDefinition(user: AuthenticatedUser, definitionId: string) {
     await this.ensureDefinitionAccess(user, definitionId);
-    await this.prisma.reportDefinition.delete({ where: { id: definitionId } });
+    await this.audited(user, "deleteDefinition", (db) => db.reportDefinition.delete({ where: { id: definitionId } }));
     return { deleted: true };
   }
 
@@ -238,7 +244,8 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     return this.prisma.reportSchedule.findMany({
       where: {
         organizationId: user.organizationId,
-        definition: { reportType }
+        createdById: user.id,
+        definition: { reportType, OR: [{ isShared: true }, { createdById: user.id }] }
       },
       include: {
         definition: { select: { name: true } },
@@ -251,26 +258,34 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   async createSchedule(user: AuthenticatedUser, input: CreateReportScheduleDto) {
     const definition = await this.ensureDefinitionAccess(user, input.definitionId);
     const frequency = input.frequency ?? "weekly";
-    return this.prisma.reportSchedule.create({
+    const timing = input.timing ?? await this.defaultTiming(user.organizationId);
+    const nextRun = nextReportRun(frequency, timing);
+    this.assertSchedulePermission(user, definition.reportType);
+    return await this.audited(user, "createSchedule", (db) => db.reportSchedule.create({
       data: {
         organizationId: user.organizationId,
         definitionId: definition.id,
         createdById: user.id,
         name: input.name.trim(),
         frequency,
+        timing,
         format: input.format ?? "pdf",
         recipientEmails: this.normalizeEmails(input.recipientEmails),
         isActive: input.isActive ?? true,
-        nextRunAt: input.isActive === false ? null : this.nextScheduleRun(frequency)
+        nextRunAt: input.isActive === false ? null : nextRun
       }
-    });
+    }));
   }
 
   async updateSchedule(user: AuthenticatedUser, scheduleId: string, input: UpdateReportScheduleDto) {
     const schedule = await this.ensureScheduleAccess(user, scheduleId);
     const frequency = input.frequency ?? schedule.frequency;
     const isActive = input.isActive ?? schedule.isActive;
-    return this.prisma.reportSchedule.update({
+    const definition = await this.ensureDefinitionAccess(user, schedule.definitionId);
+    this.assertSchedulePermission(user, definition.reportType);
+    const timing = input.timing ?? schedule.timing as ScheduleTiming | null ?? await this.defaultTiming(user.organizationId, schedule.nextRunAt ?? schedule.lastRunAt);
+    nextReportRun(frequency, timing);
+    return await this.audited(user, "updateSchedule", (db) => db.reportSchedule.update({
       where: { id: schedule.id },
       data: {
         ...(input.name !== undefined ? { name: input.name.trim() } : {}),
@@ -278,44 +293,50 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         ...(input.format !== undefined ? { format: input.format } : {}),
         ...(input.recipientEmails !== undefined ? { recipientEmails: this.normalizeEmails(input.recipientEmails) } : {}),
         ...(input.isActive !== undefined ? { isActive } : {}),
-        nextRunAt: isActive ? this.nextScheduleRun(frequency) : null
+        timing,
+        nextRunAt: isActive ? nextReportRun(frequency, timing) : null
       }
-    });
+    }));
   }
 
   async deleteSchedule(user: AuthenticatedUser, scheduleId: string) {
     const schedule = await this.ensureScheduleAccess(user, scheduleId);
-    await this.prisma.reportSchedule.delete({ where: { id: schedule.id } });
+    await this.audited(user, "deleteSchedule", (db) => db.reportSchedule.delete({ where: { id: schedule.id } }));
     return { deleted: true };
   }
 
-  async ticketSummary(user: AuthenticatedUser, query: TicketReportQueryDto, options: TicketSummaryOptions = {}) {
-    const range = this.resolveDateRange(query);
+  ticketSummary(user: AuthenticatedUser, query: TicketReportQueryDto, options: TicketSummaryOptions = {}) {
+    this.validatePresentation("ticket-report", query);
+    return this.prisma.$transaction((db) => this.ticketSnapshot(user, query, options, db), { isolationLevel: "RepeatableRead", timeout: 60_000 });
+  }
+  eventServiceSummary(user: AuthenticatedUser, query: EventServiceReportQueryDto, options: EventSummaryOptions = {}) {
+    this.validatePresentation("event-service-report", query);
+    return this.prisma.$transaction((db) => this.eventSnapshot(user, query, options, db), { isolationLevel: "RepeatableRead", timeout: 60_000 });
+  }
+
+  private async ticketSnapshot(user: AuthenticatedUser, query: TicketReportQueryDto, options: TicketSummaryOptions = {}, db: Prisma.TransactionClient = this.prisma) {
+    const settings = await db.systemSetting.findUnique({ where: { organizationId: user.organizationId }, select: { defaultTimezone: true } });
+    const range = reportRange(query, query.timeZone ?? settings?.defaultTimezone ?? "UTC");
     const where = this.buildTicketWhere(user, query, range);
     const valuePerTicket = this.resolveValuePerTicket(query);
-    if (query.estimateMode === "perTicket" && await this.prisma.qcReview.count({ where: { organizationId: user.organizationId, billingState: "HELD", ticket: where } })) {
+    if (query.estimateMode === "perTicket" && await db.qcReview.count({ where: { organizationId: user.organizationId, billingState: "HELD", ticket: where } })) {
       throw new ConflictException("This report includes work on a QC billing hold. Release the hold or narrow the report before generating a financial estimate.");
     }
 
     const [tickets, clients, users, teams] = await Promise.all([
-      this.prisma.ticket.findMany({
-        where,
-        select: this.ticketSelect(),
-        orderBy: { createdAt: "desc" },
-        take: 2000
-      }),
-      this.prisma.client.findMany({
+      this.ticketRecords(db, where),
+      db.client.findMany({
         where: { organizationId: user.organizationId, deletedAt: null },
         select: { id: true, name: true },
         orderBy: { name: "asc" }
       }),
-      this.prisma.user.findMany({
-        where: { organizationId: user.organizationId, deletedAt: null, isActive: true },
+      db.user.findMany({
+        where: { organizationId: user.organizationId, deletedAt: null },
         select: { id: true, firstName: true, lastName: true },
         orderBy: [{ firstName: "asc" }, { lastName: "asc" }]
       }),
-      this.prisma.ticketTeam.findMany({
-        where: { organizationId: user.organizationId, isActive: true },
+      db.ticketTeam.findMany({
+        where: { organizationId: user.organizationId },
         select: { id: true, name: true },
         orderBy: { name: "asc" }
       })
@@ -326,17 +347,22 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const resolvedCount = tickets.filter((ticket) => ticket.status === TicketStatus.RESOLVED).length;
     const unassignedCount = tickets.filter((ticket) => !ticket.assignedUserId && !ticket.assignedTeamId && ticket.assignees.length === 0).length;
     const withAttachments = tickets.filter((ticket) => ticket._count.attachments > 0).length;
-    const estimatedTotal = valuePerTicket ? tickets.length * valuePerTicket : null;
+    const estimatedTotal = valuePerTicket !== null ? tickets.length * valuePerTicket : null;
     const totalMatched = tickets.length;
     const detailPage = this.resolveDetailPage(query, totalMatched, options);
-    const detailRows = tickets
-      .slice(detailPage.offset, detailPage.offset + detailPage.pageSize)
-      .map((ticket) => this.toDetailRow(ticket, valuePerTicket));
+    const detailRecords = options.detailMode === "all" ? await this.ticketRecords(db, where, this.ticketOrder(query)) : await db.ticket.findMany({ where, select: this.ticketSelect(), orderBy: this.ticketOrder(query), skip: detailPage.offset, take: detailPage.pageSize });
+    const detailRows = detailRecords.map((ticket) => this.toDetailRow(ticket, valuePerTicket));
+    const statusDefinitions = await db.ticketStatusDefinition.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true }, orderBy: { name: "asc" } });
 
     return {
+      generatedAt: new Date().toISOString(),
       filters: {
-        startDate: range.start.toISOString(),
-        endDate: range.end.toISOString(),
+        startDate: range.startDay,
+        endDate: range.endDay,
+        timeZone: range.timeZone,
+        dateBasis: query.dateBasis ?? "createdAt",
+        period: query.period ?? "custom",
+        currency: query.currency ?? null,
         groupBy: query.groupBy ?? "day",
         estimateMode: query.estimateMode ?? "none",
         valuePerTicket,
@@ -344,6 +370,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         pageSize: detailPage.pageSize
       },
       options: {
+        statusDefinitions,
         clients,
         users: users.map((item) => ({ id: item.id, name: `${item.firstName} ${item.lastName}` })),
         teams,
@@ -366,9 +393,9 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       byStatus: this.groupBy(tickets, (ticket) => ticket.statusDefinition?.name ?? this.label(ticket.status)),
       byPriority: this.groupBy(tickets, (ticket) => ticket.priority),
       bySource: this.groupBy(tickets, (ticket) => ticket.source),
-      byClient: this.groupBy(tickets, (ticket) => ticket.client?.name ?? "Unmapped / no client").slice(0, 12),
-      byTechnician: this.groupBy(tickets, (ticket) => ticket.assignedUser ? `${ticket.assignedUser.firstName} ${ticket.assignedUser.lastName}` : "Unassigned").slice(0, 12),
-      byTeam: this.groupBy(tickets, (ticket) => ticket.assignedTeam?.name ?? "No team").slice(0, 12),
+      byClient: this.groupEntities(tickets.map((ticket) => ({ id: ticket.client?.id ?? "unmapped", label: ticket.client?.name ?? "Unmapped / no client" }))),
+      byTechnician: this.groupEntities(tickets.flatMap((ticket) => this.ticketPeople(ticket))),
+      byTeam: this.groupBy(tickets, (ticket) => ticket.assignedTeam?.name ?? "No team"),
       detail: detailRows,
       detailLimit: detailPage.pageSize,
       page: detailPage.page,
@@ -378,29 +405,25 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async eventServiceSummary(user: AuthenticatedUser, query: EventServiceReportQueryDto, options: EventSummaryOptions = {}) {
-    const range = this.resolveDateRange(query);
+  private async eventSnapshot(user: AuthenticatedUser, query: EventServiceReportQueryDto, options: EventSummaryOptions = {}, db: Prisma.TransactionClient = this.prisma) {
+    const settings = await db.systemSetting.findUnique({ where: { organizationId: user.organizationId }, select: { defaultTimezone: true } });
+    const range = reportRange(query, query.timeZone ?? settings?.defaultTimezone ?? "UTC");
     const where = this.buildEventServiceWhere(user, query, range);
 
     const [requests, clients, users, services] = await Promise.all([
-      this.prisma.eventServiceRequest.findMany({
-        where,
-        select: this.eventServiceSelect(),
-        orderBy: [{ eventDate: "desc" }, { createdAt: "desc" }],
-        take: 2000
-      }),
-      this.prisma.client.findMany({
+      this.eventRecords(db, where),
+      db.client.findMany({
         where: { organizationId: user.organizationId, deletedAt: null },
         select: { id: true, name: true },
         orderBy: { name: "asc" }
       }),
-      this.prisma.user.findMany({
-        where: { organizationId: user.organizationId, deletedAt: null, isActive: true },
+      db.user.findMany({
+        where: { organizationId: user.organizationId, deletedAt: null },
         select: { id: true, firstName: true, lastName: true },
         orderBy: [{ firstName: "asc" }, { lastName: "asc" }]
       }),
-      this.prisma.eventServiceService.findMany({
-        where: { organizationId: user.organizationId, isActive: true },
+      db.eventServiceService.findMany({
+        where: { organizationId: user.organizationId },
         select: { id: true, name: true },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }]
       })
@@ -413,14 +436,18 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const assignedRequests = requests.filter((request) => request.assignees.length > 0 || request.tasks.some((task) => task.assignedUserId)).length;
     const totalMatched = requests.length;
     const detailPage = this.resolveDetailPage(query, totalMatched, options);
-    const detailRows = requests
-      .slice(detailPage.offset, detailPage.offset + detailPage.pageSize)
-      .map((request) => this.toEventDetailRow(request));
+    const detailRecords = options.detailMode === "all" ? await this.eventRecords(db, where, this.eventOrder(query)) : await db.eventServiceRequest.findMany({ where, select: this.eventServiceSelect(), orderBy: this.eventOrder(query), skip: detailPage.offset, take: detailPage.pageSize });
+    const detailRows = detailRecords.map((request) => this.toEventDetailRow(request));
 
     return {
+      generatedAt: new Date().toISOString(),
       filters: {
-        startDate: range.start.toISOString(),
-        endDate: range.end.toISOString(),
+        startDate: range.startDay,
+        endDate: range.endDay,
+        timeZone: range.timeZone,
+        dateBasis: query.dateBasis ?? "createdAt",
+        period: query.period ?? "custom",
+        currency: query.currency ?? null,
         groupBy: query.groupBy ?? "day",
         page: detailPage.page,
         pageSize: detailPage.pageSize
@@ -443,14 +470,14 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         completedTasks
       },
       activity: this.buildEventActivity(requests, range, query.groupBy ?? "day"),
-      byStatus: this.groupEventsBy(requests, (request) => request.status),
+      byStatus: this.groupEventsBy(requests, (request) => this.label(request.status)),
       byPriority: this.groupEventsBy(requests, (request) => request.priority),
       byService: this.groupEventsBy(requests.flatMap((request) => request.services.map((item) => item.service.name))),
-      byClient: this.groupEventsBy(requests, (request) => request.client?.name ?? "Unmapped / no client").slice(0, 12),
-      byTechnician: this.groupEventsBy(requests.flatMap((request) => [
-        ...request.assignees.map((assignee) => `${assignee.user.firstName} ${assignee.user.lastName}`),
-        ...request.tasks.flatMap((task) => task.assignedUser ? [`${task.assignedUser.firstName} ${task.assignedUser.lastName}`] : [])
-      ])).slice(0, 12),
+      byClient: this.groupEntities(requests.map((request) => ({ id: request.client?.id ?? "unmapped", label: request.client?.name ?? "Unmapped / no client" }))),
+      byTechnician: this.groupEntities(requests.flatMap((request) => {
+        const people = new Map([...request.assignees.map((a) => a.user), ...request.tasks.flatMap((t) => t.assignedUser ? [t.assignedUser] : [])].map((p) => [p.id, { id: p.id, label: `${p.firstName} ${p.lastName}`, disambiguator: p.email }]));
+        return people.size ? [...people.values()] : [{ id: "unassigned", label: "Unassigned" }];
+      })),
       byTaskStatus: this.groupEventsBy(requests.flatMap((request) => request.tasks.map((task) => task.status))),
       detail: detailRows,
       detailLimit: detailPage.pageSize,
@@ -470,7 +497,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         client: { select: { name: true } }, owner: { select: { firstName: true, lastName: true } },
         milestones: { select: { status: true, dueAt: true } },
         decisions: { where: { status: { notIn: [ProjectDecisionStatus.RESOLVED, ProjectDecisionStatus.CANCELLED] } }, select: { title: true, dueAt: true, owner: { select: { firstName: true, lastName: true } } } }
-      }, orderBy: [{ targetDate: "asc" }, { updatedAt: "desc" }], take: 500
+      }, orderBy: [{ targetDate: "asc" }, { updatedAt: "desc" }]
     });
     const active = projects.filter((project) => project.status !== ProjectStatus.COMPLETED && project.status !== ProjectStatus.CANCELLED);
     const detail = active.map((project) => {
@@ -492,419 +519,111 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   async exportTickets(user: AuthenticatedUser, query: TicketReportExportQueryDto) {
     const format = query.format ?? "csv";
     const report = await this.generateTicketsReport(user, query, format);
-    await this.logReportExport(user, query, format, "downloaded", undefined, undefined, undefined, "ticket-report");
+    await this.logReportExport(user, query, format, "generated", undefined, undefined, undefined, "ticket-report");
     return report;
   }
 
   async exportEventServices(user: AuthenticatedUser, query: EventServiceReportExportQueryDto) {
     const format = query.format ?? "csv";
     const report = await this.generateEventServiceReport(user, query, format);
-    await this.logReportExport(user, query, format, "downloaded", undefined, undefined, undefined, "event-service-report");
+    await this.logReportExport(user, query, format, "generated", undefined, undefined, undefined, "event-service-report");
     return report;
   }
 
-  async exportExecutiveProjects(user: AuthenticatedUser, query: { format?: ReportFormat }) {
+  async exportExecutiveProjects(user: AuthenticatedUser, query: ReportPresentationDto & { format?: ReportFormat }) {
     const format = query.format ?? "csv";
-    const report = await this.generateExecutiveProjectReport(user, format);
-    await this.logReportExport(user, query, format, "downloaded", undefined, undefined, undefined, "project-executive-report");
+    const report = await this.generateExecutiveProjectReport(user, format, query);
+    await this.logReportExport(user, query, format, "generated", undefined, undefined, undefined, "project-executive-report");
     return report;
   }
 
-  async sendTicketsReport(user: AuthenticatedUser, query: TicketReportExportQueryDto, input: SendReportDto) {
-    const format = input.format ?? query.format ?? "pdf";
-    const report = await this.generateTicketsReport(user, query, format);
-    const subject = input.subject?.trim() || `Ticket report - ${new Date().toLocaleDateString()}`;
-    const message = input.message?.trim() || "Attached is the requested ticket report.";
-    const recipients = this.normalizeEmails(input.recipientEmails);
-    if (!recipients.length) {
-      throw new BadRequestException("At least one recipient email is required.");
-    }
-
-    await this.mailDelivery.sendTicketReply({
-      organizationId: user.organizationId,
-      to: recipients,
-      subject,
-      bodyText: message,
-      bodyHtml: `<p>${this.escapeHtml(message).replace(/\n/g, "<br />")}</p>`,
-      rawAttachments: [{
-        originalFilename: report.filename,
-        mimeType: report.contentType,
-        sizeBytes: Buffer.byteLength(report.body),
-        contentBytes: Buffer.isBuffer(report.body) ? report.body : Buffer.from(report.body),
-        isInline: false
-      }]
-    });
-
-    await Promise.all(recipients.map((recipient) => this.logReportExport(user, query, format, "emailed", recipient, undefined, undefined, "ticket-report")));
-    return { sent: true, recipients, filename: report.filename };
+  sendTicketsReport(user: AuthenticatedUser, query: TicketReportExportQueryDto, input: SendReportDto, definitionId?: string) {
+    return this.deliverReport(user, "ticket-report", query, input, definitionId);
   }
-
-  async sendEventServicesReport(user: AuthenticatedUser, query: EventServiceReportExportQueryDto, input: SendReportDto) {
-    const format = input.format ?? query.format ?? "pdf";
-    const report = await this.generateEventServiceReport(user, query, format);
-    const subject = input.subject?.trim() || `Event services report - ${new Date().toLocaleDateString()}`;
-    const message = input.message?.trim() || "Attached is the requested Event & Services report.";
-    const recipients = this.normalizeEmails(input.recipientEmails);
-    if (!recipients.length) {
-      throw new BadRequestException("At least one recipient email is required.");
-    }
-
-    await this.mailDelivery.sendTicketReply({
-      organizationId: user.organizationId,
-      to: recipients,
-      subject,
-      bodyText: message,
-      bodyHtml: `<p>${this.escapeHtml(message).replace(/\n/g, "<br />")}</p>`,
-      rawAttachments: [{
-        originalFilename: report.filename,
-        mimeType: report.contentType,
-        sizeBytes: Buffer.byteLength(report.body),
-        contentBytes: Buffer.isBuffer(report.body) ? report.body : Buffer.from(report.body),
-        isInline: false
-      }]
-    });
-
-    await Promise.all(recipients.map((recipient) => this.logReportExport(user, query, format, "emailed", recipient, undefined, undefined, "event-service-report")));
-    return { sent: true, recipients, filename: report.filename };
+  sendEventServicesReport(user: AuthenticatedUser, query: EventServiceReportExportQueryDto, input: SendReportDto, definitionId?: string) {
+    return this.deliverReport(user, "event-service-report", query, input, definitionId);
   }
-
-  async sendExecutiveProjects(user: AuthenticatedUser, query: { format?: ReportFormat }, input: SendReportDto) {
+  sendExecutiveProjects(user: AuthenticatedUser, query: ReportPresentationDto & { format?: ReportFormat }, input: SendReportDto, definitionId?: string) {
+    return this.deliverReport(user, "project-executive-report", query, input, definitionId);
+  }
+  private async deliverReport(user: AuthenticatedUser, kind: ReportKind, query: TicketReportExportQueryDto | EventServiceReportExportQueryDto, input: SendReportDto, definitionId?: string) {
     const format = input.format ?? query.format ?? "pdf";
-    const report = await this.generateExecutiveProjectReport(user, format);
     const recipients = this.normalizeEmails(input.recipientEmails);
     if (!recipients.length) throw new BadRequestException("At least one recipient email is required.");
-    const subject = input.subject?.trim() || `Executive project report - ${new Date().toLocaleDateString()}`;
-    const message = input.message?.trim() || "Attached is the requested executive project report.";
-    await this.mailDelivery.sendTicketReply({ organizationId: user.organizationId, to: recipients, subject, bodyText: message, bodyHtml: `<p>${this.escapeHtml(message).replace(/\n/g, "<br />")}</p>`, rawAttachments: [{ originalFilename: report.filename, mimeType: report.contentType, sizeBytes: Buffer.byteLength(report.body), contentBytes: Buffer.isBuffer(report.body) ? report.body : Buffer.from(report.body), isInline: false }] });
-    await Promise.all(recipients.map((recipient) => this.logReportExport(user, query, format, "emailed", recipient, undefined, undefined, "project-executive-report")));
-    return { sent: true, recipients, filename: report.filename };
+    let accepted = false;
+    try {
+      const report = kind === "ticket-report" ? await this.generateTicketsReport(user, query, format) : kind === "event-service-report" ? await this.generateEventServiceReport(user, query, format) : await this.generateExecutiveProjectReport(user, format, query);
+      const message = input.message?.trim() || "Attached is the requested report.";
+      const delivery = await this.mailDelivery.sendTicketReply({ organizationId: user.organizationId, to: recipients, subject: input.subject?.trim() || query.title?.trim() || report.filename, bodyText: message, bodyHtml: `<p>${this.escapeHtml(message).replace(/\n/g, "<br />")}</p>`, rawAttachments: [{ originalFilename: report.filename, mimeType: report.contentType, sizeBytes: Buffer.byteLength(report.body), contentBytes: Buffer.isBuffer(report.body) ? report.body : Buffer.from(report.body), isInline: false }] });
+      if (!delivery) throw new ConflictException("Outbound delivery is disabled. No report email was sent.");
+      accepted = true;
+      const status = delivery.providerMessageId.startsWith("mock-") ? "simulated" : "accepted";
+      await Promise.all(recipients.map((recipient) => this.logReportExport(user, query, format, status, recipient, definitionId, undefined, kind)));
+      return { sent: status === "accepted", status, recipients, filename: report.filename };
+    } catch (error) {
+      // An accepted send must not be reported as safe to retry if history storage failed.
+      if (accepted) throw new ConflictException("The provider accepted this report, but recording the history failed. Verify delivery before retrying.");
+      await this.logReportExport(user, query, format, "failed", recipients.join(", "), definitionId, error instanceof Error ? error.message.slice(0, 1000) : "Report delivery failed.", kind);
+      throw error;
+    }
   }
 
   private async generateTicketsReport(user: AuthenticatedUser, query: TicketReportQueryDto, format: ReportFormat): Promise<GeneratedReport> {
-    if (format === "xlsx") return this.exportTicketsXlsx(user, query);
-    if (format === "pdf") return this.exportTicketsPdf(user, query);
-    return this.exportTicketsCsv(user, query);
+    const result = await this.ticketSummary(user, query, { detailMode: query.scope === "page" ? "paged" : "all" });
+    return this.render(user, "ticket-report", query, format, result);
   }
-
   private async generateEventServiceReport(user: AuthenticatedUser, query: EventServiceReportQueryDto, format: ReportFormat): Promise<GeneratedReport> {
-    if (format === "xlsx") return this.exportEventServicesXlsx(user, query);
-    if (format === "pdf") return this.exportEventServicesPdf(user, query);
-    return this.exportEventServicesCsv(user, query);
+    const result = await this.eventServiceSummary(user, query, { detailMode: query.scope === "page" ? "paged" : "all" });
+    return this.render(user, "event-service-report", query, format, result);
   }
-
-  private async generateExecutiveProjectReport(user: AuthenticatedUser, format: ReportFormat): Promise<GeneratedReport> {
-    const result = await this.executiveProjectSummary(user);
-    const rows = result.detail.map((project) => [project.projectName, project.clientName, project.owner, project.status, project.health, project.targetDate?.toISOString().slice(0, 10) ?? "", project.overdueMilestones, project.openDecisions, project.overdueDecisions, project.unassignedDecisions, project.risk ? "Needs attention" : "On track"]);
-    const headers = ["Project", "Client", "Owner", "Status", "Health", "Target", "Overdue milestones", "Open decisions", "Overdue decisions", "Unassigned decisions", "Delivery signal"];
-    if (format === "xlsx") {
-      const workbook = new Workbook();
-      const summary = workbook.addWorksheet("Executive summary");
-      summary.addRows([["Executive Project Report"], ["Generated", result.generatedAt.toISOString()], ["Active projects", result.summary.activeProjects], ["At risk", result.summary.atRiskProjects], ["Overdue decisions", result.summary.overdueDecisions], ["Overdue milestones", result.summary.overdueMilestones]]);
-      const detail = workbook.addWorksheet("Projects"); detail.addRow(headers); detail.addRows(rows); detail.getRow(1).font = { bold: true }; detail.views = [{ state: "frozen", ySplit: 1 }]; detail.columns.forEach((column) => { column.width = 22; });
-      return { filename: `executive-project-report-${new Date().toISOString().slice(0, 10)}.xlsx`, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: Buffer.from(await workbook.xlsx.writeBuffer()), format, result };
+  private async generateExecutiveProjectReport(user: AuthenticatedUser, format: ReportFormat, query: ReportPresentationDto = {}): Promise<GeneratedReport> {
+    return this.render(user, "project-executive-report", query, format, await this.executiveProjectSummary(user));
+  }
+  private async render(user: AuthenticatedUser, kind: ReportKind, query: ReportPresentationDto, format: ReportFormat, result: GeneratedReport["result"]): Promise<GeneratedReport> {
+    this.validatePresentation(kind, query);
+    const settings = await this.prisma.systemSetting.findUnique({ where: { organizationId: user.organizationId }, select: { applicationName: true, companyName: true, primaryColor: true, logoUrl: true, defaultTimezone: true, defaultLanguage: true } });
+    const timeZone = query.timeZone ?? settings?.defaultTimezone ?? "UTC";
+    const criteria: Array<[string, string]> = [["Timezone", timeZone], ["Scope", query.scope === "page" && "page" in result ? `Page ${result.page} of ${result.totalPages}` : "All matching records"]];
+    if ("filters" in result) {
+      criteria.unshift(["Period", `${result.filters.startDate} through ${result.filters.endDate} (inclusive)`], ["Date field", this.fieldLabel(query.dateBasis ?? "createdAt")]);
+      const options = result.options;
+      for (const [key, value] of Object.entries(query)) {
+        if (!value || ["startDate", "endDate", "timeZone", "period", "page", "pageSize", "format", "title", "columns", "sections", "scope", "paper", "orientation", "dateBasis", "estimateMode", "valuePerTicket"].includes(key)) continue;
+        const candidates = Object.values(options).flat().filter((v): v is { id: string; name: string } => typeof v === "object" && v !== null && "id" in v && "name" in v);
+        criteria.push([this.fieldLabel(key), candidates.find((item) => item.id === value)?.name ?? (key === "statuses" ? String(value).split(",").map((status) => this.label(status)).join(", ") : key === "sortBy" ? this.fieldLabel(String(value)) : this.label(String(value)))]);
+      }
+    } else criteria.push(["Period", "Current active projects; completed projects are counted separately"]);
+    if (kind === "ticket-report") criteria.push(["Files", "Active regular and inline attachments; deleted files are excluded."]);
+    if ("estimatedTotal" in result.summary && result.summary.estimatedTotal !== null) criteria.push(["Estimate basis", `Manual estimate per ticket: ${(query as TicketReportQueryDto).valuePerTicket} ${query.currency}. This is not an invoice or recorded revenue.`]);
+    let logo: Buffer | undefined;
+    const prefix = "/api/system-settings/assets?";
+    if (settings?.logoUrl?.startsWith(prefix)) {
+      try {
+        const key = new URLSearchParams(settings.logoUrl.slice(prefix.length)).get("key") ?? "";
+        if (key.startsWith("branding/") && !key.split("/").includes("..")) {
+          const stream = await this.brandingStorage.getFileStream(key); const parts: Buffer[] = []; let size = 0;
+          for await (const part of stream) { size += part.length; if (size > 5_000_000) { stream.destroy(); throw new Error("Logo exceeds render limit"); } parts.push(Buffer.from(part)); }
+          logo = await sharp(Buffer.concat(parts)).resize({ width: 600, height: 200, fit: "inside", withoutEnlargement: true }).png().toBuffer();
+        }
+      } catch { this.logger.warn("Report branding image could not be loaded; using company text."); }
     }
-    if (format === "pdf") {
-      const doc = new PDFDocument({ margin: 42, size: "LETTER" }); const chunks: Buffer[] = []; doc.on("data", (chunk: Buffer) => chunks.push(chunk)); const done = new Promise<void>((resolve) => doc.on("end", resolve));
-      doc.font("Helvetica-Bold").fontSize(20).text("Executive Project Report"); doc.moveDown(0.3); doc.font("Helvetica").fontSize(10).text(`Generated ${result.generatedAt.toLocaleString()}`); doc.moveDown();
-      doc.font("Helvetica-Bold").fontSize(11).text(`Active: ${result.summary.activeProjects}   At risk: ${result.summary.atRiskProjects}   Overdue decisions: ${result.summary.overdueDecisions}`); doc.moveDown();
-      for (const project of result.detail.slice(0, 45)) { doc.font("Helvetica-Bold").fontSize(10).text(project.projectName); doc.font("Helvetica").fontSize(9).text(`${project.clientName} | ${project.owner} | ${project.health.replace("_", " ")} | Target: ${project.targetDate?.toLocaleDateString() ?? "Not scheduled"}`); doc.text(`${project.overdueMilestones} overdue milestones, ${project.openDecisions} open decisions, ${project.overdueDecisions} overdue decisions`); doc.moveDown(0.45); }
-      doc.end(); await done;
-      return { filename: `executive-project-report-${new Date().toISOString().slice(0, 10)}.pdf`, contentType: "application/pdf", body: Buffer.concat(chunks), format, result };
-    }
-    const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-    const body = [["Executive Project Report"], ["Generated", result.generatedAt.toISOString()], [], headers, ...rows].map((row) => row.map(escape).join(",")).join("\n");
-    return { filename: `executive-project-report-${new Date().toISOString().slice(0, 10)}.csv`, contentType: "text/csv; charset=utf-8", body, format, result };
-  }
-
-  private async exportTicketsCsv(user: AuthenticatedUser, query: TicketReportQueryDto): Promise<GeneratedReport> {
-    const result = await this.ticketSummary(user, query, { detailMode: "all" });
-    const rows = result.detail.map((ticket) => [
-      ticket.ticketNumber,
-      ticket.subject,
-      ticket.clientName,
-      ticket.requester,
-      ticket.statusDefinition?.name ?? this.label(ticket.status),
-      ticket.priority,
-      ticket.source,
-      ticket.assignedTo,
-      ticket.team,
-      ticket.createdAt,
-      ticket.updatedAt,
-      ticket.closedAt ?? "",
-      String(ticket.attachmentCount),
-      ticket.estimatedValue === null ? "" : ticket.estimatedValue.toFixed(2)
-    ]);
-    const csv = this.toCsv([
-      ["Ticket", "Subject", "Client", "Requester", "Status", "Priority", "Source", "Assigned To", "Team", "Created", "Modified", "Closed", "Attachments", "Estimated Value"],
-      ...rows
-    ]);
-
-    return {
-      filename: `ticket-report-${new Date().toISOString().slice(0, 10)}.csv`,
-      contentType: "text/csv; charset=utf-8",
-      body: csv,
-      format: "csv",
-      result
+    const rows = result.detail.map((item) => {
+      const row: Record<string, unknown> = { ...item };
+      if ("statusDefinition" in item) row.status = item.statusDefinition?.name ?? this.label(item.status);
+      else if ("status" in item) row.status = this.label(item.status);
+      for (const key of ["priority", "source", "health"]) if (typeof row[key] === "string") row[key] = this.label(row[key] as string);
+      if ("risk" in row) row.risk = row.risk ? "Needs attention" : "On track";
+      return row;
+    });
+    const model: ReportDocument = {
+      kind, query, title: query.title?.trim() || ({ "ticket-report": "Ticket report", "event-service-report": "Event & Services report", "project-executive-report": "Executive project report" })[kind],
+      company: settings?.companyName ?? "", application: settings?.applicationName ?? "Reports", color: /^#[0-9a-f]{6}$/i.test(settings?.primaryColor ?? "") ? settings!.primaryColor : "#334155", logo,
+      generatedAt: new Date(), timeZone, locale: settings?.defaultLanguage || "en", currency: query.currency,
+      criteria, metrics: Object.entries(result.summary).filter(([key, value]) => key !== "estimatedTotal" || value !== null).map(([key, value]) => [this.fieldLabel(key), value]),
+      distributions: Object.entries(result).filter(([key]) => key.startsWith("by")).map(([key, value]) => ({ title: this.fieldLabel(key.slice(2)), items: (value as Array<{ label: string; count: number }>).map((item) => ({ ...item, label: ["byPriority", "bySource", "byTaskStatus", "byHealth"].includes(key) ? this.label(item.label) : item.label })) })),
+      activity: "activity" in result ? result.activity : [], rows, matched: "totalMatched" in result ? result.totalMatched : result.detail.length
     };
-  }
-
-  private async exportTicketsXlsx(user: AuthenticatedUser, query: TicketReportQueryDto): Promise<GeneratedReport> {
-    const result = await this.ticketSummary(user, query, { detailMode: "all" });
-    const workbook = new Workbook();
-    workbook.creator = "Avidity IT Management Tool";
-    workbook.created = new Date();
-
-    const summary = workbook.addWorksheet("Summary");
-    summary.columns = [
-      { header: "Metric", key: "metric", width: 28 },
-      { header: "Value", key: "value", width: 22 }
-    ];
-    summary.addRows([
-      { metric: "Total tickets", value: result.summary.totalTickets },
-      { metric: "Active tickets", value: result.summary.activeTickets },
-      { metric: "Closed tickets", value: result.summary.closedTickets },
-      { metric: "Resolved tickets", value: result.summary.resolvedTickets },
-      { metric: "Unassigned tickets", value: result.summary.unassignedTickets },
-      { metric: "High priority tickets", value: result.summary.highPriorityTickets },
-      { metric: "Tickets with attachments", value: result.summary.withAttachments },
-      { metric: "Estimated total", value: result.summary.estimatedTotal ?? "" }
-    ]);
-
-    const detail = workbook.addWorksheet("Tickets");
-    detail.columns = [
-      { header: "Ticket", key: "ticketNumber", width: 14 },
-      { header: "Subject", key: "subject", width: 42 },
-      { header: "Client", key: "clientName", width: 28 },
-      { header: "Requester", key: "requester", width: 28 },
-      { header: "Status", key: "status", width: 18 },
-      { header: "Priority", key: "priority", width: 14 },
-      { header: "Source", key: "source", width: 14 },
-      { header: "Assigned To", key: "assignedTo", width: 26 },
-      { header: "Team", key: "team", width: 24 },
-      { header: "Created", key: "createdAt", width: 24 },
-      { header: "Modified", key: "updatedAt", width: 24 },
-      { header: "Closed", key: "closedAt", width: 24 },
-      { header: "Attachments", key: "attachmentCount", width: 14 },
-      { header: "Estimated Value", key: "estimatedValue", width: 18 }
-    ];
-    detail.addRows(result.detail.map((ticket) => ({ ...ticket, estimatedValue: ticket.estimatedValue ?? "" })));
-
-    for (const sheet of [summary, detail]) {
-      sheet.getRow(1).font = { bold: true };
-      sheet.views = [{ state: "frozen", ySplit: 1 }];
-      sheet.autoFilter = { from: "A1", to: `${sheet.getColumn(sheet.columnCount).letter}1` };
-    }
-
-    const body = Buffer.from(await workbook.xlsx.writeBuffer());
-    return {
-      filename: `ticket-report-${new Date().toISOString().slice(0, 10)}.xlsx`,
-      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      body,
-      format: "xlsx",
-      result
-    };
-  }
-
-  private async exportTicketsPdf(user: AuthenticatedUser, query: TicketReportQueryDto): Promise<GeneratedReport> {
-    const result = await this.ticketSummary(user, query, { detailMode: "all" });
-    const doc = new PDFDocument({ margin: 42, size: "LETTER", bufferPages: true });
-    const chunks: Buffer[] = [];
-    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
-    const done = new Promise<void>((resolve) => doc.on("end", resolve));
-
-    doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(20).text("Ticket Report");
-    doc.moveDown(0.25);
-    doc.fillColor("#64748b").font("Helvetica").fontSize(9).text(`Generated ${new Date().toLocaleString()}`);
-    doc.text(`Range ${this.formatShortDate(result.filters.startDate)} - ${this.formatShortDate(result.filters.endDate)} | Grouped by ${this.label(result.filters.groupBy)}`);
-    doc.moveDown(0.8);
-
-    this.drawPdfSummaryGrid(doc, [
-      ["Total", String(result.summary.totalTickets)],
-      ["Active", String(result.summary.activeTickets)],
-      ["Closed", String(result.summary.closedTickets)],
-      ["Resolved", String(result.summary.resolvedTickets)],
-      ["Unassigned", String(result.summary.unassignedTickets)],
-      ["High Priority", String(result.summary.highPriorityTickets)],
-      ["With Files", String(result.summary.withAttachments)],
-      ["Estimate", result.summary.estimatedTotal === null ? "-" : `$${result.summary.estimatedTotal.toFixed(2)}`]
-    ]);
-
-    this.drawPdfSection(doc, "Ticket Activity");
-    this.drawPdfGroupedBars(doc, result.activity.slice(-18).map((item) => ({
-      label: item.label,
-      values: [
-        { label: "Created", value: item.created, color: "#2563eb" },
-        { label: "Resolved", value: item.resolved, color: "#16a34a" },
-        { label: "Closed", value: item.closed, color: "#64748b" }
-      ]
-    })));
-
-    this.drawPdfSection(doc, "Operational Distribution");
-    this.drawPdfBarChart(doc, "Tickets by Status", result.byStatus.slice(0, 8));
-    this.drawPdfBarChart(doc, "Top Clients", result.byClient.slice(0, 8));
-    this.drawPdfBarChart(doc, "Technician Workload", result.byTechnician.slice(0, 8));
-
-    this.drawPdfSection(doc, "Report Detail");
-    doc.fillColor("#64748b").font("Helvetica").fontSize(8).text(`Showing ${Math.min(result.detail.length, 80)} of ${result.totalMatched} tickets in this PDF. CSV and Excel exports include the full detail table.`);
-    doc.moveDown(0.5);
-    this.drawPdfTicketTable(doc, result.detail.slice(0, 80));
-
-    this.drawPdfPageNumbers(doc);
-
-    doc.end();
-    await done;
-    return {
-      filename: `ticket-report-${new Date().toISOString().slice(0, 10)}.pdf`,
-      contentType: "application/pdf",
-      body: Buffer.concat(chunks),
-      format: "pdf",
-      result
-    };
-  }
-
-  private async exportEventServicesCsv(user: AuthenticatedUser, query: EventServiceReportQueryDto): Promise<GeneratedReport> {
-    const result = await this.eventServiceSummary(user, query, { detailMode: "all" });
-    const rows = result.detail.map((request) => [
-      request.trackingNumber,
-      request.eventName,
-      request.clientName,
-      request.requester,
-      request.eventDate,
-      request.time,
-      request.services,
-      request.status,
-      request.priority,
-      request.assignedTo,
-      String(request.taskCount),
-      String(request.completedTaskCount),
-      request.updatedAt
-    ]);
-    const csv = this.toCsv([
-      ["Tracking", "Event", "Client", "Requester", "Date", "Time", "Services", "Status", "Priority", "Assigned To", "Tasks", "Completed Tasks", "Updated"],
-      ...rows
-    ]);
-
-    return {
-      filename: `event-services-report-${new Date().toISOString().slice(0, 10)}.csv`,
-      contentType: "text/csv; charset=utf-8",
-      body: csv,
-      format: "csv",
-      result
-    };
-  }
-
-  private async exportEventServicesXlsx(user: AuthenticatedUser, query: EventServiceReportQueryDto): Promise<GeneratedReport> {
-    const result = await this.eventServiceSummary(user, query, { detailMode: "all" });
-    const workbook = new Workbook();
-    workbook.creator = "Avidity IT Management Tool";
-    workbook.created = new Date();
-
-    const summary = workbook.addWorksheet("Summary");
-    summary.columns = [
-      { header: "Metric", key: "metric", width: 30 },
-      { header: "Value", key: "value", width: 18 }
-    ];
-    summary.addRows([
-      { metric: "Total requests", value: result.summary.totalRequests },
-      { metric: "New requests", value: result.summary.newRequests },
-      { metric: "Assigned requests", value: result.summary.assignedRequests },
-      { metric: "Completed requests", value: result.summary.completedRequests },
-      { metric: "Cancelled requests", value: result.summary.cancelledRequests },
-      { metric: "Total tasks", value: result.summary.totalTasks },
-      { metric: "Open tasks", value: result.summary.openTasks },
-      { metric: "Completed tasks", value: result.summary.completedTasks }
-    ]);
-
-    const detail = workbook.addWorksheet("Event Requests");
-    detail.columns = [
-      { header: "Tracking", key: "trackingNumber", width: 16 },
-      { header: "Event", key: "eventName", width: 36 },
-      { header: "Client", key: "clientName", width: 28 },
-      { header: "Requester", key: "requester", width: 28 },
-      { header: "Date", key: "eventDate", width: 18 },
-      { header: "Time", key: "time", width: 18 },
-      { header: "Services", key: "services", width: 38 },
-      { header: "Status", key: "status", width: 20 },
-      { header: "Priority", key: "priority", width: 14 },
-      { header: "Assigned To", key: "assignedTo", width: 32 },
-      { header: "Tasks", key: "taskCount", width: 10 },
-      { header: "Completed Tasks", key: "completedTaskCount", width: 16 },
-      { header: "Updated", key: "updatedAt", width: 24 }
-    ];
-    detail.addRows(result.detail);
-
-    for (const sheet of [summary, detail]) {
-      sheet.getRow(1).font = { bold: true };
-      sheet.views = [{ state: "frozen", ySplit: 1 }];
-      sheet.autoFilter = { from: "A1", to: `${sheet.getColumn(sheet.columnCount).letter}1` };
-    }
-
-    const body = Buffer.from(await workbook.xlsx.writeBuffer());
-    return {
-      filename: `event-services-report-${new Date().toISOString().slice(0, 10)}.xlsx`,
-      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      body,
-      format: "xlsx",
-      result
-    };
-  }
-
-  private async exportEventServicesPdf(user: AuthenticatedUser, query: EventServiceReportQueryDto): Promise<GeneratedReport> {
-    const result = await this.eventServiceSummary(user, query, { detailMode: "all" });
-    const doc = new PDFDocument({ margin: 42, size: "LETTER", bufferPages: true });
-    const chunks: Buffer[] = [];
-    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
-    const done = new Promise<void>((resolve) => doc.on("end", resolve));
-
-    doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(20).text("Event & Services Report");
-    doc.moveDown(0.25);
-    doc.fillColor("#64748b").font("Helvetica").fontSize(9).text(`Generated ${new Date().toLocaleString()}`);
-    doc.text(`Range ${this.formatShortDate(result.filters.startDate)} - ${this.formatShortDate(result.filters.endDate)} | Grouped by ${this.label(result.filters.groupBy)}`);
-    doc.moveDown(0.8);
-
-    this.drawPdfSummaryGrid(doc, [
-      ["Total", String(result.summary.totalRequests)],
-      ["New", String(result.summary.newRequests)],
-      ["Assigned", String(result.summary.assignedRequests)],
-      ["Completed", String(result.summary.completedRequests)],
-      ["Cancelled", String(result.summary.cancelledRequests)],
-      ["Tasks", String(result.summary.totalTasks)],
-      ["Open Tasks", String(result.summary.openTasks)],
-      ["Done Tasks", String(result.summary.completedTasks)]
-    ]);
-
-    this.drawPdfSection(doc, "Event Activity");
-    this.drawPdfGroupedBars(doc, result.activity.slice(-18).map((item) => ({
-      label: item.label,
-      values: [
-        { label: "Created", value: item.created, color: "#2563eb" },
-        { label: "Completed", value: item.completed, color: "#16a34a" },
-        { label: "Cancelled", value: item.cancelled, color: "#ef4444" }
-      ]
-    })), "Blue: Created   Green: Completed   Red: Cancelled");
-
-    this.drawPdfSection(doc, "Operational Distribution");
-    this.drawPdfBarChart(doc, "Requests by Status", result.byStatus.slice(0, 8));
-    this.drawPdfBarChart(doc, "Requests by Service", result.byService.slice(0, 8));
-    this.drawPdfBarChart(doc, "Specialist Workload", result.byTechnician.slice(0, 8));
-    this.drawPdfBarChart(doc, "Tasks by Status", result.byTaskStatus.slice(0, 8));
-
-    this.drawPdfSection(doc, "Report Detail");
-    doc.fillColor("#64748b").font("Helvetica").fontSize(8).text(`Showing ${Math.min(result.detail.length, 80)} of ${result.totalMatched} event requests in this PDF. CSV and Excel exports include the full detail table.`);
-    doc.moveDown(0.5);
-    this.drawPdfEventTable(doc, result.detail.slice(0, 80));
-
-    this.drawPdfPageNumbers(doc);
-
-    doc.end();
-    await done;
-    return {
-      filename: `event-services-report-${new Date().toISOString().slice(0, 10)}.pdf`,
-      contentType: "application/pdf",
-      body: Buffer.concat(chunks),
-      format: "pdf",
-      result
-    };
+    return { filename: `${kind}-${localDay(new Date(), timeZone)}.${format}`, contentType: format === "pdf" ? "application/pdf" : format === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv; charset=utf-8", body: await renderReport(model, format), format, result };
   }
 
   private resolveDetailPage(query: { page?: string; pageSize?: string }, totalMatched: number, options: TicketSummaryOptions | EventSummaryOptions) {
@@ -949,10 +668,10 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       resolvedAt: true,
       client: { select: { id: true, name: true } },
       contact: { select: { firstName: true, lastName: true, email: true } },
-      assignedUser: { select: { firstName: true, lastName: true } },
+      assignedUser: { select: { id: true, firstName: true, lastName: true, email: true } },
       assignedTeam: { select: { name: true } },
-      assignees: { select: { userId: true } },
-      _count: { select: { attachments: true } }
+      assignees: { select: { userId: true, user: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+      _count: { select: { attachments: { where: { deletedAt: null } } } }
     } satisfies Prisma.TicketSelect;
   }
 
@@ -975,14 +694,14 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       cancelledAt: true,
       client: { select: { id: true, name: true } },
       services: { select: { service: { select: { name: true } } } },
-      assignees: { select: { user: { select: { firstName: true, lastName: true } } } },
-      tasks: { select: { status: true, assignedUserId: true, assignedUser: { select: { firstName: true, lastName: true } } } }
+      assignees: { select: { user: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+      tasks: { select: { status: true, assignedUserId: true, assignedUser: { select: { id: true, firstName: true, lastName: true, email: true } } } }
     } satisfies Prisma.EventServiceRequestSelect;
   }
 
   private async ensureDefinitionAccess(user: AuthenticatedUser, definitionId: string) {
     const definition = await this.prisma.reportDefinition.findFirst({
-      where: { id: definitionId, organizationId: user.organizationId },
+      where: { id: definitionId, organizationId: user.organizationId, OR: [{ isShared: true }, { createdById: user.id }] },
       select: { id: true, filters: true, name: true, organizationId: true, reportType: true }
     });
     if (!definition) {
@@ -993,7 +712,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
 
   private async ensureScheduleAccess(user: AuthenticatedUser, scheduleId: string) {
     const schedule = await this.prisma.reportSchedule.findFirst({
-      where: { id: scheduleId, organizationId: user.organizationId }
+      where: { id: scheduleId, organizationId: user.organizationId, createdById: user.id }
     });
     if (!schedule) {
       throw new NotFoundException("Report schedule was not found.");
@@ -1018,92 +737,129 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async runDueSchedules() {
-    const schedules = await this.prisma.reportSchedule.findMany({
-      where: {
-        isActive: true,
-        nextRunAt: { lte: new Date() }
-      },
-      include: {
-        definition: true,
-        createdBy: true
-      },
-      take: 10,
-      orderBy: { nextRunAt: "asc" }
-    });
-
-    for (const schedule of schedules) {
-      const user = schedule.createdBy;
-      if (!user) continue;
-      const authUser: AuthenticatedUser = {
-        id: user.id,
-        organizationId: schedule.organizationId,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        forcePasswordChange: user.forcePasswordChange,
-        permissions: ["reports.view"]
-      };
-      const reportType = schedule.definition.reportType;
-      try {
-        if (reportType === "event-service-report") {
-          const query = this.eventFiltersToQuery(schedule.definition.filters as EventReportFilters);
-          await this.sendEventServicesReport(authUser, { ...query, format: schedule.format as ReportFormat }, {
-            recipientEmails: schedule.recipientEmails,
-            format: schedule.format as ReportFormat,
-            subject: `${schedule.name} - Event & Services report`,
-            message: `Attached is the scheduled report "${schedule.name}".`
-          });
-        } else if (reportType === "project-executive-report") {
-          await this.sendExecutiveProjects(authUser, { format: schedule.format as ReportFormat }, {
-            recipientEmails: schedule.recipientEmails,
-            format: schedule.format as ReportFormat,
-            subject: `${schedule.name} - Executive project report`,
-            message: `Attached is the scheduled report "${schedule.name}".`
-          });
-        } else {
-          const query = this.filtersToQuery(schedule.definition.filters as ReportFilters);
-          await this.sendTicketsReport(authUser, { ...query, format: schedule.format as ReportFormat }, {
-            recipientEmails: schedule.recipientEmails,
-            format: schedule.format as ReportFormat,
-            subject: `${schedule.name} - Ticket report`,
-            message: `Attached is the scheduled report "${schedule.name}".`
-          });
+    if (this.schedulesRunning) return;
+    this.schedulesRunning = true;
+    try {
+      const schedules = await this.prisma.reportSchedule.findMany({
+        where: { isActive: true, nextRunAt: { lte: new Date() } },
+        include: { definition: true, createdBy: { include: { groups: { include: { group: { include: { roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } } } } } } } } },
+        take: 10, orderBy: { nextRunAt: "asc" }
+      });
+      for (const schedule of schedules) {
+        const timing = schedule.timing as ScheduleTiming | null ?? await this.defaultTiming(schedule.organizationId, schedule.nextRunAt);
+        const nextRunAt = nextReportRun(schedule.frequency, timing);
+        // Advance the due occurrence atomically before sending. A crashed/uncertain
+        // delivery is never retried automatically, preventing duplicate emails.
+        const claim = await this.prisma.reportSchedule.updateMany({ where: { id: schedule.id, isActive: true, nextRunAt: schedule.nextRunAt, updatedAt: schedule.updatedAt }, data: { nextRunAt, lastRunAt: new Date(), lastStatus: "running", lastError: null } });
+        if (!claim.count) continue;
+        const user = schedule.createdBy;
+        let deliveryAttempted = false;
+        try {
+          if (!user || !user.isActive || user.deletedAt || user.organizationId !== schedule.organizationId) throw new ForbiddenException("The schedule owner is no longer an active organization user.");
+          if (!schedule.definition.isShared && schedule.definition.createdById !== user.id) throw new ForbiddenException("The saved report is private to another user.");
+          const permissions = [...new Set(user.groups.flatMap((g) => g.group.roles.flatMap((r) => r.role.permissions.map((p) => p.permission.name))))];
+          const authUser: AuthenticatedUser = { id: user.id, organizationId: schedule.organizationId, email: user.email, firstName: user.firstName, lastName: user.lastName, forcePasswordChange: user.forcePasswordChange, permissions };
+          this.assertSchedulePermission(authUser, schedule.definition.reportType);
+          const filters = this.validateFilters(schedule.definition.reportType, schedule.definition.filters as Record<string, unknown>);
+          const input: SendReportDto = { recipientEmails: schedule.recipientEmails, format: schedule.format as ReportFormat, subject: schedule.name, message: `Attached is the scheduled report "${schedule.name}".` };
+          deliveryAttempted = true;
+          let deliveryResult: { status: string };
+          if (schedule.definition.reportType === "event-service-report") deliveryResult = await this.sendEventServicesReport(authUser, this.eventFiltersToQuery(filters), input, schedule.definitionId);
+          else if (schedule.definition.reportType === "project-executive-report") deliveryResult = await this.sendExecutiveProjects(authUser, filters, input, schedule.definitionId);
+          else deliveryResult = await this.sendTicketsReport(authUser, this.filtersToQuery(filters), input, schedule.definitionId);
+          await this.prisma.reportSchedule.update({ where: { id: schedule.id }, data: { lastStatus: deliveryResult.status, lastError: null } });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown scheduled report error.";
+          this.logger.warn(`Scheduled report ${schedule.id} failed: ${message}`);
+          await this.prisma.reportSchedule.update({ where: { id: schedule.id }, data: { lastStatus: "failed", lastError: message.slice(0, 1000) } });
+          if (!deliveryAttempted) await this.prisma.reportExport.create({ data: { organizationId: schedule.organizationId, requestedById: user?.id, definitionId: schedule.definitionId, reportType: schedule.definition.reportType, filters: schedule.definition.filters as Prisma.InputJsonValue, format: schedule.format, deliveryStatus: "failed", errorMessage: message.slice(0, 1000) } });
         }
-        await this.prisma.reportSchedule.update({
-          where: { id: schedule.id },
-          data: {
-            lastRunAt: new Date(),
-            lastStatus: "sent",
-            lastError: null,
-            nextRunAt: this.nextScheduleRun(schedule.frequency)
-          }
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown scheduled report error.";
-        this.logger.warn(`Scheduled report ${schedule.id} failed: ${message}`);
-        await this.prisma.reportSchedule.update({
-          where: { id: schedule.id },
-          data: {
-            lastRunAt: new Date(),
-            lastStatus: "failed",
-            lastError: message.slice(0, 1000),
-            nextRunAt: this.nextScheduleRun(schedule.frequency)
-          }
-        });
-        await this.prisma.reportExport.create({
-          data: {
-            organizationId: schedule.organizationId,
-            requestedById: user.id,
-            definitionId: schedule.definitionId,
-            reportType,
-            filters: schedule.definition.filters as Prisma.InputJsonValue,
-            format: schedule.format,
-            deliveryStatus: "failed",
-            errorMessage: message.slice(0, 1000)
-          }
-        });
       }
+    } finally { this.schedulesRunning = false; }
+  }
+
+  private audited<T extends { id: string }>(user: AuthenticatedUser, action: string, mutation: (db: Prisma.TransactionClient) => Promise<T>) {
+    return this.prisma.$transaction(async (db) => {
+      const result = await mutation(db);
+      await db.auditLog.create({ data: { organizationId: user.organizationId, userId: user.id, entityType: "report", entityId: result.id, action: `reports.${action}` } });
+      return result;
+    });
+  }
+  private validatePresentation(kind: ReportKind, query: ReportPresentationDto) {
+    selectedColumns(kind, query); reportSections(query);
+    if (query.timeZone) validZone(query.timeZone);
+    if (kind === "project-executive-report" && query.scope === "page") throw new BadRequestException("Project reports export the full active portfolio.");
+    const basis = query.dateBasis ?? "createdAt";
+    const allowed = kind === "ticket-report" ? ["createdAt", "closedAt", "resolvedAt"] : ["createdAt", "eventDate"];
+    if (kind !== "project-executive-report" && !allowed.includes(basis)) throw new BadRequestException("This date field is not available for the selected report.");
+    if (query.currency && !Intl.supportedValuesOf("currency").includes(query.currency)) throw new BadRequestException("Choose a valid ISO currency code.");
+    if ((query as TicketReportQueryDto).estimateMode === "perTicket" && !query.currency) throw new BadRequestException("Choose a currency before enabling the manual estimate.");
+    if (query.columns?.split(",").includes("estimatedValue") && (query as TicketReportQueryDto).estimateMode !== "perTicket") throw new BadRequestException("Enable the optional estimate and choose a currency before selecting the estimate column.");
+  }
+  private validateFilters(kind: string, filters: Record<string, unknown>) {
+    if (!["ticket-report", "event-service-report", "project-executive-report"].includes(kind)) throw new BadRequestException("Unknown report type.");
+    const clean = Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== "" && value !== null && value !== undefined));
+    if (Array.isArray(clean.statuses)) clean.statuses = clean.statuses.join(",");
+    if (!clean.statuses) delete clean.statuses;
+    const dto = kind === "ticket-report" ? plainToInstance(TicketReportQueryDto, clean) : kind === "event-service-report" ? plainToInstance(EventServiceReportQueryDto, clean) : plainToInstance(ReportPresentationDto, clean);
+    if (validateSync(dto, { whitelist: true, forbidNonWhitelisted: true }).length) throw new BadRequestException("The saved report contains invalid filters. Review its dates and options.");
+    this.validatePresentation(kind as ReportKind, dto);
+    if (kind === "ticket-report") { this.ticketOrder(dto as TicketReportQueryDto); this.parseStatuses((dto as TicketReportQueryDto).statuses); this.resolveValuePerTicket(dto as TicketReportQueryDto); }
+    if (kind === "event-service-report") { this.eventOrder(dto as EventServiceReportQueryDto); this.parseEventStatuses((dto as EventServiceReportQueryDto).statuses); }
+    if (kind !== "project-executive-report") reportRange(dto as TicketReportQueryDto, dto.timeZone ?? "UTC");
+    return clean;
+  }
+  private ticketOrder(query: TicketReportQueryDto): Prisma.TicketOrderByWithRelationInput[] {
+    const key = query.sortBy ?? "createdAt"; const direction = query.sortDirection ?? "desc";
+    const simple = ["ticketNumber", "subject", "priority", "source", "createdAt", "updatedAt", "closedAt", "resolvedAt"];
+    const order: Prisma.TicketOrderByWithRelationInput = key === "clientName" ? { client: { name: direction } } : key === "status" ? { statusDefinition: { name: direction } } : key === "assignedTo" ? { assignedUser: { firstName: direction } } : key === "team" ? { assignedTeam: { name: direction } } : simple.includes(key) ? { [key]: direction } : {};
+    if (!Object.keys(order).length) throw new BadRequestException("This report column cannot be sorted.");
+    return [order, { id: "asc" }];
+  }
+  private eventOrder(query: EventServiceReportQueryDto): Prisma.EventServiceRequestOrderByWithRelationInput[] {
+    const key = query.sortBy ?? "createdAt"; const direction = query.sortDirection ?? "desc";
+    if (!["trackingNumber", "eventName", "eventDate", "status", "priority", "createdAt", "updatedAt", "clientName"].includes(key)) throw new BadRequestException("This report column cannot be sorted.");
+    return [key === "clientName" ? { client: { name: direction } } : { [key]: direction }, { id: "asc" }];
+  }
+  private async ticketRecords(db: Prisma.TransactionClient, where: Prisma.TicketWhereInput, orderBy: Prisma.TicketOrderByWithRelationInput[] = [{ id: "asc" }]) {
+    const rows: ReportTicket[] = [];
+    for (let skip = 0; ; skip += 1000) {
+      const batch = await db.ticket.findMany({ where, select: this.ticketSelect(), orderBy, skip, take: 1000 });
+      rows.push(...batch); if (batch.length < 1000) return rows;
     }
+  }
+  private async eventRecords(db: Prisma.TransactionClient, where: Prisma.EventServiceRequestWhereInput, orderBy: Prisma.EventServiceRequestOrderByWithRelationInput[] = [{ id: "asc" }]) {
+    const rows: ReportEventServiceRequest[] = [];
+    for (let skip = 0; ; skip += 1000) {
+      const batch = await db.eventServiceRequest.findMany({ where, select: this.eventServiceSelect(), orderBy, skip, take: 1000 });
+      rows.push(...batch); if (batch.length < 1000) return rows;
+    }
+  }
+  private ticketPeople(ticket: ReportTicket) {
+    const users = new Map(ticket.assignees.map((a) => [a.userId, { id: a.userId, label: `${a.user.firstName} ${a.user.lastName}`, disambiguator: a.user.email }]));
+    if (ticket.assignedUserId && ticket.assignedUser) users.set(ticket.assignedUserId, { id: ticket.assignedUserId, label: `${ticket.assignedUser.firstName} ${ticket.assignedUser.lastName}`, disambiguator: ticket.assignedUser.email });
+    return users.size ? [...users.values()] : [{ id: "unassigned", label: "Unassigned" }];
+  }
+  private ticketAssignees(ticket: ReportTicket) { return this.ticketPeople(ticket).map((p) => p.label); }
+  private groupEntities(items: Array<{ id: string; label: string; disambiguator?: string }>) {
+    const groups = new Map<string, { id: string; label: string; disambiguator?: string; count: number }>();
+    for (const item of items) groups.set(item.id, { ...item, count: (groups.get(item.id)?.count ?? 0) + 1 });
+    const names = new Map<string, number>(); for (const item of groups.values()) names.set(item.label, (names.get(item.label) ?? 0) + 1);
+    return [...groups.values()].map((item) => ({ label: (names.get(item.label) ?? 0) > 1 ? `${item.label} (${item.disambiguator ?? item.id.slice(0, 8)})` : item.label, count: item.count })).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }
+  private async defaultTiming(organizationId: string, previous?: Date | null): Promise<ScheduleTiming> {
+    const settings = await this.prisma.systemSetting.findUnique({ where: { organizationId }, select: { defaultTimezone: true } });
+    const timeZone = settings?.defaultTimezone ?? "UTC";
+    const date = previous ?? new Date();
+    return { timeZone, time: new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date), weekDay: new Date(`${localDay(date, timeZone)}T12:00:00Z`).getUTCDay(), monthDay: Number(localDay(date, timeZone).slice(-2)) };
+  }
+  private assertSchedulePermission(user: AuthenticatedUser, kind: string) {
+    const required = ["reports.view", "reports.manage", "reports.send", ...(kind === "project-executive-report" ? ["projects.view"] : [])];
+    if (required.some((permission) => !user.permissions.includes(permission))) throw new ForbiddenException("Scheduling requires current report view, manage and send permissions, plus access to the report module.");
+  }
+  async configuration(user: AuthenticatedUser) {
+    const settings = await this.prisma.systemSetting.findUnique({ where: { organizationId: user.organizationId }, select: { defaultTimezone: true, defaultLanguage: true } });
+    return { timeZone: settings?.defaultTimezone ?? "UTC", locale: settings?.defaultLanguage ?? "en", currencies: Intl.supportedValuesOf("currency"), columns: REPORT_COLUMNS, permissions: user.permissions };
   }
 
   private normalizeEmails(emails: string[]) {
@@ -1124,218 +880,26 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     } as EventServiceReportQueryDto;
   }
 
-  private nextScheduleRun(frequency: string) {
-    const next = new Date();
-    next.setSeconds(0, 0);
-    if (frequency === "daily") {
-      next.setDate(next.getDate() + 1);
-    } else if (frequency === "monthly") {
-      next.setMonth(next.getMonth() + 1);
-    } else {
-      next.setDate(next.getDate() + 7);
-    }
-    return next;
-  }
-
-  private drawPdfSection(doc: PDFKit.PDFDocument, title: string) {
-    this.ensurePdfSpace(doc, 80);
-    doc.moveDown(0.8);
-    doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(12).text(title);
-    doc.moveDown(0.3);
-  }
-
-  private drawPdfSummaryGrid(doc: PDFKit.PDFDocument, rows: Array<[string, string]>) {
-    const startX = 42;
-    const cardWidth = 122;
-    const cardHeight = 42;
-    const gap = 10;
-    rows.forEach(([label, value], index) => {
-      const column = index % 4;
-      const row = Math.floor(index / 4);
-      const x = startX + column * (cardWidth + gap);
-      const y = doc.y + row * (cardHeight + gap);
-      doc.roundedRect(x, y, cardWidth, cardHeight, 6).fillAndStroke("#f8fafc", "#dbe3ef");
-      doc.fillColor("#64748b").font("Helvetica").fontSize(7).text(label, x + 10, y + 8, { width: cardWidth - 20 });
-      doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(15).text(value, x + 10, y + 21, { width: cardWidth - 20 });
-    });
-    doc.y += 2 * (cardHeight + gap);
-  }
-
-  private drawPdfGroupedBars(doc: PDFKit.PDFDocument, groups: Array<{ label: string; values: Array<{ label: string; value: number; color: string }> }>, legend = "Blue: Created   Green: Resolved   Gray: Closed") {
-    this.ensurePdfSpace(doc, 170);
-    const chartX = 42;
-    const chartY = doc.y;
-    const chartWidth = 520;
-    const chartHeight = 120;
-    const maxValue = Math.max(1, ...groups.flatMap((group) => group.values.map((value) => value.value)));
-    const groupWidth = chartWidth / Math.max(1, groups.length);
-
-    doc.strokeColor("#dbe3ef").moveTo(chartX, chartY + chartHeight).lineTo(chartX + chartWidth, chartY + chartHeight).stroke();
-
-    groups.forEach((group, groupIndex) => {
-      const baseX = chartX + groupIndex * groupWidth + 3;
-      const barWidth = Math.max(3, Math.min(8, (groupWidth - 8) / group.values.length));
-      group.values.forEach((value, valueIndex) => {
-        const height = Math.max(2, (value.value / maxValue) * chartHeight);
-        doc.rect(baseX + valueIndex * (barWidth + 2), chartY + chartHeight - height, barWidth, height).fill(value.color);
-      });
-      if (groupIndex % Math.ceil(groups.length / 6 || 1) === 0) {
-        doc.fillColor("#64748b").font("Helvetica").fontSize(6).text(group.label, baseX, chartY + chartHeight + 4, { width: groupWidth + 10, align: "left" });
-      }
-    });
-
-    doc.y = chartY + chartHeight + 22;
-    doc.fillColor("#64748b").font("Helvetica").fontSize(7).text(legend);
-  }
-
-  private drawPdfBarChart(doc: PDFKit.PDFDocument, title: string, items: Array<{ label: string; count: number }>) {
-    this.ensurePdfSpace(doc, 96);
-    doc.fillColor("#334155").font("Helvetica-Bold").fontSize(9).text(title);
-    doc.moveDown(0.2);
-    const maxValue = Math.max(1, ...items.map((item) => item.count));
-    const x = 42;
-    const barX = 220;
-    const barWidth = 250;
-    for (const item of items) {
-      this.ensurePdfSpace(doc, 18);
-      const y = doc.y;
-      doc.fillColor("#475569").font("Helvetica").fontSize(8).text(this.label(item.label), x, y, { width: 170, ellipsis: true });
-      doc.roundedRect(barX, y + 1, barWidth, 8, 4).fill("#e2e8f0");
-      doc.roundedRect(barX, y + 1, Math.max(8, (item.count / maxValue) * barWidth), 8, 4).fill("#2563eb");
-      doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(8).text(String(item.count), barX + barWidth + 12, y, { width: 50, align: "right" });
-      doc.y = y + 17;
-    }
-    doc.moveDown(0.3);
-  }
-
-  private drawPdfTicketTable(doc: PDFKit.PDFDocument, tickets: Awaited<ReturnType<ReportsService["ticketSummary"]>>["detail"]) {
-    const columns = [
-      { label: "Ticket", x: 42, width: 62 },
-      { label: "Subject", x: 110, width: 165 },
-      { label: "Client", x: 282, width: 100 },
-      { label: "Status", x: 390, width: 72 },
-      { label: "Assigned", x: 468, width: 94 }
-    ];
-    const drawHeader = () => {
-      this.ensurePdfSpace(doc, 34);
-      const y = doc.y;
-      doc.roundedRect(42, y, 520, 20, 4).fill("#f1f5f9");
-      columns.forEach((column) => {
-        doc.fillColor("#334155").font("Helvetica-Bold").fontSize(7).text(column.label, column.x, y + 6, { width: column.width });
-      });
-      doc.y = y + 24;
-    };
-
-    drawHeader();
-    tickets.forEach((ticket) => {
-      if (doc.y > 705) {
-        doc.addPage();
-        drawHeader();
-      }
-      const y = doc.y;
-      const rowHeight = 28;
-      doc.strokeColor("#e2e8f0").moveTo(42, y + rowHeight).lineTo(562, y + rowHeight).stroke();
-      doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(7).text(ticket.ticketNumber, 42, y + 4, { width: 62 });
-      doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(7).text(ticket.subject, 110, y + 4, { width: 165, ellipsis: true });
-      doc.fillColor("#64748b").font("Helvetica").fontSize(6).text(ticket.requester, 110, y + 14, { width: 165, ellipsis: true });
-      doc.fillColor("#0f172a").font("Helvetica").fontSize(7).text(ticket.clientName, 282, y + 4, { width: 100, ellipsis: true });
-      doc.fillColor("#0f172a").font("Helvetica").fontSize(7).text(ticket.statusDefinition?.name ?? this.label(ticket.status), 390, y + 4, { width: 72, ellipsis: true });
-      doc.fillColor("#0f172a").font("Helvetica").fontSize(7).text(ticket.assignedTo, 468, y + 4, { width: 94, ellipsis: true });
-      doc.fillColor("#64748b").font("Helvetica").fontSize(6).text(this.formatShortDate(ticket.createdAt), 468, y + 14, { width: 94 });
-      doc.y = y + rowHeight + 2;
-    });
-  }
-
-  private drawPdfEventTable(doc: PDFKit.PDFDocument, requests: Awaited<ReturnType<ReportsService["eventServiceSummary"]>>["detail"]) {
-    const columns = [
-      { label: "Tracking", x: 42, width: 64 },
-      { label: "Event", x: 112, width: 150 },
-      { label: "Date", x: 270, width: 76 },
-      { label: "Status", x: 352, width: 82 },
-      { label: "Assigned", x: 440, width: 122 }
-    ];
-    const drawHeader = () => {
-      this.ensurePdfSpace(doc, 34);
-      const y = doc.y;
-      doc.roundedRect(42, y, 520, 20, 4).fill("#f1f5f9");
-      columns.forEach((column) => {
-        doc.fillColor("#334155").font("Helvetica-Bold").fontSize(7).text(column.label, column.x, y + 6, { width: column.width });
-      });
-      doc.y = y + 24;
-    };
-
-    drawHeader();
-    requests.forEach((request) => {
-      if (doc.y > 705) {
-        doc.addPage();
-        drawHeader();
-      }
-      const y = doc.y;
-      const rowHeight = 30;
-      doc.strokeColor("#e2e8f0").moveTo(42, y + rowHeight).lineTo(562, y + rowHeight).stroke();
-      doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(7).text(request.trackingNumber, 42, y + 4, { width: 64 });
-      doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(7).text(request.eventName, 112, y + 4, { width: 150, ellipsis: true });
-      doc.fillColor("#64748b").font("Helvetica").fontSize(6).text(request.requester, 112, y + 14, { width: 150, ellipsis: true });
-      doc.fillColor("#0f172a").font("Helvetica").fontSize(7).text(request.eventDate, 270, y + 4, { width: 76 });
-      doc.fillColor("#64748b").font("Helvetica").fontSize(6).text(request.time, 270, y + 14, { width: 76 });
-      doc.fillColor("#0f172a").font("Helvetica").fontSize(7).text(this.label(request.status), 352, y + 4, { width: 82, ellipsis: true });
-      doc.fillColor("#0f172a").font("Helvetica").fontSize(7).text(request.assignedTo, 440, y + 4, { width: 122, ellipsis: true });
-      doc.fillColor("#64748b").font("Helvetica").fontSize(6).text(`${request.taskCount} tasks, ${request.completedTaskCount} done`, 440, y + 14, { width: 122 });
-      doc.y = y + rowHeight + 2;
-    });
-  }
-
-  private drawPdfPageNumbers(doc: PDFKit.PDFDocument) {
-    const pages = doc.bufferedPageRange();
-    for (let index = 0; index < pages.count; index += 1) {
-      doc.switchToPage(pages.start + index);
-      doc.font("Helvetica").fontSize(8).fillColor("#94a3b8").text(`Page ${index + 1} of ${pages.count}`, 42, 734, {
-        align: "right",
-        width: 528,
-        lineBreak: false
-      });
-    }
-  }
-
-  private ensurePdfSpace(doc: PDFKit.PDFDocument, requiredHeight: number) {
-    if (doc.y + requiredHeight > 730) {
-      doc.addPage();
-    }
-  }
-
-  private drawPdfKeyValue(doc: PDFKit.PDFDocument, key: string, value: string) {
-    const y = doc.y;
-    doc.fillColor("#475569").font("Helvetica").fontSize(9).text(key, 42, y, { width: 260 });
-    doc.fillColor("#0f172a").font("Helvetica-Bold").text(value, 330, y, { width: 220, align: "right" });
-    doc.moveDown(0.45);
-  }
-
-  private escapeHtml(value: string) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  private label(value: string) {
-    return value.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
-  }
-
-  private formatShortDate(value: string) {
-    return new Date(value).toLocaleDateString();
-  }
+  private escapeHtml(value: string) { return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c); }
+  private label(value: string) { return /^[A-Z][A-Z_]*$/.test(value) && (value.includes("_") || ["NEW", "OPEN", "CLOSED", "RESOLVED", "CANCELLED", "NORMAL", "HIGH", "URGENT", "CRITICAL", "LOW", "EMAIL", "MANUAL", "PORTAL", "DONE", "COMPLETED"].includes(value)) ? value.toLowerCase().replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) : value; }
+  private fieldLabel(value: string) { return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase()).replace(/Id$/, "").trim(); }
 
   private buildTicketWhere(user: AuthenticatedUser, query: TicketReportQueryDto, range: { start: Date; end: Date }) {
     const where: Prisma.TicketWhereInput = {
       organizationId: user.organizationId,
       deletedAt: null,
       status: { not: TicketStatus.MERGED },
-      createdAt: { gte: range.start, lte: range.end }
+      [query.dateBasis ?? "createdAt"]: { gte: range.start, lte: range.end }
     };
     if (query.clientId) where.clientId = query.clientId;
     if (query.assignedUserId) {
       where.OR = [{ assignedUserId: query.assignedUserId }, { assignees: { some: { userId: query.assignedUserId } } }];
     }
     if (query.assignedTeamId) where.assignedTeamId = query.assignedTeamId;
+    if (query.statusDefinitionId) where.statusDefinitionId = query.statusDefinitionId;
+    if (query.search) where.AND = [{ OR: [{ subject: { contains: query.search, mode: "insensitive" } }, { ticketNumber: { contains: query.search, mode: "insensitive" } }] }];
     const statuses = this.parseStatuses(query.statuses);
-    if (statuses.length) where.status = { in: statuses };
+    if (statuses.length) where.status = { in: statuses, not: TicketStatus.MERGED };
     if (query.priority) where.priority = query.priority;
     if (query.source) where.source = query.source;
     if (query.attachments === "with") where.attachments = { some: { deletedAt: null } };
@@ -1343,11 +907,11 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     return where;
   }
 
-  private buildEventServiceWhere(user: AuthenticatedUser, query: EventServiceReportQueryDto, range: { start: Date; end: Date }) {
+  private buildEventServiceWhere(user: AuthenticatedUser, query: EventServiceReportQueryDto, range: ReturnType<typeof reportRange>) {
     const where: Prisma.EventServiceRequestWhereInput = {
       organizationId: user.organizationId,
       deletedAt: null,
-      createdAt: { gte: range.start, lte: range.end }
+      [query.dateBasis ?? "createdAt"]: { gte: range.start, lte: range.end }
     };
     if (query.clientId) where.clientId = query.clientId;
     if (query.assignedUserId) {
@@ -1356,6 +920,8 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         { tasks: { some: { assignedUserId: query.assignedUserId } } }
       ];
     }
+    if (query.search) where.AND = [{ OR: [{ eventName: { contains: query.search, mode: "insensitive" } }, { trackingNumber: { contains: query.search, mode: "insensitive" } }] }];
+    if (query.dateBasis === "eventDate") where.eventDate = { gte: new Date(`${range.startDay}T00:00:00Z`), lt: new Date(`${shiftDay(range.endDay, 1)}T00:00:00Z`) };
     if (query.serviceId) where.services = { some: { serviceId: query.serviceId } };
     const statuses = this.parseEventStatuses(query.statuses);
     if (statuses.length) where.status = { in: statuses };
@@ -1363,94 +929,52 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     return where;
   }
 
-  private resolveDateRange(query: TicketReportQueryDto) {
-    const end = query.endDate ? new Date(query.endDate) : new Date();
-    const start = query.startDate ? new Date(query.startDate) : new Date(end.getTime() - 29 * 24 * 60 * 60 * 1000);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      throw new BadRequestException("Invalid report date range.");
-    }
-    start.setHours(0, 0, 0, 0);
-    end.setHours(23, 59, 59, 999);
-    if (start > end) {
-      throw new BadRequestException("Report start date must be before end date.");
-    }
-    return { start, end };
-  }
-
   private parseStatuses(value?: string) {
     if (!value) return [];
     const allowed = new Set(Object.values(TicketStatus));
-    return value.split(",").map((item) => item.trim().toUpperCase()).filter((item): item is TicketStatus => allowed.has(item as TicketStatus));
+    const statuses = value.split(",").map((item) => item.trim().toUpperCase());
+    if (statuses.some((item) => !allowed.has(item as TicketStatus))) throw new BadRequestException("Unknown report status.");
+    return statuses as TicketStatus[];
   }
 
   private parseEventStatuses(value?: string) {
     if (!value) return [];
     const allowed = new Set(Object.values(EventServiceRequestStatus));
-    return value.split(",").map((item) => item.trim().toUpperCase()).filter((item): item is EventServiceRequestStatus => allowed.has(item as EventServiceRequestStatus));
+    const statuses = value.split(",").map((item) => item.trim().toUpperCase());
+    if (statuses.some((item) => !allowed.has(item as EventServiceRequestStatus))) throw new BadRequestException("Unknown report status.");
+    return statuses as EventServiceRequestStatus[];
   }
 
   private resolveValuePerTicket(query: TicketReportQueryDto) {
     if (query.estimateMode !== "perTicket") return null;
-    const value = Number(query.valuePerTicket ?? "0");
+    if (query.valuePerTicket === undefined || query.valuePerTicket === "") throw new BadRequestException("Enter the manual estimate per ticket; zero is allowed.");
+    const value = Number(query.valuePerTicket);
     if (!Number.isFinite(value) || value < 0) {
-      throw new BadRequestException("Estimated value per ticket must be a positive number.");
+      throw new BadRequestException("Estimated value per ticket must be zero or a positive number.");
     }
     return value;
   }
 
-  private buildActivity(tickets: ReportTicket[], range: { start: Date; end: Date }, groupBy: "day" | "week" | "month" | "year") {
-    const buckets = new Map<string, { label: string; created: number; closed: number; resolved: number }>();
-    for (const ticket of tickets) {
-      this.incrementBucket(buckets, ticket.createdAt, groupBy, "created");
-      if (ticket.closedAt) this.incrementBucket(buckets, ticket.closedAt, groupBy, "closed");
-      if (ticket.resolvedAt) this.incrementBucket(buckets, ticket.resolvedAt, groupBy, "resolved");
-    }
-    if (buckets.size === 0) {
-      const key = this.bucketKey(range.start, groupBy);
-      buckets.set(key, { label: key, created: 0, closed: 0, resolved: 0 });
-    }
-    return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([period, value]) => ({ period, ...value }));
+  private buildActivity(tickets: ReportTicket[], range: ReturnType<typeof reportRange>, groupBy: string) {
+    return this.activity(tickets, range, groupBy, { created: "createdAt", closed: "closedAt", resolved: "resolvedAt" });
   }
-
-  private buildEventActivity(requests: ReportEventServiceRequest[], range: { start: Date; end: Date }, groupBy: "day" | "week" | "month" | "year") {
-    const buckets = new Map<string, { label: string; created: number; completed: number; cancelled: number }>();
-    for (const request of requests) {
-      this.incrementEventBucket(buckets, request.createdAt, groupBy, "created");
-      if (request.completedAt) this.incrementEventBucket(buckets, request.completedAt, groupBy, "completed");
-      if (request.cancelledAt) this.incrementEventBucket(buckets, request.cancelledAt, groupBy, "cancelled");
-    }
-    if (buckets.size === 0) {
-      const key = this.bucketKey(range.start, groupBy);
-      buckets.set(key, { label: key, created: 0, completed: 0, cancelled: 0 });
-    }
-    return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([period, value]) => ({ period, ...value }));
+  private buildEventActivity(requests: ReportEventServiceRequest[], range: ReturnType<typeof reportRange>, groupBy: string) {
+    return this.activity(requests, range, groupBy, { created: "createdAt", completed: "completedAt", cancelled: "cancelledAt" });
   }
-
-  private incrementEventBucket(buckets: Map<string, { label: string; created: number; completed: number; cancelled: number }>, date: Date, groupBy: "day" | "week" | "month" | "year", field: "created" | "completed" | "cancelled") {
-    const key = this.bucketKey(date, groupBy);
-    const bucket = buckets.get(key) ?? { label: key, created: 0, completed: 0, cancelled: 0 };
-    bucket[field] += 1;
-    buckets.set(key, bucket);
-  }
-
-  private incrementBucket(buckets: Map<string, { label: string; created: number; closed: number; resolved: number }>, date: Date, groupBy: "day" | "week" | "month" | "year", field: "created" | "closed" | "resolved") {
-    const key = this.bucketKey(date, groupBy);
-    const bucket = buckets.get(key) ?? { label: key, created: 0, closed: 0, resolved: 0 };
-    bucket[field] += 1;
-    buckets.set(key, bucket);
-  }
-
-  private bucketKey(date: Date, groupBy: "day" | "week" | "month" | "year") {
-    const year = date.getFullYear();
-    if (groupBy === "year") return String(year);
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    if (groupBy === "month") return `${year}-${month}`;
-    if (groupBy === "week") {
-      const firstDay = new Date(year, 0, 1);
-      const week = Math.ceil((((date.getTime() - firstDay.getTime()) / 86400000) + firstDay.getDay() + 1) / 7);
-      return `${year}-W${String(week).padStart(2, "0")}`;
+  private activity<T>(records: T[], range: ReturnType<typeof reportRange>, groupBy: string, fields: Record<string, keyof T>) {
+    const buckets = new Map<string, Record<string, string | number>>();
+    const empty = (period: string): Record<string, string | number> => ({ period, label: period, ...Object.fromEntries(Object.keys(fields).map((key) => [key, 0])) });
+    for (let day = range.startDay; day <= range.endDay; day = shiftDay(day, 1)) {
+      const key = periodKey(new Date(`${day}T12:00:00Z`), groupBy, "UTC");
+      if (!buckets.has(key)) buckets.set(key, empty(key));
     }
-    return `${year}-${month}-${String(date.getDate()).padStart(2, "0")}`;
+    for (const record of records) for (const [field, key] of Object.entries(fields)) {
+      const date = record[key];
+      if (!(date instanceof Date) || date < range.start || date > range.end) continue;
+      const period = periodKey(date, groupBy, range.timeZone);
+      const bucket = buckets.get(period) ?? empty(period); bucket[field] = Number(bucket[field]) + 1; buckets.set(period, bucket);
+    }
+    return [...buckets.values()];
   }
 
   private groupBy(tickets: ReportTicket[], getKey: (ticket: ReportTicket) => string) {
@@ -1474,6 +998,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   private toDetailRow(ticket: ReportTicket, valuePerTicket: number | null) {
     const requester = ticket.contact ? `${ticket.contact.firstName} ${ticket.contact.lastName}` : ticket.senderEmail ?? "Unknown";
     return {
+      id: ticket.id,
       ticketNumber: ticket.ticketNumber,
       subject: ticket.subject,
       clientName: ticket.client?.name ?? "Unmapped / no client",
@@ -1482,11 +1007,12 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       statusDefinition: ticket.statusDefinition,
       priority: ticket.priority,
       source: ticket.source,
-      assignedTo: ticket.assignedUser ? `${ticket.assignedUser.firstName} ${ticket.assignedUser.lastName}` : "Unassigned",
+      assignedTo: this.ticketAssignees(ticket).join(", "),
       team: ticket.assignedTeam?.name ?? "No team",
       createdAt: ticket.createdAt.toISOString(),
       updatedAt: ticket.updatedAt.toISOString(),
       closedAt: ticket.closedAt?.toISOString() ?? null,
+      resolvedAt: ticket.resolvedAt?.toISOString() ?? null,
       attachmentCount: ticket._count.attachments,
       estimatedValue: valuePerTicket
     };
@@ -1500,12 +1026,13 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const uniqueAssignees = [...new Set(assignees)];
     const completedTaskCount = request.tasks.filter((task) => task.status === EventServiceTaskStatus.DONE).length;
     return {
+      id: request.id,
       trackingNumber: request.trackingNumber,
       eventName: request.eventName,
       clientName: request.client?.name ?? "Unmapped / no client",
       requester: `${request.requesterFirstName} ${request.requesterLastName}`,
       requesterEmail: request.requesterEmail,
-      eventDate: request.eventDate ? this.formatShortDate(request.eventDate.toISOString()) : "Not scheduled",
+      eventDate: request.eventDate?.toISOString() ?? null,
       time: `${request.startTime ?? "Not set"} - ${request.endTime ?? "Not set"}`,
       services: request.services.map((item) => item.service.name).join(", ") || "No services",
       status: request.status,
@@ -1513,11 +1040,10 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       assignedTo: uniqueAssignees.length ? uniqueAssignees.join(", ") : "Unassigned",
       taskCount: request.tasks.length,
       completedTaskCount,
+      createdAt: request.createdAt.toISOString(),
       updatedAt: request.updatedAt.toISOString()
     };
   }
 
-  private toCsv(rows: string[][]) {
-    return rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, "\"\"")}"`).join(",")).join("\r\n");
-  }
+
 }

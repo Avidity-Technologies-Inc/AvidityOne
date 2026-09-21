@@ -14,6 +14,10 @@ import { ReportsService } from "./reports.service";
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @Get("configuration")
+  @RequirePermissions("reports.view")
+  configuration(@CurrentUser() user: AuthenticatedUser) { return this.reportsService.configuration(user); }
+
   @Get("tickets/summary")
   @RequirePermissions("reports.view")
   ticketSummary(@Query() query: TicketReportQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -90,13 +94,13 @@ export class ReportsController {
   }
 
   @Post("schedules")
-  @RequirePermissions("reports.manage")
+  @RequirePermissions("reports.manage", "reports.send", "reports.view")
   createSchedule(@Body() body: CreateReportScheduleDto, @CurrentUser() user: AuthenticatedUser) {
     return this.reportsService.createSchedule(user, body);
   }
 
   @Patch("schedules/:scheduleId")
-  @RequirePermissions("reports.manage")
+  @RequirePermissions("reports.manage", "reports.send", "reports.view")
   updateSchedule(@Param("scheduleId") scheduleId: string, @Body() body: UpdateReportScheduleDto, @CurrentUser() user: AuthenticatedUser) {
     return this.reportsService.updateSchedule(user, scheduleId, body);
   }

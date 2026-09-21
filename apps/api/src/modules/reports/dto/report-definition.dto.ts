@@ -1,4 +1,5 @@
-import { IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { ReportPresentationDto } from "./ticket-report-query.dto";
+import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
 export class CreateReportDefinitionDto {
   @IsString()
@@ -13,6 +14,7 @@ export class CreateReportDefinitionDto {
 
   @IsOptional()
   @IsString()
+  @IsIn(["ticket-report", "event-service-report", "project-executive-report"])
   @MaxLength(80)
   reportType?: string;
 
@@ -47,6 +49,7 @@ export class UpdateReportDefinitionDto {
 
 export class SendReportDto {
   @IsArray()
+  @ArrayNotEmpty()
   @IsEmail({}, { each: true })
   recipientEmails!: string[];
 
@@ -66,6 +69,7 @@ export class SendReportDto {
 }
 
 export class CreateReportScheduleDto {
+  @IsOptional() @IsObject() timing?: { timeZone: string; time: string; weekDay: number; monthDay: number };
   @IsUUID("4")
   definitionId!: string;
 
@@ -81,6 +85,7 @@ export class CreateReportScheduleDto {
   format!: "csv" | "xlsx" | "pdf";
 
   @IsArray()
+  @ArrayNotEmpty()
   @IsEmail({}, { each: true })
   recipientEmails!: string[];
 
@@ -90,6 +95,7 @@ export class CreateReportScheduleDto {
 }
 
 export class UpdateReportScheduleDto {
+  @IsOptional() @IsObject() timing?: { timeZone: string; time: string; weekDay: number; monthDay: number };
   @IsOptional()
   @IsString()
   @IsNotEmpty()
@@ -106,6 +112,7 @@ export class UpdateReportScheduleDto {
 
   @IsOptional()
   @IsArray()
+  @ArrayNotEmpty()
   @IsEmail({}, { each: true })
   recipientEmails?: string[];
 
@@ -114,7 +121,7 @@ export class UpdateReportScheduleDto {
   isActive?: boolean;
 }
 
-export class ExecutiveProjectReportQueryDto {
+export class ExecutiveProjectReportQueryDto extends ReportPresentationDto {
   @IsOptional()
   @IsIn(["csv", "xlsx", "pdf"])
   format?: "csv" | "xlsx" | "pdf";

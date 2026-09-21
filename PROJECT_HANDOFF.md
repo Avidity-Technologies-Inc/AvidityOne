@@ -1,5 +1,15 @@
 # Project Handoff
 
+## Reports Workspace Release — 2026-09-21
+
+- Implemented on clean canonical `main` from `5289619`; publication is authorized. No additional branch/worktree, dependency upgrade, environment change or production deployment.
+- Tickets/Event Services/project exports now share validated column selection and professional PDF/Excel rendering. Inclusive timezone-aware dates, explicit cohort date basis, relative periods, full-result totals, deterministic detail pagination, true zero charts, configured status labels and multiple-technician attribution replace the previous date/cap/layout defects.
+- Reports has separate overview/saved/schedule/history views, applied-filter controls, full subjects, ordered columns, export preview and permission-aware actions. Saved private/shared visibility and current schedule-owner grants are enforced. Optional estimates require explicit currency and retain QC holds.
+- One additive migration adds nullable `report_schedules.timing`. Saved schedules support local time/day/timezone and atomic occurrence claims; delivery history distinguishes generation, acceptance, simulation and failure. Existing definitions/data are preserved.
+- API/web checks and full build passed. Full API run: 149 passed, 28 database-gated skipped; 22 focused report cases subsequently passed (152 distinct verified cases). Browser run: 158/159 passed, with the existing Firefox composer scroll case passing its isolated rerun. All 12 new report browser cases passed. Synthetic PDF and all Excel sheets were visually reviewed; no real mail or production database operation was performed.
+- Guarded deployment helper: `scripts/deploy-reports-workspace.sh <full-release-sha>`. Includes source/runtime/database backups, the additive migration, complete build, service/health checks and runtime recovery without branch changes or destructive data rollback. Requires clean production `main` at the reviewed base or target for retry.
+- See [report semantics, export behavior, scheduling, validation and deployment](docs/REPORTS_WORKSPACE_2026-09-21.md). Live production acceptance and an authorized Microsoft-delivery test remain pending.
+
 ## Ticket Email Formatting Fix — 2026-09-18
 
 - Implemented locally on clean canonical `main` at `3060467`, after fetching and confirming no upstream divergence. Publication on `main` is authorized; production deployment remains pending.

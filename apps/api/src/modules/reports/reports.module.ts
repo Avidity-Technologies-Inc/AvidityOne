@@ -1,3 +1,4 @@
+import { LocalFileStorageProvider } from "../file-storage/providers/local-file-storage.provider";
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { MailTransportModule } from "../mailboxes/mail-transport.module";
@@ -7,6 +8,6 @@ import { ReportsService } from "./reports.service";
 @Module({
   imports: [AuthModule, MailTransportModule],
   controllers: [ReportsController],
-  providers: [ReportsService]
+  providers: [ReportsService, LocalFileStorageProvider]
 })
 export class ReportsModule {}

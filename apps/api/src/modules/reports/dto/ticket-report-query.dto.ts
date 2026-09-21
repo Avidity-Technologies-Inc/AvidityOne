@@ -1,7 +1,24 @@
-import { TicketPriority, TicketSource, TicketStatus } from "@prisma/client";
+import { TicketPriority, TicketSource } from "@prisma/client";
 import { IsEnum, IsIn, IsNumberString, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
-export class TicketReportQueryDto {
+export class ReportPresentationDto {
+  @IsOptional() @IsString() @MaxLength(100) timeZone?: string;
+  @IsOptional() @IsIn(["custom", "last30", "last7", "previousMonth", "currentMonth", "previousWeek"]) period?: string;
+  @IsOptional() @IsIn(["createdAt", "resolvedAt", "closedAt", "eventDate"]) dateBasis?: string;
+  @IsOptional() @IsString() @MaxLength(1000) columns?: string;
+  @IsOptional() @IsString() @MaxLength(80) sections?: string;
+  @IsOptional() @IsString() @MaxLength(120) title?: string;
+  @IsOptional() @IsIn(["LETTER", "A4"]) paper?: "LETTER" | "A4";
+  @IsOptional() @IsIn(["landscape", "portrait"]) orientation?: "landscape" | "portrait";
+  @IsOptional() @IsIn(["all", "page"]) scope?: "all" | "page";
+  @IsOptional() @IsString() @MaxLength(3) currency?: string;
+  @IsOptional() @IsString() @MaxLength(80) sortBy?: string;
+  @IsOptional() @IsIn(["asc", "desc"]) sortDirection?: "asc" | "desc";
+  @IsOptional() @IsString() @MaxLength(200) search?: string;
+}
+
+export class TicketReportQueryDto extends ReportPresentationDto {
+  @IsOptional() @IsUUID("4") statusDefinitionId?: string;
   @IsOptional()
   @IsString()
   @MaxLength(40)
@@ -67,7 +84,7 @@ export class TicketReportExportQueryDto extends TicketReportQueryDto {
   format?: "csv" | "xlsx" | "pdf";
 }
 
-export class EventServiceReportQueryDto {
+export class EventServiceReportQueryDto extends ReportPresentationDto {
   @IsOptional()
   @IsString()
   @MaxLength(40)

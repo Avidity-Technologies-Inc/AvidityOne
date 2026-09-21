@@ -272,3 +272,5 @@ export interface PublicBrandingSettings {
 }
 
 export * from "./qc";
+
+export * from "./reports";
