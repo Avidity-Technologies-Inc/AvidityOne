@@ -1,3 +1,4 @@
+import { emailText } from "../../ticket-email/ticket-email.policy";
 import { Injectable, InternalServerErrorException, NotImplementedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -37,6 +38,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     }
 
     const token = await this.getAccessToken(input);
+    if (input.trackDelivery) return this.sendTrackedMessage(input, token);
     const sendAsAddress = input.fromAddress || input.mailboxEmailAddress;
     const attachments = input.attachments ?? [];
 
@@ -143,6 +145,26 @@ export class MicrosoftGraphMailProvider implements MailProvider {
       internetMessageId: null,
       conversationId: input.inReplyTo ?? null
     };
+  }
+
+  private async sendTrackedMessage(input: SendMessageInput, token: string): Promise<SendMessageResult> {
+    const root = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(input.fromAddress || input.mailboxEmailAddress)}/messages`;
+    const request = async (url: string, method: string, body?: unknown) => {
+      const response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: 'IdType="ImmutableId"' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) throw new InternalServerErrorException(`Operational Microsoft email request failed (${response.status}).`);
+      return response.status === 204 || response.status === 202 ? null : response.json();
+    };
+    for (const file of input.attachments ?? []) this.ensureSmallGraphAttachment(file.originalFilename, file.sizeBytes);
+    const content = { subject: input.subject, body: { contentType: "HTML", content: input.bodyHtml },
+      toRecipients: input.to.map((address) => ({ emailAddress: { address } })), ccRecipients: [], bccRecipients: [],
+      replyTo: input.replyToAddress ? [{ emailAddress: { address: input.replyToAddress } }] : [] };
+    const draft = input.replyToProviderMessageId
+      ? await request(`${root}/${encodeURIComponent(input.replyToProviderMessageId)}/createReply`, "POST", {}) as GraphDraftMessage
+      : await request(root, "POST", { ...content, internetMessageHeaders: [{ name: "x-avidity-ticket-email", value: "operational" }] }) as GraphDraftMessage;
+    if (input.replyToProviderMessageId) await request(`${root}/${encodeURIComponent(draft.id)}`, "PATCH", content);
+    for (const file of input.attachments ?? []) await request(`${root}/${encodeURIComponent(draft.id)}/attachments`, "POST", this.toGraphFileAttachment(file));
+    await request(`${root}/${encodeURIComponent(draft.id)}/send`, "POST");
+    return { providerMessageId: draft.id, internetMessageId: draft.internetMessageId ?? null, conversationId: draft.conversationId ?? null };
   }
 
   async getMessageAttachments(input: GetMessageAttachmentsInput): Promise<MailAttachment[]> {
@@ -288,7 +310,7 @@ export class MicrosoftGraphMailProvider implements MailProvider {
       to: message.toRecipients?.map((recipient) => this.toInboundAddress(recipient.emailAddress)) ?? null,
       cc: cc.length ? cc : null,
       subject: message.subject || "(No subject)",
-      bodyText: message.bodyPreview ?? null,
+      bodyText: message.body?.content ? (message.body.contentType?.toLowerCase() === "html" ? emailText(message.body.content).trim() : message.body.content) : message.bodyPreview ?? null,
       bodyHtml: message.body?.contentType?.toLowerCase() === "html" ? message.body.content : null,
       inReplyTo: headers["in-reply-to"] ?? null,
       references: headers.references ?? null,

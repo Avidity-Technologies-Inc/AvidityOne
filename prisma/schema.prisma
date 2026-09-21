@@ -1557,6 +1557,7 @@ model TicketMessage {
   emailReferences       String?
   ccEmails              String[]          @default([])
   notifiedUserIds       String[]          @default([])
+  suppressOperationalEmail Boolean @default(false)
   mailDeliveryStatus    MailDeliveryStatus @default(NOT_APPLICABLE)
   mailDeliveryAttemptedAt DateTime?
   mailDeliveryAcceptedAt DateTime?
@@ -3185,4 +3186,79 @@ model QcAttachment {
   storedFile StoredFile @relation(fields: [storedFileId], references: [id], onDelete: Restrict)
   @@index([organizationId, deliverableId, createdAt])
   @@map("qc_attachments")
+}
+
+// Durable operational email state. IDs are scoped and re-authorized against live records before use.
+model TicketEmailPolicy {
+  organizationId String @id @db.Uuid
+  settings Json
+  updatedAt DateTime @updatedAt
+  @@map("ticket_email_policies")
+}
+
+model TicketEmailDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String @db.Uuid
+  userId String @db.Uuid
+  eventType String
+  messageId String? @db.Uuid
+  replyKey String @unique
+  mode String @default("PUBLIC")
+  subject String
+  bodyText String?
+  cutoff DateTime @default(now())
+  status String @default("PENDING")
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  claimedAt DateTime?
+  acceptedAt DateTime?
+  providerMessageId String?
+  error String?
+  dedupeKey String @unique
+  createdAt DateTime @default(now())
+  @@index([status, availableAt])
+  @@index([organizationId, createdAt])
+  @@index([ticketId, userId])
+  @@map("ticket_email_deliveries")
+}
+
+model TicketEmailAction {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String @db.Uuid
+  userId String @db.Uuid
+  mailboxId String @db.Uuid
+  sourceKey String @unique
+  providerMessageId String
+  recipientSnapshot String[] @default([])
+  originalBodyText String?
+  originalBodyHtml String?
+  bodyText String
+  bodyHtml String
+  mode String
+  closeTicket Boolean @default(false)
+  hasAttachments Boolean @default(false)
+  confirmationHash String @unique
+  expiresAt DateTime
+  status String @default("AWAITING_CONFIRMATION")
+  resultMessageId String? @db.Uuid
+  error String?
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  @@index([organizationId, createdAt])
+  @@map("ticket_email_actions")
+}
+
+model TicketEmailEvent {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  ticketId String @db.Uuid
+  messageId String? @db.Uuid
+  userId String? @db.Uuid
+  kind String
+  createdAt DateTime @default(now())
+  processedAt DateTime?
+  @@index([processedAt, createdAt])
+  @@map("ticket_email_events")
 }

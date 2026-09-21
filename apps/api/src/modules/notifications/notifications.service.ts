@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, Optional, NotFoundException } from "@nestjs/common";
+import { TicketEmailService } from "../ticket-email/ticket-email.service";
 import { ConfigService } from "@nestjs/config";
 import { Prisma } from "@prisma/client";
 import { AuthenticatedUser } from "../auth/auth.types";
@@ -26,6 +27,7 @@ export type NotificationEventType =
 
 interface NotifyUserInput {
   userId: string;
+  messageId?: string;
   ticketId?: string | null;
   eventServiceRequestId?: string | null;
   eventServiceTaskId?: string | null;
@@ -61,7 +63,8 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailDelivery: MailDeliveryService,
-    private readonly config: ConfigService
+    private readonly config: ConfigService,
+    @Optional() private readonly ticketEmail?: TicketEmailService
   ) {}
 
   async list(user: AuthenticatedUser) {
@@ -105,7 +108,7 @@ export class NotificationsService {
         })
       : null;
 
-    if (emailAllowed) {
+    if (emailAllowed && !(input.ticketId && this.ticketEmail && await this.ticketEmail.enqueue({ organizationId: targetUser.organizationId, userId: input.userId, ticketId: input.ticketId, eventType: input.eventType, title: input.title, messageId: input.messageId }))) {
       await this.sendEmailNotification({
         organizationId: targetUser.organizationId,
         email: targetUser.email,

@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from "@nestjs/common";
 import { MailDeliveryStatus, MessageDirection, MessageVisibility, Prisma, TicketPriority, TicketSource, TicketStatus, TicketWorkflowTrigger } from "@prisma/client";
+import { TicketAttachmentsService } from "../ticket-attachments/ticket-attachments.service";
+import { MailAttachment } from "../mailboxes/providers/mail-provider.interface";
 import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { ContactsService } from "../contacts/contacts.service";
@@ -60,7 +62,8 @@ export class TicketsService {
     private readonly notifications: NotificationsService,
     private readonly autoReplies: AutoRepliesService,
     private readonly externalSpecialists: ExternalSpecialistsService = { ensure: async () => { throw new NotFoundException("External specialist was not found."); } } as unknown as ExternalSpecialistsService,
-    @Optional() private readonly ticketWorkflow?: TicketWorkflowService
+    @Optional() private readonly ticketWorkflow?: TicketWorkflowService,
+    @Optional() private readonly emailAttachments?: TicketAttachmentsService
   ) {}
 
   async assignmentOptions(user: AuthenticatedUser) {
@@ -1260,6 +1263,7 @@ export class TicketsService {
       await this.notifyTicketParticipants({
         ticketId: result.ticket.id,
         createdById: null,
+        messageId: result.message.id,
         reason: `Customer replied to ${result.ticket.ticketNumber}`,
         title: `Customer replied: ${result.ticket.ticketNumber}`,
         eventType: "ticketReplyOnAssignedTicket"
@@ -1935,6 +1939,7 @@ export class TicketsService {
         .filter((userId) => !existingIds.has(userId))
         .map((userId) => this.addWatcherAndNotify(internalTicketId, userId, user.id, "Manual watcher", "You were added as a ticket watcher.", "internalNoteMention"))
     );
+    await this.prisma.ticketWatcher.updateMany({ where: { ticketId: internalTicketId, userId: { in: [...requestedIds] } }, data: { reason: "Manual watcher" } });
     await this.prisma.ticketWatcher.deleteMany({
       where: {
         ticketId: internalTicketId,
@@ -2028,6 +2033,26 @@ export class TicketsService {
     }
 
     return this.getById(ticketId, user);
+  }
+
+  async executeEmailReply(input: { ticketId: string; user: AuthenticatedUser; bodyText: string; bodyHtml: string; mode: string; close: boolean; attachments: MailAttachment[]; operationId: string }) {
+    // Email identity and grants are checked at confirmation; enforce the same action grants here too.
+    const required = ["tickets.view", "ticket_messages.view", "tickets.reply", input.mode === "INTERNAL" ? "ticket_messages.create_internal" : "ticket_messages.create_public", ...(input.close ? ["tickets.close"] : [])];
+    if (required.some((permission) => !input.user.permissions.includes(permission))) throw new ForbiddenException("Email operation is not permitted.");
+    await this.ensureTicketExists(input.ticketId, input.user);
+    await this.auditLogs.create({ organizationId: input.user.organizationId, userId: input.user.id, entityType: "Ticket", entityId: input.ticketId, action: "ticket.email_execution_started", metadata: { operationId: input.operationId, mode: input.mode, close: input.close } });
+    const attachmentIds: string[] = [];
+    if (input.attachments.length && !input.user.permissions.includes("ticket_attachments.upload")) throw new ForbiddenException("Attachment upload permission is required.");
+    for (const file of input.attachments) {
+      if (!file.contentBytes || !this.emailAttachments) throw new BadRequestException("An email attachment could not be imported.");
+      const saved = await this.emailAttachments.uploadForTicket(input.ticketId, input.user, { originalname: file.originalFilename, mimetype: file.mimeType, buffer: file.contentBytes, size: file.contentBytes.length }, { isInline: file.isInline, contentId: file.contentId });
+      attachmentIds.push(saved.id);
+    }
+    if (!input.bodyText && input.close && !attachmentIds.length) {
+      await this.closeTicket(input.ticketId, input.user);
+      return { id: input.ticketId };
+    }
+    return this.createMessage(input.ticketId, { bodyText: input.bodyText || "Attachments", bodyHtml: input.bodyHtml, visibility: input.mode === "INTERNAL" ? "internal" : "public", action: input.mode === "INTERNAL" ? (input.close ? "send_note_and_close" : "send_note") : (input.close ? "send_and_close" : "send"), attachmentIds, includePersistentCc: true }, input.user);
   }
 
   async createMessage(ticketId: string, input: CreateTicketMessageDto, user: AuthenticatedUser) {
@@ -2146,6 +2171,7 @@ export class TicketsService {
         emailConversationId: sendResult?.conversationId ?? latestInboundMessage?.emailConversationId ?? null,
         ccEmails: deliveredCcEmails,
         notifiedUserIds,
+        suppressOperationalEmail: isInternal && action === "save_note",
         mailDeliveryStatus: sendsPublicEmail ? MailDeliveryStatus.ACCEPTED : MailDeliveryStatus.NOT_APPLICABLE,
         mailDeliveryAttemptedAt: deliveryAttemptedAt,
         mailDeliveryAcceptedAt: sendsPublicEmail ? new Date() : null,
@@ -2238,6 +2264,7 @@ export class TicketsService {
       await this.notifyTicketParticipants({
         ticketId: internalTicketId,
         createdById: user.id,
+        messageId: message.id,
         reason: isInternal ? "Internal note added to an assigned ticket" : "Public reply added to an assigned ticket",
         title: isInternal ? "Internal note added" : "Ticket reply added",
         eventType: isInternal ? "internalNoteOnAssignedTicket" : "ticketReplyOnAssignedTicket",
@@ -2435,6 +2462,7 @@ export class TicketsService {
       }
     });
 
+    if ([...currentIds].some((id) => !nextIds.has(id))) await this.prisma.ticketWatcher.deleteMany({ where: { ticketId, userId: { in: [...currentIds].filter((id) => !nextIds.has(id)) }, OR: [{ reason: { contains: "assignment", mode: "insensitive" } }, { reason: { startsWith: "Routing rule:" } }] } });
     const addedUserIds = [...nextIds].filter((userId) => !currentIds.has(userId));
     await Promise.all(
       addedUserIds
@@ -2794,7 +2822,7 @@ export class TicketsService {
           userId
         }
       },
-      update: {},
+      update: ["Manual watcher", "Following ticket conversation", "CC on internal note"].includes(reason) ? { reason } : {},
       create: {
         ticketId,
         userId,
@@ -2810,6 +2838,7 @@ export class TicketsService {
     reason: string;
     title: string;
     eventType: "ticketAssignedToMe" | "ticketReplyOnAssignedTicket" | "internalNoteOnAssignedTicket" | "ticketReopened";
+    messageId?: string;
     excludeUserIds?: string[];
   }) {
     const ticket = await this.prisma.ticket.findUnique({
@@ -2839,18 +2868,9 @@ export class TicketsService {
       ...groupMembers.map((item) => item.userId)
     ]);
 
-    await Promise.all(
-      [...recipientIds]
-        .filter((userId) => !excluded.has(userId))
-        .map((userId) => this.addWatcherAndNotify(
-          input.ticketId,
-          userId,
-          input.createdById,
-          input.reason,
-          input.title,
-          input.eventType
-        ))
-    );
+    await Promise.all([...recipientIds].filter((userId) => !excluded.has(userId)).map((userId) =>
+      this.notifications.notifyUser({ userId, ticketId: input.ticketId, title: input.title, body: input.reason, eventType: input.eventType, messageId: input.messageId })
+    ));
   }
 
   private async notifyGroupMembers(ticketId: string, groupId: string, createdById: string | null, reason: string, title: string) {

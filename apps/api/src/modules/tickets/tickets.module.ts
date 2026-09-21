@@ -1,3 +1,4 @@
+import { TicketAttachmentsModule } from "../ticket-attachments/ticket-attachments.module";
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { AuditLogsModule } from "../audit-logs/audit-logs.module";
@@ -15,7 +16,7 @@ import { TicketsController } from "./tickets.controller";
 import { TicketsService } from "./tickets.service";
 
 @Module({
-  imports: [AuthModule, AuditLogsModule, ContactsModule, ExternalSpecialistsModule, TicketRoutingModule, TicketWorkflowModule, MailTransportModule, NotificationsModule, AutoRepliesModule],
+  imports: [TicketAttachmentsModule, AuthModule, AuditLogsModule, ContactsModule, ExternalSpecialistsModule, TicketRoutingModule, TicketWorkflowModule, MailTransportModule, NotificationsModule, AutoRepliesModule],
   controllers: [TicketsController, SupportPortalController],
   providers: [TicketsService, SupportPortalService, HtmlSanitizerService],
   exports: [TicketsService, HtmlSanitizerService]

@@ -88,7 +88,7 @@ export class TicketRoutingService {
           create: {
             ticketId: input.ticketId,
             userId,
-            reason: `Routing rule: ${matchedRule.name}`
+            reason: `${matchedRule.notifyUserIds.includes(userId) ? "Routing notification subscriber" : "Routing rule"}: ${matchedRule.name}`
           }
         });
         await this.notifications.notifyUser({
@@ -96,7 +96,7 @@ export class TicketRoutingService {
           ticketId: input.ticketId,
           title: `Ticket routed: ${input.subject}`,
           body: `Rule "${matchedRule.name}" matched this ticket.`,
-          eventType: matchedRule.assignTeamId ? "ticketAssignedToMyTeam" : "routingRuleMatched"
+          eventType: matchedRule.assignUserId === userId ? "ticketAssignedToMe" : matchedRule.assignTeamId ? "ticketAssignedToMyTeam" : "routingRuleMatched"
         });
       })
     );

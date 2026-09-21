@@ -1,3 +1,4 @@
+import { ConfigService } from "@nestjs/config";
 import { MicrosoftGraphMailProvider } from "./microsoft-graph-mail.provider";
 
 describe("MicrosoftGraphMailProvider", () => {
@@ -6,6 +7,28 @@ describe("MicrosoftGraphMailProvider", () => {
   beforeEach(() => {
     fetchMock.mockReset();
     global.fetch = fetchMock as never;
+  });
+
+  it("uses immutable operational drafts and explicitly replaces all recipients on a threaded copy", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "synthetic-token" }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "immutable-draft", conversationId: "staff-thread" }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, status: 202 });
+    const provider = new MicrosoftGraphMailProvider(new ConfigService({ MICROSOFT_CLIENT_SECRET: "synthetic-secret" }));
+    const result = await provider.sendMessage({ mailboxId: "mailbox", mailboxEmailAddress: "support@example.test", fromAddress: "support@example.test", replyToAddress: "support@example.test", tenantId: "synthetic-tenant", microsoftClientId: "synthetic-client", encryptedClientSecretReference: "env:MICROSOFT_CLIENT_SECRET", to: ["specialist@example.test"], bodyText: "Only staff copy", bodyHtml: "<p>Only staff copy</p>", subject: "Ticket", trackDelivery: true, replyToProviderMessageId: "previous-immutable" });
+    expect(result).toMatchObject({ providerMessageId: "immutable-draft", conversationId: "staff-thread" });
+    const patch = fetchMock.mock.calls.find((call) => call[1]?.method === "PATCH");
+    expect(JSON.parse(patch![1].body)).toMatchObject({ toRecipients: [{ emailAddress: { address: "specialist@example.test" } }], ccRecipients: [], bccRecipients: [] });
+    expect(patch![1].headers.Prefer).toBe('IdType="ImmutableId"');
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/send"))).toHaveLength(1);
+  });
+
+  it("projects full HTML/plain-text bodies instead of the truncated preview", async () => {
+    const provider = new MicrosoftGraphMailProvider(new ConfigService());
+    const project = (provider as unknown as { toInboundMessage: (message: unknown, input: unknown) => { bodyText: string } }).toInboundMessage.bind(provider);
+    const body = "Complete content ".repeat(300);
+    expect(project({ id: "message", from: { emailAddress: { address: "sender@example.test" } }, bodyPreview: "Truncated", body: { contentType: "text", content: body } }, {}).bodyText).toBe(body);
+    expect(project({ id: "message", from: { emailAddress: { address: "sender@example.test" } }, bodyPreview: "Truncated", body: { contentType: "html", content: `<p>${body}</p>` } }, {}).bodyText).toBe(body.trim());
   });
 
   it("loads paginated file attachments and fetches missing content bytes", async () => {

@@ -40,6 +40,7 @@ export interface SyncInboundMessagesResult {
 }
 
 export interface SendMessageInput {
+  trackDelivery?: boolean;
   mailboxId: string;
   mailboxEmailAddress: string;
   fromAddress?: string | null;

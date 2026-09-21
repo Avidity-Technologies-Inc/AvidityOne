@@ -16640,3 +16640,18 @@ button.ticket-workflow-toggle { border: 0; cursor: pointer; }
   .reports-v2 .report-filter-panel .report-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .reports-v2 .report-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Ticket email controls stay within Settings/Profile and share their density. */
+.ticket-email-panel { border: 1px solid var(--border, #d9e2ef); border-radius: 10px; padding: 16px; min-width: 0; }
+.ticket-email-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; margin: 16px 0; }
+.ticket-email-options label { display: grid; align-content: start; gap: 6px; }
+.ticket-email-options label span { display: flex; align-items: center; gap: 8px; }
+.ticket-email-options input[type=checkbox] { width: auto; margin: 0; }
+.ticket-email-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.ticket-email-panel details { margin-top: 14px; }
+.ticket-email-panel summary { cursor: pointer; font-weight: 600; }
+.ticket-email-history { overflow-x: auto; margin: 12px 0; }
+.ticket-email-history table { width: 100%; border-collapse: collapse; text-align: left; }
+.ticket-email-history caption { text-align: left; font-weight: 600; margin: 8px 0; }
+.ticket-email-history th, .ticket-email-history td { padding: 8px; border-bottom: 1px solid var(--border, #d9e2ef); vertical-align: top; }
+.ticket-email-history small { display: block; max-width: 480px; overflow-wrap: anywhere; }

@@ -31,7 +31,8 @@ export class TicketAttachmentsService {
   async uploadForTicket(
     ticketId: string,
     user: AuthenticatedUser,
-    file: { originalname: string; mimetype: string; size: number; buffer: Buffer }
+    file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+    inline?: { isInline: boolean; contentId?: string | null }
   ) {
     const ticket = await this.resolveTicket(ticketId, user);
 
@@ -43,8 +44,8 @@ export class TicketAttachmentsService {
       originalFilename: file.originalname,
       mimeType: file.mimetype || "application/octet-stream",
       buffer: file.buffer,
-      isInline: false,
-      contentId: null,
+      isInline: inline?.isInline ?? false,
+      contentId: inline?.contentId ?? null,
       emailAttachmentId: null
     });
 

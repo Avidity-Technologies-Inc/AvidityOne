@@ -1,4 +1,5 @@
 "use client";
+import { TicketEmailPanel } from "@/components/notifications/TicketEmailPanel";
 import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import { ChevronDown, ChevronRight, Download, Pencil, Plus, RefreshCcw, RotateCw, Search, TestTube2, Trash2, Upload, X } from "lucide-react";
@@ -40,6 +41,7 @@ interface SyncResult {
   receivedMessages: number;
   createdTickets: number;
   skippedDuplicates: number;
+  operationalEmailsHandled?: number;
   blockedSpamMessages?: number;
   attachmentBackfilled?: number;
   attachmentBackfillFailures?: number;
@@ -2073,7 +2075,7 @@ export function SettingsWorkspace() {
     try {
       const result = await apiFetch<SyncResult>(`/mailboxes/${mailbox.id}/sync`, { method: "POST" });
       setNotice(
-        `Mailbox sync completed: ${result.receivedMessages} received, ${result.createdTickets} tickets created, ${result.skippedDuplicates} duplicates skipped, ${result.blockedSpamMessages ?? 0} blocked${
+        `Mailbox sync completed: ${result.receivedMessages} received, ${result.createdTickets} tickets created, ${result.skippedDuplicates} duplicates skipped, ${result.operationalEmailsHandled ?? 0} operational emails handled, ${result.blockedSpamMessages ?? 0} blocked${
           result.attachmentBackfilled ? `, ${result.attachmentBackfilled} attachments recovered` : ""
         }${
           result.attachmentBackfillFailures ? `, ${result.attachmentBackfillFailures} attachment backfill failures` : ""
@@ -2291,7 +2293,7 @@ export function SettingsWorkspace() {
         body: JSON.stringify({ initialSyncFrom })
       });
       setNotice(
-        `Mailbox backfill completed: ${result.receivedMessages} reviewed, ${result.createdTickets} tickets created, ${result.skippedDuplicates} duplicates skipped, ${result.blockedSpamMessages ?? 0} blocked. Daily sync cursor preserved.`
+        `Mailbox backfill completed: ${result.receivedMessages} reviewed, ${result.createdTickets} tickets created, ${result.skippedDuplicates} duplicates skipped, ${result.operationalEmailsHandled ?? 0} operational emails handled, ${result.blockedSpamMessages ?? 0} blocked. Daily sync cursor preserved.`
       );
       await loadSettingsData();
     } catch (err) {
@@ -4299,6 +4301,7 @@ export function SettingsWorkspace() {
                 </div>
                 <span className="status-pill">{notificationPreferenceRows.length} users</span>
               </div>
+              <TicketEmailPanel />
               <div className="notification-coverage-grid settings-section" aria-label="Assignment email readiness">
                 <div className="notification-coverage-card">
                   <span>Assignment email ready</span>

@@ -1,5 +1,14 @@
 # Project Handoff
 
+## Ticket Operational Email — 2026-09-21
+
+- Implemented on clean canonical `main` at `d8df408`, with publication authorized. Full ticket message/history copies, private attachment handling, current recipient checks and durable delivery tracking extend existing notifications. Settings and Profile share explicit policy/status controls; individual event preferences remain in force.
+- Email responses use personalized context and a separate single-use confirmation to the registered user. Public replies and internal notes remain separate; `[Closed]` is accepted only on the first authored line with current permissions. Recipient changes, expired/replayed confirmations, automatic/quoted mail and removed assignments are checked. Existing reply/close services preserve workflow, QC and activity closeout behavior.
+- One additive migration creates operational policy/event/delivery/action tables, a silent-note flag and transactional source-capture triggers. Capture/reply/close features default off. No permissions, credentials, dependencies, live configuration or production data have been changed; no real customer/staff email was sent for testing.
+- Validation: full API regression passed with 205 tests and no skips on isolated PostgreSQL targets; focused authenticated module/permission tests passed. API/web TypeScript and full production build passed. Thirty-six focused browser checks (email controls, ticket composer and email formatting) passed across Chromium/Firefox/WebKit; the final 12 email-control cases were rerun successfully. Settings and mobile Profile screenshots were inspected. Actual Microsoft tenant delivery remains a controlled-pilot acceptance item.
+- Deployment helper: `scripts/deploy-ticket-email.sh <full-release-sha>`, from clean production `main` at `d8df408` or the same release for retry. It backs up source/runtime/database, applies the additive migration, rebuilds API/web and checks health. It does not activate email policies. Native production deployment remains pending.
+- Details, activation prerequisites, operational limits and recovery: [ticket operational email](docs/TICKET_EMAIL_OPERATIONS_2026-09-21.md).
+
 ## Export Row Ordering — 2026-09-21
 
 - Web-only follow-up from clean canonical `main` at `60ae53c`. Export options now expose row sort column/direction using only selected export columns; the preview states the effective order. PDF, Excel and CSV reuse the existing server sort contract.

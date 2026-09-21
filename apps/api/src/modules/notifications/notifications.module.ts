@@ -1,3 +1,4 @@
+import { TicketEmailModule } from "../ticket-email/ticket-email.module";
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { MailTransportModule } from "../mailboxes/mail-transport.module";
@@ -6,7 +7,7 @@ import { NotificationsController } from "./notifications.controller";
 import { NotificationsService } from "./notifications.service";
 
 @Module({
-  imports: [AuthModule, MailTransportModule, PermissionsModule],
+  imports: [TicketEmailModule, AuthModule, MailTransportModule, PermissionsModule],
   controllers: [NotificationsController],
   providers: [NotificationsService],
   exports: [NotificationsService]

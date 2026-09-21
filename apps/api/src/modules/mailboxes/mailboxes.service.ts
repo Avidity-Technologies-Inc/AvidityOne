@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, Optional, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from "@nestjs/common";
+import { TicketEmailService } from "../ticket-email/ticket-email.service";
 import { ConfigService } from "@nestjs/config";
 import { BlockedInboundEmailStatus, Mailbox, MessageDirection, MessageVisibility, Prisma, SpamReleaseAction } from "@prisma/client";
 import { HtmlSanitizerService } from "../../common/html/html-sanitizer.service";
@@ -18,6 +19,7 @@ export interface SyncMailboxResult {
   receivedMessages: number;
   createdTickets: number;
   skippedDuplicates: number;
+  operationalEmailsHandled?: number;
   blockedSpamMessages: number;
   attachmentBackfilled?: number;
   attachmentBackfillFailures?: number;
@@ -87,7 +89,8 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
     private readonly spamManagement: SpamManagementService,
     private readonly mockMailProvider: MockMailProvider,
     private readonly microsoftGraphMailProvider: MicrosoftGraphMailProvider,
-    private readonly htmlSanitizer: HtmlSanitizerService = new HtmlSanitizerService()
+    private readonly htmlSanitizer: HtmlSanitizerService = new HtmlSanitizerService(),
+    @Optional() private readonly ticketEmail?: TicketEmailService
   ) {}
 
   onModuleInit() {
@@ -515,6 +518,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
     });
     let createdTickets = 0;
     let skippedDuplicates = 0;
+    let operationalEmailsHandled = 0;
     let blockedSpamMessages = 0;
     let attachmentBackfilled = 0;
     let attachmentBackfillFailures = 0;
@@ -568,6 +572,12 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
+      if (this.ticketEmail && await this.ticketEmail.inbound(mailbox, message,
+        (providerMessageId) => provider.getMessageAttachments({ mailboxId: mailbox.id, mailboxEmailAddress: this.getMailboxReadAddress(mailbox), providerMessageId, tenantId: mailbox.tenantId, microsoftClientId: mailbox.microsoftClientId, encryptedClientSecretReference: mailbox.encryptedClientSecretReference }),
+        (input) => this.ticketsService.executeEmailReply(input))) {
+        operationalEmailsHandled += 1;
+        continue;
+      }
       const eventRequest = await this.findEventRequestForMessage(mailbox.organizationId, message.subject, message.conversationId ?? null);
       if (eventRequest) {
         await this.prisma.eventServiceMessage.create({
@@ -689,6 +699,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
       receivedMessages: syncResult.messages.length,
       createdTickets,
       skippedDuplicates,
+      ...(operationalEmailsHandled ? { operationalEmailsHandled } : {}),
       blockedSpamMessages,
       attachmentBackfilled,
       attachmentBackfillFailures,

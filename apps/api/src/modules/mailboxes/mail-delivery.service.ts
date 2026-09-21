@@ -20,6 +20,7 @@ export interface SendTicketReplyInput {
   references?: string | null;
   replyToProviderMessageId?: string | null;
   attachmentIds?: string[];
+  trackDelivery?: boolean;
   rawAttachments?: OutboundMailAttachment[];
 }
 
@@ -48,6 +49,7 @@ export class MailDeliveryService {
     const attachments = [...ticketAttachments, ...(input.rawAttachments ?? [])];
 
     return provider.sendMessage({
+      trackDelivery: input.trackDelivery,
       mailboxId: mailbox.id,
       mailboxEmailAddress: this.getMailboxReadAddress(mailbox),
       fromAddress: mailbox.outboundFromAddress || mailbox.publicEmailAddress || mailbox.emailAddress,

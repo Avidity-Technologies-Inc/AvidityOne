@@ -1,4 +1,5 @@
 "use client";
+import { TicketEmailPanel } from "@/components/notifications/TicketEmailPanel";
 import { ProfileAccess } from "./ProfileAccess";
 import { QcContextLink } from "@/components/qc/QcContextLink";
 
@@ -745,6 +746,7 @@ export function ProfileWorkspace() {
                   {assignmentEmailReady ? "Assignment email ready" : "Assignment email off"}
                 </span>
               </div>
+              <TicketEmailPanel own />
               {emailEventsBlocked ? (
                 <div className="notification-warning-banner settings-section" role="status">
                   Email delivery is turned off. Email-specific notification switches are saved, but they will not send until the Email channel is enabled.
