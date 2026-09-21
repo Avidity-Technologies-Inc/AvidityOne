@@ -53,7 +53,7 @@ else: raise RuntimeError(name)
 '''
 
 class TransportDeploymentTests(unittest.TestCase):
-    def run_deployment(self, failure=''):
+    def run_deployment(self, failure='', previous='518a3b64f5f30924da514df478a455d30e1d1e53'):
         with tempfile.TemporaryDirectory(prefix='avidity-deploy-test-') as directory:
             root = Path(directory)
             app = root / 'app'
@@ -62,7 +62,7 @@ class TransportDeploymentTests(unittest.TestCase):
             (dist / 'main.js').write_text('old runtime')
             (app / '.env.production').write_text('SYNTHETIC_TEST=1\n')
             state_file = root / 'state.json'
-            state_file.write_text(json.dumps({'head': '518a3b64f5f30924da514df478a455d30e1d1e53',
+            state_file.write_text(json.dumps({'head': previous,
                                              'avidity-api': True, 'avidity-web': True}))
             bins = root / 'bin'
             bins.mkdir()
@@ -92,6 +92,12 @@ class TransportDeploymentTests(unittest.TestCase):
         self.assertTrue(state['avidity-api'] and state['avidity-web'], result.stdout + result.stderr)
         self.assertEqual(runtime, 'old runtime')
         self.assertEqual(state['head'], 'a' * 40)
+
+    def test_attachment_update_from_verified_recovery_release(self):
+        result, state, runtime = self.run_deployment(previous='cbf7f7eb31489ee578f721a42a2c36679bf59ea7')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(state['avidity-api'] and state['avidity-web'])
+        self.assertEqual(runtime, 'new runtime')
 
     def test_health_failure_restores_runtime_and_both_services(self):
         result, state, runtime = self.run_deployment('health')

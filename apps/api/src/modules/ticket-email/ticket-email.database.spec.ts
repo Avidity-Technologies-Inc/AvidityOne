@@ -20,6 +20,7 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
   let org: string; let userId: string; let mailboxId: string; let ticketId: string; let roleId: string;
   const send = jest.fn(async (_input: Record<string, unknown>) => ({ providerMessageId: `synthetic-${randomUUID()}` }));
   const email = `specialist-${randomUUID()}@example.test`;
+  const storedContent = new Map<string, Buffer>();
   const loadFiles = jest.fn(async (): Promise<MailAttachment[]> => []);
   const execute = jest.fn((input: Parameters<TicketsService["executeEmailReply"]>[0]) => tickets.executeEmailReply(input));
   const sender = () => ({ id: mailboxId, organizationId: org });
@@ -39,7 +40,7 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
     await prisma.userNotificationPreference.create({ data: { userId, emailEnabled: true, emailTicketAssignedToMe: true, emailTicketReplyOnAssignedTicket: true, emailInternalNoteOnAssignedTicket: true } });
     mailboxId = (await prisma.mailbox.create({ data: { organizationId: org, name: "Synthetic support", emailAddress: `support-${randomUUID()}@example.test`, provider: "MOCK", connectionMode: "MOCK" } })).id;
     const audit = new AuditLogsService(prisma); const sanitizer = new HtmlSanitizerService();
-    service = new TicketEmailService(prisma, { sendTicketReply: send } as never, { getFileStream: async () => Readable.from(Buffer.from("synthetic file")) } as never, new ConfigService({ MAIL_PROVIDER: "mock", APP_URL: "https://example.test" }), audit, sanitizer);
+    service = new TicketEmailService(prisma, { sendTicketReply: send } as never, { getFileStream: async (key: string) => Readable.from(storedContent.get(key) ?? Buffer.from("synthetic file")) } as never, new ConfigService({ MAIL_PROVIDER: "mock", APP_URL: "https://example.test" }), audit, sanitizer);
     const validation = new FileValidationService({ getAttachmentPolicy: async () => ({ maximumUploadSizeMb: 25, blockedAttachmentFileTypes: [], allowedAttachmentFileTypes: [] }) } as never);
     const storage = new FileStorageService({ saveFile: async (input: { originalFilename: string; mimeType: string; buffer: Buffer }) => ({ storageProvider: "LOCAL", storageKey: `synthetic/${randomUUID()}`, originalFilename: input.originalFilename, storedFilename: input.originalFilename, mimeType: input.mimeType, fileSize: input.buffer.length, sha256Hash: "b".repeat(64) }) } as never, validation);
     const attachments = new TicketAttachmentsService(prisma, storage, { scanBuffer: async () => ({ scanStatus: "CLEAN", scanResult: "PASSED" }) } as never, validation, audit);
@@ -146,6 +147,98 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
     await service.dispatch();
     const mail = send.mock.calls.map((c) => c[0]).find((c) => String(c.bodyHtml).includes("blocked.txt"));
     expect(mail?.bodyHtml).toContain("not cleared for delivery"); expect(mail?.rawAttachments).toEqual([]);
+  });
+  async function sourceFile(messageId: string, name: string, bytes: Buffer, contentId: string | null = null) {
+    const storageKey = `synthetic/${randomUUID()}`;
+    storedContent.set(storageKey, bytes);
+    const data = { originalFilename: name, storedFilename: name, mimeType: contentId ? "image/png" : "application/pdf", fileSize: bytes.length, storageKey, sha256Hash: "a".repeat(64) };
+    const stored = await prisma.storedFile.create({ data });
+    return prisma.ticketAttachment.create({ data: { ...data, storedFileId: stored.id, ticketId, ticketMessageId: messageId, contentId, isInline: Boolean(contentId), storageProvider: "LOCAL", scanStatus: "CLEAN", source: "INBOUND_EMAIL" } });
+  }
+  async function sendMessageCopy(messageId: string) {
+    await service.enqueue({ organizationId: org, ticketId, userId, eventType: "ticketReplyOnAssignedTicket", title: "File copy test", messageId });
+    const row = await prisma.ticketEmailDelivery.findFirstOrThrow({ where: { ticketId, messageId } });
+    const before = send.mock.calls.length;
+    await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    expect(send.mock.calls.length).toBe(before + 1);
+    return send.mock.calls.at(-1)![0] as { bodyHtml: string; rawAttachments: Array<{ originalFilename: string; isInline: boolean; contentId: string | null; contentBytes: Buffer; sizeBytes: number }> };
+  }
+  it("keeps embedded images and includes downloadable copies while promoting unused inline files", async () => {
+    await ticket();
+    const message = await prisma.ticketMessage.findFirstOrThrow({ where: { ticketId } });
+    await prisma.ticketMessage.update({ where: { id: message.id }, data: { bodyHtml: '<p>Evidence</p><img src="cid:screen">', attachmentsProcessedAt: new Date() } });
+    const image = await sourceFile(message.id, "evidence.png", Buffer.from("actual image bytes"), "screen");
+    await sourceFile(message.id, "document.pdf", Buffer.from("actual PDF bytes"));
+    await sourceFile(message.id, "unused.png", Buffer.from("orphan image"), "unused");
+    const result = await sendMessageCopy(message.id);
+    const copies = result.rawAttachments.filter((f) => f.originalFilename === "evidence.png");
+    expect(copies).toHaveLength(2);
+    expect(copies[0]).toMatchObject({ isInline: true, contentId: `file-${image.id}@ticket`, contentBytes: Buffer.from("actual image bytes") });
+    expect(copies[1]).toMatchObject({ isInline: false, contentId: null, contentBytes: copies[0].contentBytes });
+    expect(result.bodyHtml).toContain(`cid:file-${image.id}@ticket`);
+    expect(result.bodyHtml).toContain("Downloadable image copies");
+    expect(result.rawAttachments.filter((f) => f.originalFilename === "unused.png")).toEqual([expect.objectContaining({ isInline: false, contentId: null })]);
+    expect(result.rawAttachments.filter((f) => f.originalFilename === "document.pdf")).toHaveLength(1);
+  });
+  it("prioritizes original files over duplicate image copies within the configured budget", async () => {
+    await ticket();
+    const actor = (await service.actor(userId, org))!;
+    await service.updatePolicy(actor, { attachmentBudgetMb: 1 });
+    try {
+      const message = await prisma.ticketMessage.findFirstOrThrow({ where: { ticketId } });
+      await prisma.ticketMessage.update({ where: { id: message.id }, data: { bodyHtml: '<img src="cid:large">', attachmentsProcessedAt: new Date() } });
+      await sourceFile(message.id, "large.png", Buffer.alloc(600000), "large");
+      await sourceFile(message.id, "important.pdf", Buffer.alloc(400000));
+      const result = await sendMessageCopy(message.id);
+      expect(result.rawAttachments).toHaveLength(2);
+      expect(result.rawAttachments.some((f) => f.originalFilename === "important.pdf" && !f.isInline)).toBe(true);
+      expect(result.rawAttachments.reduce((sum, f) => sum + f.sizeBytes, 0)).toBe(1000000);
+      expect(result.bodyHtml).toContain("downloadable copy omitted: email attachment budget exceeded");
+    } finally { await service.updatePolicy(actor, { attachmentBudgetMb: 2 }); }
+  });
+  it("sends only the current communication's files, and respects attachment-copy configuration", async () => {
+    await ticket();
+    const old = await prisma.ticketMessage.findFirstOrThrow({ where: { ticketId } });
+    await sourceFile(old.id, "old.pdf", Buffer.from("old"));
+    const latest = await prisma.ticketMessage.create({ data: { ticketId, direction: "INBOUND", visibility: "PUBLIC", bodyText: "New evidence", attachmentsProcessedAt: new Date() } });
+    await sourceFile(latest.id, "new.pdf", Buffer.from("new"));
+    expect((await sendMessageCopy(latest.id)).rawAttachments.map((f) => f.originalFilename)).toEqual(["new.pdf"]);
+    const actor = (await service.actor(userId, org))!;
+    await service.updatePolicy(actor, { includeAttachments: false });
+    try {
+      const result = await sendMessageCopy(old.id);
+      expect(result.rawAttachments).toEqual([]);
+      expect(result.bodyHtml).toContain("attachment copies disabled");
+    } finally { await service.updatePolicy(actor, { includeAttachments: true }); }
+  });
+  it("retains assignment history files without exposing internal attachments", async () => {
+    await ticket();
+    const first = await prisma.ticketMessage.findFirstOrThrow({ where: { ticketId } });
+    await sourceFile(first.id, "initial.pdf", Buffer.from("initial"));
+    const next = await prisma.ticketMessage.create({ data: { ticketId, direction: "INBOUND", visibility: "PUBLIC", bodyText: "Follow-up", attachmentsProcessedAt: new Date() } });
+    await sourceFile(next.id, "follow-up.pdf", Buffer.from("follow-up"));
+    const internal = await prisma.ticketMessage.create({ data: { ticketId, direction: "INTERNAL", visibility: "INTERNAL", bodyText: "Private note" } });
+    await sourceFile(internal.id, "private.pdf", Buffer.from("private"));
+    await service.enqueue({ organizationId: org, ticketId, userId, eventType: "ticketAssignedToMe", title: "Assignment history" });
+    const row = await prisma.ticketEmailDelivery.findFirstOrThrow({ where: { ticketId } });
+    expect(row.messageId).toBeNull();
+    await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    const mail = send.mock.calls.at(-1)![0] as { bodyHtml: string; rawAttachments: Array<{ originalFilename: string }> };
+    expect(mail.rawAttachments.map((f) => f.originalFilename)).toEqual(["initial.pdf", "follow-up.pdf"]);
+    expect(mail.bodyHtml).not.toContain("Private note");
+  });
+  it("withholds both embedded bytes and downloadable copies after download permission is removed", async () => {
+    await ticket();
+    const message = await prisma.ticketMessage.findFirstOrThrow({ where: { ticketId } });
+    await prisma.ticketMessage.update({ where: { id: message.id }, data: { bodyHtml: '<img src="cid:protected">', attachmentsProcessedAt: new Date() } });
+    await sourceFile(message.id, "protected.png", Buffer.from("protected"), "protected");
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { name: "ticket_attachments.download" } });
+    await prisma.rolePermission.deleteMany({ where: { roleId, permissionId: permission.id } });
+    try {
+      const mail = await sendMessageCopy(message.id);
+      expect(mail.rawAttachments).toEqual([]);
+      expect(mail.bodyHtml).toContain("download permission required");
+    } finally { await prisma.rolePermission.create({ data: { roleId, permissionId: permission.id } }); }
   });
   it("records ambiguous provider failures without automatic resend", async () => {
     await ticket(); await service.enqueue({ organizationId: org, ticketId, userId, eventType: "ticketAssignedToMe", title: "Ambiguous send" });

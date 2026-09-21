@@ -84,7 +84,7 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
     if (internal && !policy.includeInternal) return true;
     const message = await this.prisma.ticketMessage.findFirst({ where: { ticketId: input.ticketId, ...(input.messageId ? { id: input.messageId } : {}) }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
     const mode = internal ? "INTERNAL" : "PUBLIC";
-    const snapshot = /Assigned|routingRule|newTicket/.test(input.eventType);
+    const snapshot = ["ticketAssignedToMe", "ticketAssignedToMyTeam", "routingRuleMatched", "newTicketCreated"].includes(input.eventType);
     const assignment = snapshot ? await this.prisma.ticketAssignee.findUnique({ where: { ticketId_userId: { ticketId: input.ticketId, userId: input.userId } }, select: { id: true } }) : null;
     if (!snapshot && message && policy.includeHistory && await this.prisma.ticketEmailDelivery.count({ where: { ticketId: input.ticketId, userId: input.userId, mode, messageId: null, cutoff: { gte: message.createdAt }, status: { in: ["PENDING", "PREPARING", "SENDING", "ACCEPTED", "SIMULATED"] } } })) return true;
     const dedupeKey = `${input.ticketId}:${input.userId}:${snapshot ? `snapshot:${assignment?.id ?? "subscriber"}` : "message"}:${message?.id ?? input.eventType}:${mode}`;
@@ -176,14 +176,17 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
         const selected = row.messageId || policy.includeHistory ? messages : messages.slice(-1);
         if (selected.some((m) => (m.hasAttachments || /cid:/i.test(m.bodyHtml ?? "")) && m.direction === "INBOUND" && !m.attachmentsProcessedAt)) throw new AttachmentImportPendingError("Waiting for inbound attachments to finish importing.");
         let remaining = policy.attachmentBudgetMb * 1024 * 1024;
+        const downloadableImages: OutboundMailAttachment[] = [];
         for (const m of selected) {
           const author = m.authorUser ? `${m.authorUser.firstName} ${m.authorUser.lastName}` : m.senderEmail ?? "Requester";
           html += `<hr><p><strong>${escapeEmail(author)}</strong> · ${escapeEmail(m.createdAt.toLocaleString("en-US", { timeZone: timezone }))} (${escapeEmail(timezone)}) · ${escapeEmail(m.visibility)}</p>`;
           const inlineIds = new Map(m.attachments.filter((file) => file.contentId).map((file) => [file.contentId!.replace(/^<|>$/g, "").toLowerCase(), `file-${file.id}@ticket`]));
           const sourceHtml = m.bodyHtml ?? m.sanitizedBodyHtml ?? `<p>${escapeEmail(m.bodyText).replace(/\n/g, "<br>")}</p>`;
-          html += this.sanitizer.sanitizeEmail(sourceHtml.replace(/cid:([^"'\s>]+)/gi, (match, cid: string) => inlineIds.has(cid.toLowerCase()) ? `cid:${inlineIds.get(cid.toLowerCase())}` : match));
+          const messageHtml = this.sanitizer.sanitizeEmail(sourceHtml.replace(/cid:([^"'\s>]+)/gi, (match, cid: string) => inlineIds.has(cid.toLowerCase()) ? `cid:${inlineIds.get(cid.toLowerCase())}` : match));
+          html += messageHtml;
           if (Array.isArray(m.attachmentImportFailures) && m.attachmentImportFailures.length) html += `<p>Some source attachments could not be imported. Review the ticket for the recorded failures.</p>`;
           for (const file of m.attachments) {
+            let includedAs = "attached file";
             let omission = !policy.includeAttachments ? "attachment copies disabled" : !user.permissions.includes("ticket_attachments.download") ? "download permission required" : ["SUSPICIOUS", "BLOCKED"].includes(file.scanStatus) ? "not cleared for delivery" : file.fileSize > remaining ? "email attachment budget exceeded" : null;
             if (!omission) {
               try {
@@ -191,10 +194,30 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
                 for await (const chunk of await this.storage.getFileStream(file.storageKey)) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
                 const contentBytes = Buffer.concat(chunks);
                 if (contentBytes.length > remaining) omission = "email attachment budget exceeded";
-                else { attachments.push({ originalFilename: file.originalFilename, mimeType: file.mimeType, sizeBytes: contentBytes.length, contentBytes, contentId: file.contentId ? inlineIds.get(file.contentId.replace(/^<|>$/g, "").toLowerCase()) : null, isInline: file.isInline }); remaining -= contentBytes.length; }
+                else {
+                  const contentId = file.contentId ? inlineIds.get(file.contentId.replace(/^<|>$/g, "").toLowerCase()) : null;
+                  const embedded = Boolean(contentId && messageHtml.toLowerCase().includes(`cid:${contentId}`.toLowerCase()));
+                  const copy = { originalFilename: file.originalFilename, mimeType: file.mimeType, sizeBytes: contentBytes.length, contentBytes };
+                  attachments.push({ ...copy, contentId: embedded ? contentId : null, isInline: embedded });
+                  remaining -= contentBytes.length;
+                  if (embedded) {
+                    // Keep the image in place; add a downloadable copy after original
+                    // files so duplicate image bytes cannot displace other attachments.
+                    downloadableImages.push({ ...copy, contentId: null, isInline: false });
+                    includedAs = "embedded image; see downloadable image copies below";
+                  }
+                }
               } catch { omission = "file could not be read; open the ticket to retrieve it"; }
             }
-            html += `<p>Attachment: ${escapeEmail(file.originalFilename)} — ${omission ? escapeEmail(omission) : "included"}</p>`;
+            html += `<p>Attachment: ${escapeEmail(file.originalFilename)} — ${omission ? escapeEmail(omission) : includedAs}</p>`;
+          }
+        }
+        if (downloadableImages.length) {
+          html += "<h3>Downloadable image copies</h3>";
+          for (const copy of downloadableImages) {
+            const fits = copy.sizeBytes <= remaining;
+            if (fits) { attachments.push(copy); remaining -= copy.sizeBytes; }
+            html += `<p>${escapeEmail(copy.originalFilename)} — ${fits ? "attached file (also displayed in the message)" : "downloadable copy omitted: email attachment budget exceeded; image remains embedded in the message"}</p>`;
           }
         }
         if (Buffer.byteLength(html) > 1024 * 1024) throw new Error("Conversation exceeds the safe email size. Disable assignment history or retrieve the full ticket in the platform.");

@@ -10,6 +10,8 @@ New behavior is opt-in: full ticket email, replies and closing default off. Exis
 
 Assignment snapshots include available public history (or the latest message when history is disabled). Subsequent deliveries carry the new message. Internal notes use a separate staff-only context. Saved-but-unsent internal notes remain silent. Private attachments use existing access/storage/scanner rules, with a configurable 1–2 MB total raw attachment budget for the current small-attachment transport. Blocked, unreadable or oversized files are explicitly identified; a link alone is not presented as an offline copy. Files with the existing PENDING scan state continue to follow the existing outbound policy. Inline content IDs are disambiguated across messages in history. Conversations over the 1 MB body safety limit fail visibly rather than being silently truncated.
 
+The downloadable-attachment follow-up preserves embedded images and adds ordinary downloadable copies when the same configured budget permits. Original files take priority over duplicate image copies; both consume actual raw bytes. Inline metadata without a matching CID reference is sent as a regular attachment. Per-file labels and a downloadable-image summary explicitly explain inclusion or omission. Disabling copies or losing download permission withholds both embedded and downloadable bytes. This follow-up is locally validated but not yet published/deployed.
+
 The Microsoft projection now reads the full body instead of `bodyPreview`. Safe HTML is preserved where the new response can be isolated; otherwise the new text is rendered safely. Source email HTML/text is retained in the email action record. Conversation HTML uses the existing email sanitizer.
 
 ## Reply and close workflow

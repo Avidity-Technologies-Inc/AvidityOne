@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Downloadable Operational Email Attachments — 2026-09-21
+
+- Follow-up implemented locally from clean canonical `main` at `cbf7f7e`. Production was verified at that revision with both services healthy following dependency recovery. Read-only Microsoft inspection confirmed the three reported images existed in sent messages with bytes, inline metadata and matching CID references; the ambiguous “included” label did not distinguish embedded images from downloadable files.
+- Operational copies preserve CID rendering and add ordinary downloadable image copies after all original files, within the existing configured raw-byte budget. Unreferenced inline files become ordinary attachments. Labels distinguish attached files, embedded images and omitted copies. Scanner, visibility, download permissions and attachment-copy settings remain enforced.
+- Corrected event classification: reply/internal-note event names contain “Assigned” but must not become assignment snapshots. New communications now select their own message/files; assignment history remains settings-driven. Previously accepted deliveries are not replayed.
+- Validation: 47 focused email/Graph tests passed across four suites using disposable PostgreSQL and mocked delivery; API TypeScript and production API build passed. No real test email, persistent database migration, dependency, environment or service change for this follow-up. Publication and deployment are authorized. The deployment helper accepts the verified `cbf7f7e` baseline; four isolated deployment/recovery tests passed. Execution and Outlook acceptance of the new downloadable copies remain pending at commit time.
+
 ## Deployment Dependency Recovery — 2026-09-21
 
 - The transport deployment at `518a3b6` built and started the API, but stopping API also stopped web because the live web unit Requires=avidity-api.service. Both the success and rollback paths only started API, leaving the platform web unavailable. This was a deployment procedure defect; no schema or configuration change was involved.

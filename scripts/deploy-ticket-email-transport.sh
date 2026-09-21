@@ -5,6 +5,7 @@ umask 077
 app=/opt/avidity/app
 base=7e1cfc9dae15e9bb0bda904b39ad29170f0788b0
 transport_release=518a3b64f5f30924da514df478a455d30e1d1e53
+recovery_release=cbf7f7eb31489ee578f721a42a2c36679bf59ea7
 release=${1:-}
 [[ $EUID -eq 0 ]] || { echo 'Run as root (sudo).'; exit 1; }
 [[ $release =~ ^[0-9a-f]{40}$ ]] || { echo 'Supply the full published release SHA.'; exit 1; }
@@ -17,7 +18,7 @@ as_app() { runuser -u avidity -- "$@"; }
 [[ -z $(as_app git status --porcelain) ]] || { echo 'Server has local changes; preserve and review them first.'; exit 1; }
 previous=$(as_app git rev-parse HEAD)
 case "$previous" in
-  "$base"|"$transport_release"|"$release") ;;
+  "$base"|"$transport_release"|"$recovery_release"|"$release") ;;
   *) echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1 ;;
 esac
 as_app git cat-file -e "$release^{commit}"
