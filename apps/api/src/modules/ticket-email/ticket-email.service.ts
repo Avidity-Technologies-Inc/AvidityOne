@@ -6,11 +6,14 @@ import { AuthenticatedUser } from "../auth/auth.types";
 import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { FileStorageService } from "../file-storage/file-storage.service";
+import { MailDeliveryError } from "../mailboxes/providers/mail-delivery.error";
 import { MailDeliveryService } from "../mailboxes/mail-delivery.service";
 import { InboundMailMessage, MailAttachment, OutboundMailAttachment } from "../mailboxes/providers/mail-provider.interface";
 import { HtmlSanitizerService } from "../../common/html/html-sanitizer.service";
 import { UpdateTicketEmailPolicyDto } from "./ticket-email.dto";
 import { authoredEmailText, emailText, escapeEmail, isAutomaticEmail, parseStaffReply, REPLY_SEPARATOR, ticketEmailDefaults, TicketEmailPolicy } from "./ticket-email.policy";
+
+class AttachmentImportPendingError extends Error {}
 
 type ExecuteReply = (input: { ticketId: string; user: AuthenticatedUser; bodyText: string; bodyHtml: string; mode: string; close: boolean; attachments: MailAttachment[]; operationId: string }) => Promise<{ id: string }>;
 @Injectable()
@@ -22,7 +25,7 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
     private readonly storage: FileStorageService, private readonly config: ConfigService,
     private readonly audit: AuditLogsService, private readonly sanitizer: HtmlSanitizerService) {}
 
-  onModuleInit() { this.timer = setInterval(() => { void this.dispatch().catch(() => this.logger.warn("Ticket email dispatch needs attention.")); }, 15_000); }
+  onModuleInit() { this.timer = setInterval(() => { void this.dispatch().catch(() => this.logger.warn("Ticket email dispatch needs attention.")); }, 5_000); }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
   async policy(organizationId: string): Promise<TicketEmailPolicy> {
     const row = await this.prisma.ticketEmailPolicy.findUnique({ where: { organizationId } });
@@ -88,8 +91,8 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.ticketEmailDelivery.createMany({ skipDuplicates: true, data: {
       organizationId: input.organizationId, ticketId: input.ticketId, userId: input.userId, eventType: input.eventType,
       messageId: snapshot ? null : message?.id, replyKey: randomBytes(24).toString("hex"), mode, subject: input.title, cutoff: new Date(), dedupeKey,
-      // Inbound attachments are imported after ticket creation; dispatch checks import completion too.
-      availableAt: new Date(Date.now() + 30_000)
+      // Assignments are ready immediately; only incomplete attachment imports wait.
+      availableAt: new Date()
     } });
     return true;
   }
@@ -106,7 +109,12 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
       await this.prisma.ticketEmailAction.updateMany({ where: { status: "AWAITING_CONFIRMATION", expiresAt: { lt: new Date() } }, data: { status: "EXPIRED" } });
       await this.prisma.ticketEmailAction.updateMany({ where: { status: "PROCESSING", expiresAt: { lt: new Date(Date.now() - 15 * 60_000) } }, data: { status: "REVIEW_REQUIRED", error: "Interrupted action. Inspect the ticket before submitting another reply." } });
       const rows = await this.prisma.ticketEmailDelivery.findMany({ where: { status: "PENDING", availableAt: { lte: new Date() } }, orderBy: { createdAt: "asc" }, take: 20 });
-      for (const row of rows) await this.deliver(row);
+      // Independent recipients can progress together; deliver still enforces each
+      // ticket/user/channel order and claims every row atomically.
+      for (let offset = 0; offset < rows.length; offset += 4) {
+        const results = await Promise.allSettled(rows.slice(offset, offset + 4).map((row) => this.deliver(row)));
+        if (results.some((result) => result.status === "rejected")) this.logger.warn("Ticket email queue update failed; recovery will inspect pending leases.");
+      }
     } finally { this.running = false; }
   }
   private async captureEvents() {
@@ -166,7 +174,7 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
       else {
         const messages = await this.prisma.ticketMessage.findMany({ where: { ticketId: row.ticketId, createdAt: { lte: row.cutoff }, ...(row.messageId ? { id: row.messageId } : {}), visibility: row.mode === "INTERNAL" ? undefined : "PUBLIC" }, include: { authorUser: true, authorContact: true, attachments: { where: { deletedAt: null } } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
         const selected = row.messageId || policy.includeHistory ? messages : messages.slice(-1);
-        if (selected.some((m) => (m.hasAttachments || /cid:/i.test(m.bodyHtml ?? "")) && m.direction === "INBOUND" && !m.attachmentsProcessedAt)) throw new Error("Waiting for inbound attachments to finish importing.");
+        if (selected.some((m) => (m.hasAttachments || /cid:/i.test(m.bodyHtml ?? "")) && m.direction === "INBOUND" && !m.attachmentsProcessedAt)) throw new AttachmentImportPendingError("Waiting for inbound attachments to finish importing.");
         let remaining = policy.attachmentBudgetMb * 1024 * 1024;
         for (const m of selected) {
           const author = m.authorUser ? `${m.authorUser.firstName} ${m.authorUser.lastName}` : m.senderEmail ?? "Requester";
@@ -196,14 +204,27 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
       if (appUrl && /^https?:\/\//.test(appUrl)) html += `<p><a href="${escapeEmail(appUrl.replace(/\/$/, ""))}/tickets/${encodeURIComponent(ticket.ticketNumber)}">Open ticket</a></p>`;
       await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: { status: "SENDING" } });
       sending = true;
-      const previous = receipt ? null : await this.prisma.ticketEmailDelivery.findFirst({ where: { organizationId: row.organizationId, ticketId: row.ticketId, userId: row.userId, mode: row.mode, status: "ACCEPTED", providerMessageId: { not: null } }, orderBy: { acceptedAt: "desc" } });
-      const result = await this.mail.sendTicketReply({ organizationId: row.organizationId, ticketId: ticket.id, mailboxId: mailbox.id, to: [user.email], subject: `[${ticket.ticketNumber}] ${row.subject} [AO:${row.replyKey}]`, bodyHtml: html, bodyText: emailText(html), rawAttachments: attachments, trackDelivery: true, replyToProviderMessageId: previous?.providerMessageId });
+      const result = await this.mail.sendTicketReply({ organizationId: row.organizationId, ticketId: ticket.id, mailboxId: mailbox.id, to: [user.email], subject: `[${ticket.ticketNumber}] ${row.subject} [AO:${row.replyKey}]`, bodyHtml: html, bodyText: emailText(html), rawAttachments: attachments, trackDelivery: true });
       if (!result) throw new Error("Outbound delivery was not accepted.");
       const mock = this.config.get<string>("MAIL_PROVIDER")?.toLowerCase() === "mock" || (this.config.get<string>("MAIL_PROVIDER")?.toLowerCase() !== "microsoft365" && (mailbox.provider === "MOCK" || mailbox.connectionMode === "MOCK"));
       await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: { status: mock ? "SIMULATED" : "ACCEPTED", acceptedAt: new Date(), providerMessageId: result.providerMessageId, error: null } });
       await this.audit.create({ organizationId: row.organizationId, entityType: "TicketEmailDelivery", entityId: row.id, action: mock ? "ticket.email_simulated" : "ticket.email_accepted", metadata: { ticketId: row.ticketId, recipientUserId: user.id, recipientEmail: user.email, providerMessageId: result.providerMessageId, mode: row.mode } });
     } catch (error) {
-      await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: { status: sending ? "REVIEW_REQUIRED" : row.attempts >= 4 ? "FAILED" : "PENDING", availableAt: new Date(Date.now() + 60_000 * Math.pow(2, row.attempts)), error: sending ? "Provider acceptance is uncertain. Inspect sent mail before retrying to avoid duplicate delivery." : (error instanceof Error ? error.message : "Unable to prepare email").slice(0, 300) } });
+      if (error instanceof AttachmentImportPendingError && Date.now() - row.createdAt.getTime() < 15 * 60_000) {
+        await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: {
+          status: "PENDING", attempts: { decrement: 1 }, availableAt: new Date(Date.now() + 5_000), error: error.message
+        } });
+        return;
+      }
+      const transport = error instanceof MailDeliveryError ? error : null;
+      const uncertain = transport ? transport.outcome === "UNKNOWN" : sending;
+      const retryable = transport ? transport.retryable : !sending;
+      const status = uncertain ? "REVIEW_REQUIRED" : !retryable || row.attempts >= 4 ? "FAILED" : "PENDING";
+      const detail = transport?.message ?? (uncertain ? "Provider acceptance is uncertain. Inspect sent mail before retrying to avoid duplicate delivery." : error instanceof Error ? error.message : "Unable to prepare email");
+      await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: {
+        status, availableAt: new Date(Date.now() + Math.max(transport?.retryAfterMs ?? 0, 5_000 * Math.pow(2, row.attempts))),
+        error: (status === "FAILED" && retryable ? `${detail} Automatic retry limit reached; review and retry manually.` : detail).slice(0, 300)
+      } });
     }
   }
 

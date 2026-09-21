@@ -1,5 +1,13 @@
 # Project Handoff
 
+## Ticket Email Transport Compatibility — 2026-09-21
+
+- Production diagnosis verified release `7e1cfc9`, active services and 16 operational deliveries in REVIEW REQUIRED. The app token exposed Mail.Read and Mail.Send, while the new draft-based path required Mail.ReadWrite. No operational copies appeared among the most recent 100 drafts/sent items inspected. No permission change or test email was performed.
+- Local correction uses direct Microsoft sendMail with explicit recipients, complete HTML and permitted attachments. Safe errors distinguish confirmed rejection, throttling, authentication and uncertain acceptance. The stored acceptance receipt is not an Outlook message ID; AO references continue to link email actions. Native Outlook conversation grouping is not guaranteed.
+- Removed the blanket 30-second delay; five-second polling and bounded independent delivery concurrency preserve atomic claims and per-recipient ordering. Incomplete inbound attachments wait briefly without consuming send attempts. Existing uncertain deliveries require review before manual retry.
+- Validation: 224 tests passed across all 39 API suites, including isolated PostgreSQL email/QC/activity workflows, authenticated runtime checks, direct Graph request contracts, confirmed rejection/throttling/uncertain acceptance, attachment readiness and concurrent recipient ordering. API TypeScript and production API build passed.
+- No schema, dependency, UI, credential or environment changes. Publication is authorized; production deployment and real Microsoft receipt validation remain pending. `scripts/deploy-ticket-email-transport.sh <full-release-sha>` updates only the API from clean `7e1cfc9` (or the same release on retry), preserves the old runtime for recovery and leaves existing uncertain deliveries untouched.
+
 ## Ticket Operational Email — 2026-09-21
 
 - Implemented on clean canonical `main` at `d8df408`, with publication authorized. Full ticket message/history copies, private attachment handling, current recipient checks and durable delivery tracking extend existing notifications. Settings and Profile share explicit policy/status controls; individual event preferences remain in force.

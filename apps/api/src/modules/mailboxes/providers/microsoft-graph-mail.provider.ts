@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { MailDeliveryError } from "./mail-delivery.error";
 import { emailText } from "../../ticket-email/ticket-email.policy";
 import { Injectable, InternalServerErrorException, NotImplementedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -37,8 +39,8 @@ export class MicrosoftGraphMailProvider implements MailProvider {
       throw new NotImplementedException("Outbound sending is disabled for this mailbox.");
     }
 
+    if (input.trackDelivery) return this.sendTrackedMessage(input);
     const token = await this.getAccessToken(input);
-    if (input.trackDelivery) return this.sendTrackedMessage(input, token);
     const sendAsAddress = input.fromAddress || input.mailboxEmailAddress;
     const attachments = input.attachments ?? [];
 
@@ -147,24 +149,59 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     };
   }
 
-  private async sendTrackedMessage(input: SendMessageInput, token: string): Promise<SendMessageResult> {
-    const root = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(input.fromAddress || input.mailboxEmailAddress)}/messages`;
-    const request = async (url: string, method: string, body?: unknown) => {
-      const response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: 'IdType="ImmutableId"' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
-      if (!response.ok) throw new InternalServerErrorException(`Operational Microsoft email request failed (${response.status}).`);
-      return response.status === 204 || response.status === 202 ? null : response.json();
-    };
-    for (const file of input.attachments ?? []) this.ensureSmallGraphAttachment(file.originalFilename, file.sizeBytes);
-    const content = { subject: input.subject, body: { contentType: "HTML", content: input.bodyHtml },
-      toRecipients: input.to.map((address) => ({ emailAddress: { address } })), ccRecipients: [], bccRecipients: [],
-      replyTo: input.replyToAddress ? [{ emailAddress: { address: input.replyToAddress } }] : [] };
-    const draft = input.replyToProviderMessageId
-      ? await request(`${root}/${encodeURIComponent(input.replyToProviderMessageId)}/createReply`, "POST", {}) as GraphDraftMessage
-      : await request(root, "POST", { ...content, internetMessageHeaders: [{ name: "x-avidity-ticket-email", value: "operational" }] }) as GraphDraftMessage;
-    if (input.replyToProviderMessageId) await request(`${root}/${encodeURIComponent(draft.id)}`, "PATCH", content);
-    for (const file of input.attachments ?? []) await request(`${root}/${encodeURIComponent(draft.id)}/attachments`, "POST", this.toGraphFileAttachment(file));
-    await request(`${root}/${encodeURIComponent(draft.id)}/send`, "POST");
-    return { providerMessageId: draft.id, internetMessageId: draft.internetMessageId ?? null, conversationId: draft.conversationId ?? null };
+  private async sendTrackedMessage(input: SendMessageInput): Promise<SendMessageResult> {
+    let token: string;
+    let body: string;
+    try {
+      for (const file of input.attachments ?? []) this.ensureSmallGraphAttachment(file.originalFilename, file.sizeBytes);
+      body = JSON.stringify({
+        message: {
+          subject: input.subject,
+          body: { contentType: "HTML", content: input.bodyHtml },
+          toRecipients: input.to.map((address) => ({ emailAddress: { address } })),
+          ccRecipients: [], bccRecipients: [],
+          replyTo: input.replyToAddress ? [{ emailAddress: { address: input.replyToAddress } }] : [],
+          internetMessageHeaders: [{ name: "x-avidity-ticket-email", value: "operational" }],
+          attachments: (input.attachments ?? []).map((file) => this.toGraphFileAttachment(file))
+        },
+        saveToSentItems: true
+      });
+    } catch {
+      throw new MailDeliveryError("Email could not be prepared. Review attachment sizes and message data. Nothing was sent.", "NOT_SENT");
+    }
+    try {
+      token = await this.getAccessToken(input);
+    } catch {
+      throw new MailDeliveryError("Microsoft authentication failed before sending. Check mailbox credentials and connectivity. Nothing was sent.", "NOT_SENT", true);
+    }
+    // sendMail requires Mail.Send, unlike draft creation (Mail.ReadWrite). A previous
+    // receipt is not a Graph message ID and must never be used in a reply endpoint.
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(input.fromAddress || input.mailboxEmailAddress)}/sendMail`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body, signal: AbortSignal.timeout(60_000)
+      });
+    } catch {
+      throw new MailDeliveryError("Microsoft send request was interrupted. Inspect Sent Items before retrying; the email may have been accepted.", "UNKNOWN");
+    }
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("Retry-After");
+      const seconds = retryAfter ? Number(retryAfter) : NaN;
+      const delay = Number.isFinite(seconds) ? seconds * 1000 : retryAfter ? Date.parse(retryAfter) - Date.now() : 0;
+      throw new MailDeliveryError("Microsoft temporarily throttled email delivery (HTTP 429). The queue will retry automatically.", "NOT_SENT", true, Number.isFinite(delay) ? Math.max(0, delay) : 0);
+    }
+    if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+      const reason = response.status === 403 ? "Check Mail.Send and the application's access to the sending mailbox." : response.status === 401 ? "Check Microsoft authentication." : "Check the sending mailbox, recipients and message size.";
+      throw new MailDeliveryError(`Microsoft rejected email delivery (HTTP ${response.status}). ${reason} Nothing was sent.`, "NOT_SENT");
+    }
+    if (response.status !== 202) {
+      throw new MailDeliveryError(`Microsoft returned an unexpected send response (HTTP ${response.status}). Inspect Sent Items before retrying.`, "UNKNOWN");
+    }
+    // Graph sendMail returns no message ID. This is an acceptance receipt, not an
+    // Outlook identifier or proof of inbox delivery. The AO reference links replies.
+    return { providerMessageId: `graph-send-${randomUUID()}`, internetMessageId: null, conversationId: null };
   }
 
   async getMessageAttachments(input: GetMessageAttachmentsInput): Promise<MailAttachment[]> {
@@ -257,7 +294,8 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     const response = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body
+      body,
+      signal: AbortSignal.timeout(30_000)
     });
 
     if (!response.ok) {

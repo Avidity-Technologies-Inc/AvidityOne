@@ -1,3 +1,4 @@
+import { MailDeliveryError } from "../mailboxes/providers/mail-delivery.error";
 import { TicketAttachmentsService } from "../ticket-attachments/ticket-attachments.service";
 import { FileStorageService } from "../file-storage/file-storage.service";
 import { FileValidationService } from "../file-storage/file-validation.service";
@@ -158,6 +159,66 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
     await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
     expect(send.mock.calls.length).toBe(before);
   });
+  it("delivers a new assignment on the first dispatch without an artificial delay", async () => {
+    await ticket();
+    await service.enqueue({ organizationId: org, ticketId, userId, eventType: "ticketAssignedToMe", title: "Ready now" });
+    const row = await prisma.ticketEmailDelivery.findFirstOrThrow({ where: { ticketId } });
+    expect(row.availableAt.getTime()).toBeLessThanOrEqual(Date.now());
+    await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    expect((await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("SIMULATED");
+    expect(send.mock.calls.at(-1)?.[0]).not.toHaveProperty("replyToProviderMessageId");
+  });
+
+  it.each([
+    [new MailDeliveryError("Microsoft rejected email delivery (HTTP 403). Nothing was sent.", "NOT_SENT"), "FAILED"],
+    [new MailDeliveryError("Microsoft throttled email delivery (HTTP 429).", "NOT_SENT", true, 120000), "PENDING"],
+    [new MailDeliveryError("Microsoft send request was interrupted.", "UNKNOWN"), "REVIEW_REQUIRED"]
+  ])("records the transport outcome and a safe retry time: %s", async (failure, status) => {
+    await ticket();
+    await service.enqueue({ organizationId: org, ticketId, userId, eventType: "ticketAssignedToMe", title: "Transport test" });
+    const row = await prisma.ticketEmailDelivery.findFirstOrThrow({ where: { ticketId } });
+    send.mockRejectedValueOnce(failure);
+    const before = Date.now();
+    await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    const updated = await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: row.id } });
+    expect(updated.status).toBe(status);
+    expect(updated.error).toBe((failure as MailDeliveryError).message);
+    if (status === "PENDING") expect(updated.availableAt.getTime()).toBeGreaterThanOrEqual(before + 120000);
+  });
+
+  it("waits briefly for incomplete inbound files, then sends without exhausting attempts", async () => {
+    await ticket();
+    const message = await prisma.ticketMessage.findFirstOrThrow({ where: { ticketId } });
+    await prisma.ticketMessage.update({ where: { id: message.id }, data: { hasAttachments: true, attachmentsProcessedAt: null } });
+    await service.enqueue({ organizationId: org, ticketId, userId, eventType: "ticketAssignedToMe", title: "Files importing" });
+    let row = await prisma.ticketEmailDelivery.findFirstOrThrow({ where: { ticketId } });
+    const before = send.mock.calls.length;
+    await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    row = await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: row.id } });
+    expect(row).toMatchObject({ status: "PENDING", attempts: 0, error: "Waiting for inbound attachments to finish importing." });
+    expect(send.mock.calls.length).toBe(before);
+    expect(row.availableAt.getTime() - Date.now()).toBeLessThanOrEqual(5000);
+    await prisma.ticketMessage.update({ where: { id: message.id }, data: { attachmentsProcessedAt: new Date() } });
+    await (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    expect((await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("SIMULATED");
+  });
+
+  it("preserves recipient order when workers attempt consecutive messages concurrently", async () => {
+    await ticket();
+    const first = await delivery(); const second = await delivery();
+    await prisma.ticketEmailDelivery.update({ where: { id: first.id }, data: { status: "PENDING", createdAt: new Date(Date.now() - 2000) } });
+    await prisma.ticketEmailDelivery.update({ where: { id: second.id }, data: { status: "PENDING", createdAt: new Date(Date.now() - 1000) } });
+    const run = (row: typeof first) => (service as unknown as { deliver: (value: typeof row) => Promise<void> }).deliver(row);
+    const before = send.mock.calls.length;
+    await Promise.all([run(first), run(second)]);
+    expect((await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: first.id } })).status).toBe("SIMULATED");
+    expect((await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: second.id } })).status).toBe("PENDING");
+    expect(send.mock.calls.length).toBe(before + 1);
+    await run(second);
+    expect((await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { id: second.id } })).status).toBe("SIMULATED");
+    expect(send.mock.calls.length).toBe(before + 2);
+  });
+
   it("keeps capture disabled until configuration is explicitly enabled", async () => {
     const otherOrg = await prisma.organization.create({ data: { name: "Disabled email feature" } });
     const otherTicket = await prisma.ticket.create({ data: { organizationId: otherOrg.id, ticketNumber: `OFF-${randomUUID()}`, subject: "Legacy behavior" } });

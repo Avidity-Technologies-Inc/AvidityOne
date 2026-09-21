@@ -9,18 +9,69 @@ describe("MicrosoftGraphMailProvider", () => {
     global.fetch = fetchMock as never;
   });
 
-  it("uses immutable operational drafts and explicitly replaces all recipients on a threaded copy", async () => {
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "synthetic-token" }) })
-      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "immutable-draft", conversationId: "staff-thread" }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
-      .mockResolvedValueOnce({ ok: true, status: 202 });
-    const provider = new MicrosoftGraphMailProvider(new ConfigService({ MICROSOFT_CLIENT_SECRET: "synthetic-secret" }));
-    const result = await provider.sendMessage({ mailboxId: "mailbox", mailboxEmailAddress: "support@example.test", fromAddress: "support@example.test", replyToAddress: "support@example.test", tenantId: "synthetic-tenant", microsoftClientId: "synthetic-client", encryptedClientSecretReference: "env:MICROSOFT_CLIENT_SECRET", to: ["specialist@example.test"], bodyText: "Only staff copy", bodyHtml: "<p>Only staff copy</p>", subject: "Ticket", trackDelivery: true, replyToProviderMessageId: "previous-immutable" });
-    expect(result).toMatchObject({ providerMessageId: "immutable-draft", conversationId: "staff-thread" });
-    const patch = fetchMock.mock.calls.find((call) => call[1]?.method === "PATCH");
-    expect(JSON.parse(patch![1].body)).toMatchObject({ toRecipients: [{ emailAddress: { address: "specialist@example.test" } }], ccRecipients: [], bccRecipients: [] });
-    expect(patch![1].headers.Prefer).toBe('IdType="ImmutableId"');
-    expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/send"))).toHaveLength(1);
+  const operationalInput = {
+    mailboxId: "mailbox", mailboxEmailAddress: "support@example.test", fromAddress: "support@example.test",
+    replyToAddress: "support@example.test", tenantId: "synthetic-tenant", microsoftClientId: "synthetic-client",
+    encryptedClientSecretReference: "env:MICROSOFT_CLIENT_SECRET", to: ["specialist@example.test"],
+    bodyText: "Only staff copy", bodyHtml: '<p>Only staff copy</p><img src="cid:photo">',
+    subject: "Ticket [AO:synthetic-reference]", trackDelivery: true, replyToProviderMessageId: "old-receipt",
+    cc: ["must-not-inherit@example.test"],
+    attachments: [{ originalFilename: "photo.png", mimeType: "image/png", sizeBytes: 5,
+      contentBytes: Buffer.from("photo"), isInline: true, contentId: "photo" }]
+  };
+  const operationalProvider = () => new MicrosoftGraphMailProvider(new ConfigService({ MICROSOFT_CLIENT_SECRET: "synthetic-secret" }));
+  const authenticate = () => fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "synthetic-token" }) });
+
+  it("sends full operational content and inline files with Mail.Send, without drafts or inherited recipients", async () => {
+    authenticate().mockResolvedValueOnce({ ok: true, status: 202 });
+    const result = await operationalProvider().sendMessage(operationalInput);
+    expect(result).toMatchObject({ providerMessageId: expect.stringMatching(/^graph-send-/), internetMessageId: null, conversationId: null });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, request] = fetchMock.mock.calls[1];
+    expect(url).toBe("https://graph.microsoft.com/v1.0/users/support%40example.test/sendMail");
+    expect(request.method).toBe("POST");
+    expect(JSON.parse(request.body)).toMatchObject({ saveToSentItems: true, message: {
+      subject: operationalInput.subject, body: { contentType: "HTML", content: operationalInput.bodyHtml },
+      toRecipients: [{ emailAddress: { address: "specialist@example.test" } }], ccRecipients: [], bccRecipients: [],
+      replyTo: [{ emailAddress: { address: "support@example.test" } }],
+      attachments: [{ name: "photo.png", contentId: "photo", isInline: true, contentBytes: Buffer.from("photo").toString("base64") }]
+    } });
+  });
+
+  it.each([400, 401, 403, 404, 413])("classifies HTTP %s as a confirmed rejection, without retrying or leaking response bodies", async (status) => {
+    authenticate().mockResolvedValueOnce({ ok: false, status, json: async () => ({ secret: "never expose" }) });
+    await expect(operationalProvider().sendMessage(operationalInput)).rejects.toMatchObject({ outcome: "NOT_SENT", retryable: false, message: expect.stringContaining(`HTTP ${status}`) });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors Microsoft throttling without a second send inside the provider", async () => {
+    authenticate().mockResolvedValueOnce({ ok: false, status: 429, headers: new Headers({ "Retry-After": "120" }) });
+    await expect(operationalProvider().sendMessage(operationalInput)).rejects.toMatchObject({ outcome: "NOT_SENT", retryable: true, retryAfterMs: 120000 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([408, 500, 502, 503, 504])("keeps HTTP %s uncertain and never falls back to another send", async (status) => {
+    authenticate().mockResolvedValueOnce({ ok: false, status });
+    await expect(operationalProvider().sendMessage(operationalInput)).rejects.toMatchObject({ outcome: "UNKNOWN", retryable: false });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("distinguishes failure to authenticate from a connection loss after submitting mail", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("private credential details"));
+    await expect(operationalProvider().sendMessage(operationalInput)).rejects.toMatchObject({ outcome: "NOT_SENT", retryable: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockReset();
+    authenticate().mockRejectedValueOnce(new Error("private request data"));
+    await expect(operationalProvider().sendMessage(operationalInput)).rejects.toMatchObject({ outcome: "UNKNOWN", retryable: false });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps existing customer sendMail behavior", async () => {
+    authenticate().mockResolvedValueOnce({ ok: true, status: 202 });
+    await operationalProvider().sendMessage({ ...operationalInput, trackDelivery: false, replyToProviderMessageId: null });
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(body.message.ccRecipients).toEqual([{ emailAddress: { address: "must-not-inherit@example.test" } }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("projects full HTML/plain-text bodies instead of the truncated preview", async () => {
