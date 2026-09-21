@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Deployment Dependency Recovery — 2026-09-21
+
+- The transport deployment at `518a3b6` built and started the API, but stopping API also stopped web because the live web unit Requires=avidity-api.service. Both the success and rollback paths only started API, leaving the platform web unavailable. This was a deployment procedure defect; no schema or configuration change was involved.
+- Restored access by starting the existing web service. Verified the authenticated ticket list loaded 17 records for the current filters, and main login/API health/events/support all returned HTTP 200.
+- Corrected the helper to stop/start both dependent services for deployment and rollback, while rebuilding only API. It now accepts the interrupted `518a3b6` checkout and checks both local endpoints before changing runtime files. No systemd unit or environment changes.
+- Three isolated deployment regression tests passed: success with a Requires-like dependency, build failure rollback, and health failure rollback. Tests execute the helper with temporary runtime files and stubbed commands; no real services or credentials are used. Run `python3 tests/deployment/test_ticket_email_transport.py`.
+
 ## Ticket Email Transport Compatibility — 2026-09-21
 
 - Production diagnosis verified release `7e1cfc9`, active services and 16 operational deliveries in REVIEW REQUIRED. The app token exposed Mail.Read and Mail.Send, while the new draft-based path required Mail.ReadWrite. No operational copies appeared among the most recent 100 drafts/sent items inspected. No permission change or test email was performed.
