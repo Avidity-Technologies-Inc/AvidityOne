@@ -24,11 +24,11 @@ function setup(count = 2) {
 }
 const query = { startDate: "2026-08-01", endDate: "2026-08-31" };
 describe("Report totals, access and delivery", () => {
-  it("counts every matching record beyond 2000 and paginates detail in the database", async () => {
+  it("counts every matching record beyond 2000 and paginates the ordered snapshot", async () => {
     const { service, db } = setup(2105);
     const result = await service.ticketSummary(user, { ...query, page: "85" });
     expect(result.totalMatched).toBe(2105); expect(result.detail).toHaveLength(5); expect(result.detail[4].ticketNumber).toBe("SYN-2104");
-    expect(db.ticket.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 2100, take: 25, where: expect.objectContaining({ organizationId: user.organizationId, deletedAt: null, createdAt: { gte: new Date("2026-08-01T05:00:00Z"), lte: new Date("2026-09-01T04:59:59.999Z") } }) }));
+    expect(db.ticket.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 2000, take: 1000, where: expect.objectContaining({ organizationId: user.organizationId, deletedAt: null, createdAt: { gte: new Date("2026-08-01T05:00:00Z"), lte: new Date("2026-09-01T04:59:59.999Z") } }) }));
     expect(result.activity.reduce((sum, day) => sum + Number(day.closed), 0)).toBe(0);
     expect(result.activity).toHaveLength(31);
     expect(result.byTechnician).toEqual([{ label: "Luis Mena", count: 2105 }, { label: "Mary Ann Smith", count: 2105 }]);
@@ -101,5 +101,45 @@ describe("Event reports and preserved saved definitions", () => {
   it("keeps distinct users with the same display name separate", () => {
     const { service } = setup();
     expect(service["groupEntities"]([{ id: "one", label: "Jane Smith", disambiguator: "one@example.invalid" }, { id: "two", label: "Jane Smith", disambiguator: "two@example.invalid" }])).toEqual([{ label: "Jane Smith (one@example.invalid)", count: 1 }, { label: "Jane Smith (two@example.invalid)", count: 1 }]);
+  });
+});
+
+describe("Report ordering and exclusions", () => {
+  it("sorts computed values across the complete result before paging and exporting", async () => {
+    const { service, records } = setup(30);
+    records.forEach((row, i) => { row._count.attachments = 30 - i; row.statusDefinition.name = i === 29 ? "AAA first" : "Zulu"; });
+    const first = await service.ticketSummary(user, { ...query, sortBy: "attachmentCount", sortDirection: "asc" });
+    expect(first.detail[0].ticketNumber).toBe("SYN-29"); expect(first.detail[0].attachmentCount).toBe(1);
+    const second = await service.ticketSummary(user, { ...query, sortBy: "attachmentCount", sortDirection: "asc", page: "2" });
+    expect(second.detail.map((row) => row.attachmentCount)).toEqual([26, 27, 28, 29, 30]);
+    const all = await service.ticketSummary(user, { ...query, sortBy: "attachmentCount", sortDirection: "asc" }, { detailMode: "all" });
+    expect([...first.detail, ...second.detail]).toEqual(all.detail);
+    const statuses = await service.ticketSummary(user, { ...query, sortBy: "status", sortDirection: "asc" });
+    expect(statuses.detail[0].ticketNumber).toBe("SYN-29");
+  });
+  it("orders every available column by displayed text, number or date, with missing values last", () => {
+    const { service } = setup();
+    const rows = [{ id: "a", requester: "Zulu", assignedTo: "Zulu, Amy", priority: "LOW", attachmentCount: 10, createdAt: null }, { id: "b", requester: "ámy", assignedTo: "Amy, Zulu", priority: "HIGH", attachmentCount: 2, createdAt: "2026-09-01" }];
+    for (const sortBy of ["requester", "assignedTo", "priority", "attachmentCount", "createdAt"]) expect(service["sortRows"]([...rows], "ticket-report", { sortBy, sortDirection: "asc" })[0].id).toBe("b");
+    expect(service["sortRows"]([...rows], "ticket-report", { sortBy: "createdAt", sortDirection: "desc" })[1].id).toBe("a");
+    expect(() => service["validatePresentation"]("ticket-report", { sortBy: "passwordHash" })).toThrow("cannot be sorted");
+  });
+  it("applies exclusions to the scoped source query so summaries, charts and detail agree", async () => {
+    const { service, db, records } = setup();
+    const excluded = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; records[0].id = excluded;
+    db.ticket.findMany.mockImplementation(async ({ where, skip = 0, take = 1000 }: any) => records.filter((row) => !where.id?.notIn.includes(row.id)).slice(skip, skip + take));
+    const result = await service.ticketSummary(user, { ...query, excludedIds: excluded });
+    expect(result.summary.totalTickets).toBe(1); expect(result.byClient[0].count).toBe(1); expect(result.detail).toHaveLength(1);
+    expect(result.activity.reduce((sum, row) => sum + Number(row.created), 0)).toBe(1);
+    expect(db.ticket.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ organizationId: user.organizationId, deletedAt: null, id: { notIn: [excluded] } }) }));
+    expect(() => service.ticketSummary(user, { ...query, excludedIds: "invalid" })).toThrow("valid record exclusions");
+    expect(service["validateFilters"]("project-executive-report", { excludedIds: excluded, sortBy: "openDecisions", sections: "byHealth,detail" })).toMatchObject({ excludedIds: excluded, sortBy: "openDecisions", sections: "byHealth,detail" });
+  });
+  it("uses event display values and project numeric signals for ordering", () => {
+    const { service } = setup();
+    const events = [{ id: "a", services: "Zoom", time: "11:00", taskCount: 11 }, { id: "b", services: "Audio", time: "09:00", taskCount: 2 }];
+    for (const sortBy of ["services", "time", "taskCount"]) expect(service["sortRows"]([...events], "event-service-report", { sortBy, sortDirection: "asc" })[0].id).toBe("b");
+    const projects = [{ projectId: "a", owner: "Zulu", openDecisions: 10, risk: false }, { projectId: "b", owner: "Amy", openDecisions: 2, risk: true }];
+    for (const sortBy of ["owner", "openDecisions", "risk"]) expect(service["sortRows"]([...projects], "project-executive-report", { sortBy, sortDirection: "asc" })[0].projectId).toBe("b");
   });
 });

@@ -1,5 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
-import { REPORT_COLUMNS, REPORT_DEFAULT_COLUMNS, ReportColumn, ReportKind } from "@avidity/shared/dist";
+import { REPORT_COLUMNS, REPORT_DEFAULT_COLUMNS, ReportColumn, ReportKind, resolveReportSections } from "@avidity/shared/dist";
 import { Workbook } from "exceljs";
 import PDFDocument from "pdfkit";
 import path from "path";
@@ -9,8 +9,8 @@ import { localDay } from "./report-time";
 export type ReportDocument = {
   kind: ReportKind; title: string; company: string; application: string; color: string; logo?: Buffer;
   generatedAt: Date; timeZone: string; locale: string; currency?: string;
-  criteria: Array<[string, string]>; metrics: Array<[string, number | null]>;
-  distributions: Array<{ title: string; items: Array<{ label: string; count: number }> }>;
+  criteria: Array<[string, string]>; metrics: Array<[string, number | null, string]>;
+  distributions: Array<{ key: string; title: string; items: Array<{ label: string; count: number }> }>;
   activity: Array<Record<string, string | number>>;
   rows: Array<Record<string, unknown>>; matched: number; query: ReportPresentationDto;
 };
@@ -27,10 +27,9 @@ export function selectedColumns(kind: ReportKind, query: ReportPresentationDto) 
     return col;
   });
 }
-export function reportSections(query: ReportPresentationDto) {
-  const sections = query.sections?.split(",") ?? ["summary", "charts", "detail"];
-  if (!sections.length || sections.some((s) => !["summary", "charts", "detail"].includes(s))) throw new BadRequestException("Choose valid report sections.");
-  return sections;
+export function reportSections(query: ReportPresentationDto, kind: ReportKind = "ticket-report") {
+  try { return resolveReportSections(kind, query.sections); }
+  catch { throw new BadRequestException("Choose valid report sections."); }
 }
 export function csvCell(value: unknown) {
   let text = String(value ?? "");
@@ -61,7 +60,8 @@ function excelDate(value: unknown, col: ReportColumn, model: ReportDocument) {
 }
 export async function renderReport(model: ReportDocument, format: "csv" | "xlsx" | "pdf") {
   const cols = selectedColumns(model.kind, model.query);
-  const sections = reportSections(model.query);
+  const sections = reportSections(model.query, model.kind);
+  model = { ...model, metrics: model.metrics.filter(([, , key]) => sections.includes(`metric:${key}`)), distributions: model.distributions.filter((group) => sections.includes(group.key)) };
   if (format === "csv") {
     // CSV remains a rectangular detail dataset for existing import workflows.
     const rows = [cols.map((c) => c.label), ...model.rows.map((row) => cols.map((col) => col.type === "number" || col.type === "currency" ? row[col.key] : textValue(row, col, model)))];
@@ -74,20 +74,24 @@ async function renderWorkbook(model: ReportDocument, cols: ReportColumn[], secti
   const book = new Workbook();
   book.creator = model.company || model.application;
   book.title = model.title; book.created = model.generatedAt;
-  const criteria = book.addWorksheet("Criteria");
-  criteria.columns = [{ width: 28 }, { width: 90 }];
-  criteria.addRows([["Report", model.title], ["Organization", model.company], ["Generated", model.generatedAt.toISOString()], ["Timezone", model.timeZone], ...model.criteria.filter(([key]) => key !== "Timezone"), ["Matched records", model.matched], ["Detail records exported", sections.includes("detail") ? model.rows.length : 0], ["Definitions", "Counts describe the current state of matching records. Activity contains only events within the selected period; this is not a historical state snapshot."]]);
-  if (sections.includes("summary")) {
+  if (sections.includes("criteria")) {
+    const criteria = book.addWorksheet("Criteria");
+    criteria.columns = [{ width: 28 }, { width: 90 }];
+    criteria.addRows([["Report", model.title], ["Organization", model.company], ["Generated", model.generatedAt.toISOString()], ["Timezone", model.timeZone], ...model.criteria.filter(([key]) => key !== "Timezone"), ["Matched records", model.matched], ["Detail records exported", sections.includes("detail") ? model.rows.length : 0], ["Definitions", "Counts describe the current state of matching records. Activity contains only events within the selected period; this is not a historical state snapshot."]]);
+  }
+  if (model.metrics.length) {
     const sheet = book.addWorksheet("Summary"); sheet.columns = [{ width: 38 }, { width: 24 }];
-    sheet.addRows([["Metric", "Value"], ...model.metrics]);
+    sheet.addRows([["Metric", "Value"], ...model.metrics.map(([name, value]) => [name, value])]);
     sheet.getColumn(2).numFmt = "#,##0";
     model.metrics.forEach(([name], index) => { if (name.includes("Estimate") && model.currency) sheet.getCell(index + 2, 2).numFmt = `"${model.currency}" #,##0.00`; });
   }
-  if (sections.includes("charts")) {
+  if (sections.includes("activity")) {
     const activity = book.addWorksheet("Activity");
     const keys = Object.keys(model.activity[0] ?? { period: "", created: 0 }).filter((key) => key !== "label");
     activity.columns = keys.map((key) => ({ header: key.replace(/^./, (c) => c.toUpperCase()), key, width: 22 }));
     activity.addRows(model.activity);
+  }
+  if (model.distributions.length) {
     const distribution = book.addWorksheet("Distributions");
     distribution.columns = [{ width: 30 }, { width: 48 }, { width: 18 }];
     distribution.addRow(["Breakdown", "Category", "Count"]);
@@ -103,12 +107,14 @@ async function renderWorkbook(model: ReportDocument, cols: ReportColumn[], secti
     }
     cols.forEach((col, i) => { sheet.getColumn(i + 1).numFmt = col.type === "date" ? "yyyy-mm-dd hh:mm" : col.type === "dateOnly" ? "yyyy-mm-dd" : col.type === "currency" && model.currency ? `"${model.currency}" #,##0.00` : col.type === "number" ? "#,##0" : "General"; });
   }
+  if (!book.worksheets.length) throw new BadRequestException("The selected sections have no available content. Select detail or another section.");
   const color = model.color.replace("#", "").toUpperCase();
   for (const sheet of book.worksheets) {
     sheet.views = [{ state: "frozen", ySplit: 1 }];
     sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: Math.max(1, sheet.rowCount), column: sheet.columnCount } };
     sheet.pageSetup = { orientation: model.query.orientation ?? "landscape", paperSize: model.query.paper === "A4" ? 9 : undefined, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: "1:1" };
     if (sheet.name === "Detail" && cols.reduce((sum, col) => sum + (col.width ?? 18), 0) > 150) sheet.pageSetup = { ...sheet.pageSetup, fitToPage: false, scale: 100, printTitlesColumn: "A:A" };
+    sheet.headerFooter.oddHeader = `&L${model.title.slice(0, 80).replace(/&/g, "&&")}&R${model.timeZone}`;
     sheet.headerFooter.oddFooter = "Page &P of &N";
     sheet.eachRow((row, n) => {
       row.eachCell({ includeEmpty: true }, (cell) => {
@@ -140,10 +146,11 @@ async function renderPdf(model: ReportDocument, cols: ReportColumn[], sections: 
   paragraph(model.company || model.application, 10, true);
   paragraph(model.title, 23, true);
   paragraph(`Generated ${dateText(model.generatedAt.toISOString(), "date", model)} (${model.timeZone})`, 9);
-  for (const [key, value] of model.criteria) paragraph(`${key}: ${value}`, 9);
+  if (sections.includes("criteria")) for (const [key, value] of model.criteria) paragraph(`${key}: ${value}`, 9);
+  else for (const [key, value] of model.criteria.filter(([key]) => ["Period", "Scope", "Excluded records"].includes(key))) paragraph(`${key}: ${value}`, 9);
   paragraph(`${model.matched.toLocaleString()} matching records · ${sections.includes("detail") ? model.rows.length.toLocaleString() : 0} detail records included`, 10, true);
-  paragraph("Counts show the current state of matching records. Activity includes only events in the selected period. This report does not reconstruct historical state.", 9);
-  if (sections.includes("summary")) {
+  if (sections.includes("criteria")) paragraph("Counts show the current state of matching records. Activity includes only events in the selected period. This report does not reconstruct historical state.", 9);
+  if (model.metrics.length) {
     paragraph("Summary", 15, true);
     const cardWidth = (width - 24) / 3;
     for (let i = 0; i < model.metrics.length; i += 3) {
@@ -203,8 +210,8 @@ async function renderPdf(model: ReportDocument, cols: ReportColumn[], sections: 
       }
     }); y += 18;
   };
-  if (sections.includes("charts")) {
-    if (model.activity.length) {
+  {
+    if (sections.includes("activity") && model.activity.length) {
       space(250); paragraph("Activity within the period", 13, true);
       const keys = Object.keys(model.activity[0]).filter((k) => k !== "label" && k !== "period");
       const max = Math.max(1, ...model.activity.flatMap((r) => keys.map((k) => Number(r[k]))));
@@ -240,7 +247,7 @@ async function renderPdf(model: ReportDocument, cols: ReportColumn[], sections: 
     const groups: ReportColumn[][] = [];
     for (let i = 0; i < cols.length; i += i === 0 ? maxColumns : maxColumns - 1) groups.push(i === 0 ? cols.slice(0, maxColumns) : [cols[0], ...cols.slice(i, i + maxColumns - 1)]);
     groups.forEach((group, i) => {
-      newPage();
+      if (i > 0 || model.metrics.length || model.distributions.length || (sections.includes("activity") && model.activity.length)) newPage();
       table(`Detail${groups.length > 1 ? ` · section ${i + 1} of ${groups.length}` : ""}`, group.map((c) => c.label), model.rows.map((r) => group.map((c) => textValue(r, c, model))), group.map((c) => c.width ?? 20));
     });
   }

@@ -1,5 +1,14 @@
 # Project Handoff
 
+## Compact Report Controls — 2026-09-21
+
+- Follow-up from canonical `main` at `6189269`: compact toolbar replaces the large Reports banner; filters collapse and controls use less space.
+- Shared granular selection controls individual metrics/charts/criteria/detail in the view, PDF/Excel and saved reports. All detail columns sort globally before pagination using displayed values; individual record exclusions recalculate summaries/charts and persist with saved definitions. Source records remain unchanged. Explicit exclusions are limited to 100 IDs; use filters for broader selection.
+- Legacy saved section aliases remain compatible. No schema, dependency, environment or permission-grant changes. Report detail reuses the existing full metadata snapshot for sorting rather than issuing a separate detail query.
+- Full API regression: 158 passed, 28 existing database-gated tests skipped. Focused report tests and browser checks cover selection, exclusions, sorting, saved settings and exports. PDF layouts were visually inspected; live production acceptance remains pending.
+- Guarded deployment helper: `scripts/deploy-report-controls.sh <full-release-sha>`, from clean production `main` at `6189269` or the exact target for retry. Backs up source/runtime, builds shared/API/web and verifies health; no migration.
+- Details: [compact controls and report content](docs/REPORT_CONTROLS_2026-09-21.md).
+
 ## Reports Workspace Release — 2026-09-21
 
 - Implemented on clean canonical `main` from `5289619`; publication is authorized. No additional branch/worktree, dependency upgrade, environment change or production deployment.

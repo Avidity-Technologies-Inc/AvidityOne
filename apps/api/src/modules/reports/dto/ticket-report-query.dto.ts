@@ -6,7 +6,7 @@ export class ReportPresentationDto {
   @IsOptional() @IsIn(["custom", "last30", "last7", "previousMonth", "currentMonth", "previousWeek"]) period?: string;
   @IsOptional() @IsIn(["createdAt", "resolvedAt", "closedAt", "eventDate"]) dateBasis?: string;
   @IsOptional() @IsString() @MaxLength(1000) columns?: string;
-  @IsOptional() @IsString() @MaxLength(80) sections?: string;
+  @IsOptional() @IsString() @MaxLength(2000) sections?: string;
   @IsOptional() @IsString() @MaxLength(120) title?: string;
   @IsOptional() @IsIn(["LETTER", "A4"]) paper?: "LETTER" | "A4";
   @IsOptional() @IsIn(["landscape", "portrait"]) orientation?: "landscape" | "portrait";
@@ -14,6 +14,7 @@ export class ReportPresentationDto {
   @IsOptional() @IsString() @MaxLength(3) currency?: string;
   @IsOptional() @IsString() @MaxLength(80) sortBy?: string;
   @IsOptional() @IsIn(["asc", "desc"]) sortDirection?: "asc" | "desc";
+  @IsOptional() @IsString() @MaxLength(3700) excludedIds?: string;
   @IsOptional() @IsString() @MaxLength(200) search?: string;
 }
 

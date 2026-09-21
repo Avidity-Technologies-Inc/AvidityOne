@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { REPORT_COLUMNS, ReportKind } from "@avidity/shared/dist";
+import { REPORT_COLUMNS, REPORT_MAX_EXCLUSIONS, ReportKind } from "@avidity/shared/dist";
 import { plainToInstance } from "class-transformer";
-import { validateSync } from "class-validator";
+import { isUUID, validateSync } from "class-validator";
 import sharp from "sharp";
 import { LocalFileStorageProvider } from "../file-storage/providers/local-file-storage.provider";
 import { renderReport, selectedColumns, reportSections, ReportDocument } from "./report-renderer";
@@ -350,8 +350,10 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const estimatedTotal = valuePerTicket !== null ? tickets.length * valuePerTicket : null;
     const totalMatched = tickets.length;
     const detailPage = this.resolveDetailPage(query, totalMatched, options);
-    const detailRecords = options.detailMode === "all" ? await this.ticketRecords(db, where, this.ticketOrder(query)) : await db.ticket.findMany({ where, select: this.ticketSelect(), orderBy: this.ticketOrder(query), skip: detailPage.offset, take: detailPage.pageSize });
-    const detailRows = detailRecords.map((ticket) => this.toDetailRow(ticket, valuePerTicket));
+    // Reuse the complete metadata snapshot: computed/display columns must sort
+    // globally before pagination, not by an unrelated relation or enum ordinal.
+    const ordered = this.sortRows(tickets.map((ticket) => this.toDetailRow(ticket, valuePerTicket)), "ticket-report", query);
+    const detailRows = options.detailMode === "all" ? ordered : ordered.slice(detailPage.offset, detailPage.offset + detailPage.pageSize);
     const statusDefinitions = await db.ticketStatusDefinition.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true }, orderBy: { name: "asc" } });
 
     return {
@@ -436,8 +438,8 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const assignedRequests = requests.filter((request) => request.assignees.length > 0 || request.tasks.some((task) => task.assignedUserId)).length;
     const totalMatched = requests.length;
     const detailPage = this.resolveDetailPage(query, totalMatched, options);
-    const detailRecords = options.detailMode === "all" ? await this.eventRecords(db, where, this.eventOrder(query)) : await db.eventServiceRequest.findMany({ where, select: this.eventServiceSelect(), orderBy: this.eventOrder(query), skip: detailPage.offset, take: detailPage.pageSize });
-    const detailRows = detailRecords.map((request) => this.toEventDetailRow(request));
+    const ordered = this.sortRows(requests.map((request) => this.toEventDetailRow(request)), "event-service-report", query);
+    const detailRows = options.detailMode === "all" ? ordered : ordered.slice(detailPage.offset, detailPage.offset + detailPage.pageSize);
 
     return {
       generatedAt: new Date().toISOString(),
@@ -488,10 +490,11 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async executiveProjectSummary(user: AuthenticatedUser) {
+  async executiveProjectSummary(user: AuthenticatedUser, query: ReportPresentationDto = {}) {
+    this.validatePresentation("project-executive-report", query);
     const now = new Date();
     const projects = await this.prisma.project.findMany({
-      where: { organizationId: user.organizationId, deletedAt: null },
+      where: { organizationId: user.organizationId, deletedAt: null, ...(query.excludedIds ? { id: { notIn: this.exclusions(query) } } : {}) },
       select: {
         id: true, name: true, status: true, health: true, targetDate: true, completedAt: true,
         client: { select: { name: true } }, owner: { select: { firstName: true, lastName: true } },
@@ -512,7 +515,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       generatedAt: now,
       summary: { activeProjects: active.length, atRiskProjects: detail.filter((project) => project.risk).length, onTrackProjects: detail.filter((project) => !project.risk).length, overdueDecisions: detail.reduce((sum, project) => sum + project.overdueDecisions, 0), unassignedDecisions: detail.reduce((sum, project) => sum + project.unassignedDecisions, 0), overdueMilestones: detail.reduce((sum, project) => sum + project.overdueMilestones, 0), completedProjects: projects.filter((project) => project.status === ProjectStatus.COMPLETED).length },
       byHealth: [ProjectHealth.ON_TRACK, ProjectHealth.AT_RISK, ProjectHealth.OFF_TRACK].map((health) => ({ label: health, count: active.filter((project) => project.health === health).length })),
-      detail: detail.sort((left, right) => Number(right.risk) - Number(left.risk) || (left.targetDate?.getTime() ?? Number.MAX_SAFE_INTEGER) - (right.targetDate?.getTime() ?? Number.MAX_SAFE_INTEGER))
+      detail: query.sortBy ? this.sortRows(detail, "project-executive-report", query) : detail.sort((left, right) => Number(right.risk) - Number(left.risk) || (left.targetDate?.getTime() ?? Number.MAX_SAFE_INTEGER) - (right.targetDate?.getTime() ?? Number.MAX_SAFE_INTEGER))
     };
   }
 
@@ -577,7 +580,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     return this.render(user, "event-service-report", query, format, result);
   }
   private async generateExecutiveProjectReport(user: AuthenticatedUser, format: ReportFormat, query: ReportPresentationDto = {}): Promise<GeneratedReport> {
-    return this.render(user, "project-executive-report", query, format, await this.executiveProjectSummary(user));
+    return this.render(user, "project-executive-report", query, format, await this.executiveProjectSummary(user, query));
   }
   private async render(user: AuthenticatedUser, kind: ReportKind, query: ReportPresentationDto, format: ReportFormat, result: GeneratedReport["result"]): Promise<GeneratedReport> {
     this.validatePresentation(kind, query);
@@ -588,11 +591,12 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       criteria.unshift(["Period", `${result.filters.startDate} through ${result.filters.endDate} (inclusive)`], ["Date field", this.fieldLabel(query.dateBasis ?? "createdAt")]);
       const options = result.options;
       for (const [key, value] of Object.entries(query)) {
-        if (!value || ["startDate", "endDate", "timeZone", "period", "page", "pageSize", "format", "title", "columns", "sections", "scope", "paper", "orientation", "dateBasis", "estimateMode", "valuePerTicket"].includes(key)) continue;
+        if (!value || ["startDate", "endDate", "timeZone", "period", "page", "pageSize", "format", "title", "columns", "sections", "scope", "paper", "orientation", "dateBasis", "estimateMode", "valuePerTicket", "excludedIds"].includes(key)) continue;
         const candidates = Object.values(options).flat().filter((v): v is { id: string; name: string } => typeof v === "object" && v !== null && "id" in v && "name" in v);
         criteria.push([this.fieldLabel(key), candidates.find((item) => item.id === value)?.name ?? (key === "statuses" ? String(value).split(",").map((status) => this.label(status)).join(", ") : key === "sortBy" ? this.fieldLabel(String(value)) : this.label(String(value)))]);
       }
     } else criteria.push(["Period", "Current active projects; completed projects are counted separately"]);
+    if (query.excludedIds) criteria.push(["Excluded records", `${this.exclusions(query).length} explicitly excluded; totals and charts use the remaining matching records.`]);
     if (kind === "ticket-report") criteria.push(["Files", "Active regular and inline attachments; deleted files are excluded."]);
     if ("estimatedTotal" in result.summary && result.summary.estimatedTotal !== null) criteria.push(["Estimate basis", `Manual estimate per ticket: ${(query as TicketReportQueryDto).valuePerTicket} ${query.currency}. This is not an invoice or recorded revenue.`]);
     let logo: Buffer | undefined;
@@ -619,8 +623,8 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       kind, query, title: query.title?.trim() || ({ "ticket-report": "Ticket report", "event-service-report": "Event & Services report", "project-executive-report": "Executive project report" })[kind],
       company: settings?.companyName ?? "", application: settings?.applicationName ?? "Reports", color: /^#[0-9a-f]{6}$/i.test(settings?.primaryColor ?? "") ? settings!.primaryColor : "#334155", logo,
       generatedAt: new Date(), timeZone, locale: settings?.defaultLanguage || "en", currency: query.currency,
-      criteria, metrics: Object.entries(result.summary).filter(([key, value]) => key !== "estimatedTotal" || value !== null).map(([key, value]) => [this.fieldLabel(key), value]),
-      distributions: Object.entries(result).filter(([key]) => key.startsWith("by")).map(([key, value]) => ({ title: this.fieldLabel(key.slice(2)), items: (value as Array<{ label: string; count: number }>).map((item) => ({ ...item, label: ["byPriority", "bySource", "byTaskStatus", "byHealth"].includes(key) ? this.label(item.label) : item.label })) })),
+      criteria, metrics: Object.entries(result.summary).filter(([key, value]) => key !== "estimatedTotal" || value !== null).map(([key, value]) => [this.fieldLabel(key), value, key]),
+      distributions: Object.entries(result).filter(([key]) => key.startsWith("by")).map(([key, value]) => ({ key, title: this.fieldLabel(key.slice(2)), items: (value as Array<{ label: string; count: number }>).map((item) => ({ ...item, label: ["byPriority", "bySource", "byTaskStatus", "byHealth"].includes(key) ? this.label(item.label) : item.label })) })),
       activity: "activity" in result ? result.activity : [], rows, matched: "totalMatched" in result ? result.totalMatched : result.detail.length
     };
     return { filename: `${kind}-${localDay(new Date(), timeZone)}.${format}`, contentType: format === "pdf" ? "application/pdf" : format === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv; charset=utf-8", body: await renderReport(model, format), format, result };
@@ -786,7 +790,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     });
   }
   private validatePresentation(kind: ReportKind, query: ReportPresentationDto) {
-    selectedColumns(kind, query); reportSections(query);
+    selectedColumns(kind, query); reportSections(query, kind); this.exclusions(query); this.validateSort(kind, query);
     if (query.timeZone) validZone(query.timeZone);
     if (kind === "project-executive-report" && query.scope === "page") throw new BadRequestException("Project reports export the full active portfolio.");
     const basis = query.dateBasis ?? "createdAt";
@@ -804,22 +808,38 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     const dto = kind === "ticket-report" ? plainToInstance(TicketReportQueryDto, clean) : kind === "event-service-report" ? plainToInstance(EventServiceReportQueryDto, clean) : plainToInstance(ReportPresentationDto, clean);
     if (validateSync(dto, { whitelist: true, forbidNonWhitelisted: true }).length) throw new BadRequestException("The saved report contains invalid filters. Review its dates and options.");
     this.validatePresentation(kind as ReportKind, dto);
-    if (kind === "ticket-report") { this.ticketOrder(dto as TicketReportQueryDto); this.parseStatuses((dto as TicketReportQueryDto).statuses); this.resolveValuePerTicket(dto as TicketReportQueryDto); }
-    if (kind === "event-service-report") { this.eventOrder(dto as EventServiceReportQueryDto); this.parseEventStatuses((dto as EventServiceReportQueryDto).statuses); }
+    if (kind === "ticket-report") { this.parseStatuses((dto as TicketReportQueryDto).statuses); this.resolveValuePerTicket(dto as TicketReportQueryDto); }
+    if (kind === "event-service-report") { this.parseEventStatuses((dto as EventServiceReportQueryDto).statuses); }
     if (kind !== "project-executive-report") reportRange(dto as TicketReportQueryDto, dto.timeZone ?? "UTC");
     return clean;
   }
-  private ticketOrder(query: TicketReportQueryDto): Prisma.TicketOrderByWithRelationInput[] {
-    const key = query.sortBy ?? "createdAt"; const direction = query.sortDirection ?? "desc";
-    const simple = ["ticketNumber", "subject", "priority", "source", "createdAt", "updatedAt", "closedAt", "resolvedAt"];
-    const order: Prisma.TicketOrderByWithRelationInput = key === "clientName" ? { client: { name: direction } } : key === "status" ? { statusDefinition: { name: direction } } : key === "assignedTo" ? { assignedUser: { firstName: direction } } : key === "team" ? { assignedTeam: { name: direction } } : simple.includes(key) ? { [key]: direction } : {};
-    if (!Object.keys(order).length) throw new BadRequestException("This report column cannot be sorted.");
-    return [order, { id: "asc" }];
+  private exclusions(query: ReportPresentationDto) {
+    if (!query.excludedIds) return [];
+    const ids = query.excludedIds.split(",");
+    if (ids.length > REPORT_MAX_EXCLUSIONS || ids.some((id) => !isUUID(id))) throw new BadRequestException(`Choose up to ${REPORT_MAX_EXCLUSIONS} valid record exclusions. Use filters for broader exclusions.`);
+    return [...new Set(ids)];
   }
-  private eventOrder(query: EventServiceReportQueryDto): Prisma.EventServiceRequestOrderByWithRelationInput[] {
-    const key = query.sortBy ?? "createdAt"; const direction = query.sortDirection ?? "desc";
-    if (!["trackingNumber", "eventName", "eventDate", "status", "priority", "createdAt", "updatedAt", "clientName"].includes(key)) throw new BadRequestException("This report column cannot be sorted.");
-    return [key === "clientName" ? { client: { name: direction } } : { [key]: direction }, { id: "asc" }];
+  private validateSort(kind: ReportKind, query: ReportPresentationDto) {
+    if (query.sortBy && !REPORT_COLUMNS[kind].some((col) => col.key === query.sortBy)) throw new BadRequestException("This report column cannot be sorted.");
+    if (query.sortDirection && !["asc", "desc"].includes(query.sortDirection)) throw new BadRequestException("Choose a valid sort direction.");
+  }
+  private sortRows<T extends Record<string, unknown>>(rows: T[], kind: ReportKind, query: ReportPresentationDto) {
+    const key = query.sortBy ?? "createdAt", direction = query.sortDirection === "asc" ? 1 : -1;
+    const column = REPORT_COLUMNS[kind].find((col) => col.key === key);
+    const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+    const value = (row: T): string | number | null => {
+      const raw = key === "status" && row.statusDefinition ? (row.statusDefinition as { name: string }).name : row[key];
+      if (raw === null || raw === undefined || raw === "") return null;
+      if (column?.type === "date" || column?.type === "dateOnly") return new Date(String(raw)).getTime();
+      if (column?.type === "number" || column?.type === "currency") return Number(raw);
+      if (key === "risk") return raw ? "Needs attention" : "On track";
+      return this.label(String(raw));
+    };
+    return rows.sort((a, b) => {
+      const left = value(a), right = value(b);
+      const compared = left === null ? right === null ? 0 : 1 : right === null ? -1 : (typeof left === "number" && typeof right === "number" ? left - right : collator.compare(String(left), String(right))) * direction;
+      return compared || collator.compare(String(a.id ?? a.projectId), String(b.id ?? b.projectId));
+    });
   }
   private async ticketRecords(db: Prisma.TransactionClient, where: Prisma.TicketWhereInput, orderBy: Prisma.TicketOrderByWithRelationInput[] = [{ id: "asc" }]) {
     const rows: ReportTicket[] = [];
@@ -891,6 +911,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       status: { not: TicketStatus.MERGED },
       [query.dateBasis ?? "createdAt"]: { gte: range.start, lte: range.end }
     };
+    if (query.excludedIds) where.id = { notIn: this.exclusions(query) };
     if (query.clientId) where.clientId = query.clientId;
     if (query.assignedUserId) {
       where.OR = [{ assignedUserId: query.assignedUserId }, { assignees: { some: { userId: query.assignedUserId } } }];
@@ -913,6 +934,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       deletedAt: null,
       [query.dateBasis ?? "createdAt"]: { gte: range.start, lte: range.end }
     };
+    if (query.excludedIds) where.id = { notIn: this.exclusions(query) };
     if (query.clientId) where.clientId = query.clientId;
     if (query.assignedUserId) {
       where.OR = [

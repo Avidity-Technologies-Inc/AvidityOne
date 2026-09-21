@@ -32,8 +32,8 @@ export class ReportsController {
 
   @Get("projects/executive-summary")
   @RequirePermissions("reports.view", "projects.view")
-  executiveProjectSummary(@CurrentUser() user: AuthenticatedUser) {
-    return this.reportsService.executiveProjectSummary(user);
+  executiveProjectSummary(@Query() query: ExecutiveProjectReportQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.reportsService.executiveProjectSummary(user, query);
   }
 
   @Get("projects/executive-export")

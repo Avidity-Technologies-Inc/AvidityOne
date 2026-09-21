@@ -38,3 +38,24 @@ export const REPORT_PERIODS = [
   { value: "last7", label: "Last 7 days" }, { value: "previousMonth", label: "Previous calendar month" },
   { value: "currentMonth", label: "Current month to date" }, { value: "previousWeek", label: "Previous week (Monday–Sunday)" }
 ] as const;
+
+export type ReportSection = { key: string; label: string; group: "Summary indicators" | "Charts and breakdowns" | "Supporting sections" };
+const metrics = (items: Array<[string, string]>): ReportSection[] => items.map(([key, label]) => ({ key: `metric:${key}`, label, group: "Summary indicators" }));
+const charts = (items: Array<[string, string]>): ReportSection[] => items.map(([key, label]) => ({ key, label, group: "Charts and breakdowns" }));
+const supporting: ReportSection[] = [{ key: "criteria", label: "Applied criteria and definitions", group: "Supporting sections" }, { key: "detail", label: "Record detail table", group: "Supporting sections" }];
+export const REPORT_SECTIONS: Record<ReportKind, ReportSection[]> = {
+  "ticket-report": [...metrics([["totalTickets", "Total tickets"], ["activeTickets", "Active tickets"], ["closedTickets", "Closed tickets"], ["resolvedTickets", "Resolved tickets"], ["unassignedTickets", "Unassigned tickets"], ["highPriorityTickets", "High-priority tickets"], ["withAttachments", "With files"], ["withoutAttachments", "Without files"], ["estimatedTotal", "Manual estimate total"]]), ...charts([["activity", "Ticket activity"], ["byStatus", "Tickets by status"], ["byPriority", "Tickets by priority"], ["bySource", "Tickets by source"], ["byClient", "Tickets by client"], ["byTechnician", "Technician workload"], ["byTeam", "Tickets by team"]]), ...supporting],
+  "event-service-report": [...metrics([["totalRequests", "Total requests"], ["newRequests", "New requests"], ["assignedRequests", "Assigned requests"], ["completedRequests", "Completed requests"], ["cancelledRequests", "Cancelled requests"], ["totalTasks", "Total tasks"], ["openTasks", "Open tasks"], ["completedTasks", "Completed tasks"]]), ...charts([["activity", "Request activity"], ["byStatus", "Requests by status"], ["byPriority", "Requests by priority"], ["byService", "Requests by service"], ["byClient", "Requests by client"], ["byTechnician", "Technician workload"], ["byTaskStatus", "Tasks by status"]]), ...supporting],
+  "project-executive-report": [...metrics([["activeProjects", "Active projects"], ["atRiskProjects", "Projects needing attention"], ["onTrackProjects", "Projects on track"], ["overdueDecisions", "Overdue decisions"], ["unassignedDecisions", "Unassigned decisions"], ["overdueMilestones", "Overdue milestones"], ["completedProjects", "Completed projects"]]), ...charts([["byHealth", "Projects by health"]]), ...supporting]
+};
+// Expand legacy saved presets while keeping new explicit selections exact.
+export function resolveReportSections(kind: ReportKind, value?: string): string[] {
+  const catalog = REPORT_SECTIONS[kind];
+  if (value === undefined) return catalog.map((s) => s.key);
+  const keys = value.split(",");
+  if (keys.some((key) => !["summary", "charts", ...catalog.map((s) => s.key)].includes(key))) throw new Error("Choose valid report sections.");
+  const expanded = keys.flatMap((key) => key === "summary" ? catalog.filter((s) => s.group === "Summary indicators").map((s) => s.key) : key === "charts" ? catalog.filter((s) => s.group === "Charts and breakdowns").map((s) => s.key) : [key]);
+  if (keys.includes("summary") || keys.includes("charts")) expanded.unshift("criteria");
+  return [...new Set(expanded)];
+}
+export const REPORT_MAX_EXCLUSIONS = 100;

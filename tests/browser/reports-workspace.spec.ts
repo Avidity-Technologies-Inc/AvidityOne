@@ -6,8 +6,9 @@ const root = path.resolve(".");
 const bundle = buildSync({ stdin: { contents: 'import React from "react"; import {createRoot} from "react-dom/client"; import {ReportsWorkspace} from "./apps/web/src/components/reports/ReportsWorkspace"; createRoot(document.getElementById("root")).render(<ReportsWorkspace/>);', resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", alias: { "@": path.join(root, "apps/web/src"), "next/link": "./tests/browser/fixtures/qc-link.tsx" }, define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' } }).outputFiles[0].text;
 const grants = ["reports.view", "reports.export", "reports.manage", "reports.send", "tickets.view", "event_services.view", "projects.view", "qc.view"];
 const subject = "A complete subject that remains readable without truncation: investigate repeated calendar invitations and attachment delivery for the client team.";
-const report = { generatedAt: "2026-09-21T15:00:00Z", filters: { startDate: "2026-08-01", endDate: "2026-08-31", timeZone: "America/Chicago", dateBasis: "createdAt" }, options: { clients: [{ id: "client", name: "ISFA" }], users: [], teams: [], priorities: ["NORMAL", "HIGH"], statuses: ["OPEN", "CLOSED"], statusDefinitions: [{ id: "status", name: "Awaiting Equipment" }], sources: ["EMAIL"] }, summary: { totalTickets: 2105, activeTickets: 2105, closedTickets: 0, resolvedTickets: 0, unassignedTickets: 0, highPriorityTickets: 0, withAttachments: 2105, withoutAttachments: 0, estimatedTotal: null }, activity: [{ period: "2026-08-01", label: "2026-08-01", created: 5, resolved: 0, closed: 0 }, { period: "2026-08-02", label: "2026-08-02", created: 10, resolved: 0, closed: 0 }], byStatus: [{ label: "Awaiting Equipment", count: 2105 }], byClient: [{ label: "ISFA", count: 2105 }], byTechnician: [{ label: "Mary Ann Smith", count: 2105 }], byPriority: [{ label: "NORMAL", count: 2105 }], detail: Array.from({ length: 25 }, (_, i) => ({ id: `ticket-${i}`, ticketNumber: `SYN-${i + 1}`, subject, clientName: "ISFA", status: "OPEN", statusDefinition: { name: "Awaiting Equipment" }, priority: "NORMAL", assignedTo: "Mary Ann Smith, Luis Mena", createdAt: "2026-08-15T14:30:00Z", attachmentCount: 8 })), totalMatched: 2105, page: 1, pageSize: 25, totalPages: 85 };
+const report = { generatedAt: "2026-09-21T15:00:00Z", filters: { startDate: "2026-08-01", endDate: "2026-08-31", timeZone: "America/Chicago", dateBasis: "createdAt" }, options: { clients: [{ id: "client", name: "ISFA" }], users: [], teams: [], priorities: ["NORMAL", "HIGH"], statuses: ["OPEN", "CLOSED"], statusDefinitions: [{ id: "status", name: "Awaiting Equipment" }], sources: ["EMAIL"] }, summary: { totalTickets: 2105, activeTickets: 2105, closedTickets: 0, resolvedTickets: 0, unassignedTickets: 0, highPriorityTickets: 0, withAttachments: 2105, withoutAttachments: 0, estimatedTotal: null }, activity: [{ period: "2026-08-01", label: "2026-08-01", created: 5, resolved: 0, closed: 0 }, { period: "2026-08-02", label: "2026-08-02", created: 10, resolved: 0, closed: 0 }], byStatus: [{ label: "Awaiting Equipment", count: 2105 }], byClient: [{ label: "ISFA", count: 2105 }], byTechnician: [{ label: "Mary Ann Smith", count: 2105 }], byPriority: [{ label: "NORMAL", count: 2105 }], detail: Array.from({ length: 25 }, (_, i) => ({ id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, "0")}`, ticketNumber: `SYN-${i + 1}`, subject, clientName: "ISFA", status: "OPEN", statusDefinition: { name: "Awaiting Equipment" }, priority: "NORMAL", assignedTo: "Mary Ann Smith, Luis Mena", createdAt: "2026-08-15T14:30:00Z", attachmentCount: 8 })), totalMatched: 2105, page: 1, pageSize: 25, totalPages: 85 };
 async function mount(page: Page, permissions = grants) {
+  const savedDefinitions: unknown[] = [];
   const requests: Array<{ method: string; url: string; body?: unknown }> = [];
   await page.route("https://reports.test/**", async (route) => {
     const request = route.request(); const url = new URL(request.url());
@@ -15,8 +16,14 @@ async function mount(page: Page, permissions = grants) {
     if (url.pathname.startsWith("/api")) {
       requests.push({ method: request.method(), url: url.pathname + url.search, body: request.method() === "GET" ? undefined : request.postDataJSON() });
       if (url.pathname.endsWith("configuration")) return route.fulfill({ json: { timeZone: "America/Chicago", locale: "en", currencies: ["CAD", "USD"], permissions } });
-      if (url.pathname.endsWith("summary")) return route.fulfill({ json: { ...report, page: Number(url.searchParams.get("page") ?? "1") } });
-      if (url.pathname.endsWith("definitions") && request.method() === "POST") return route.fulfill({ json: { id: "saved", ...request.postDataJSON() } });
+      if (url.pathname.endsWith("executive-summary")) return route.fulfill({ json: { generatedAt: report.generatedAt, summary: { activeProjects: 1, atRiskProjects: 0 }, byHealth: [{ label: "ON_TRACK", count: 1 }], detail: [{ projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", projectName: "Synthetic project", clientName: "Synthetic client", owner: "Jane Smith", health: "ON_TRACK", targetDate: null, overdueMilestones: 0, openDecisions: 2 }] } });
+      if (url.pathname.endsWith("summary")) {
+        const excluded = (url.searchParams.get("excludedIds") ?? "").split(",");
+        const detail = report.detail.filter((row) => !excluded.includes(row.id));
+        return route.fulfill({ json: { ...report, detail, summary: { ...report.summary, totalTickets: report.totalMatched - (report.detail.length - detail.length) }, totalMatched: report.totalMatched - (report.detail.length - detail.length), page: Number(url.searchParams.get("page") ?? "1") } });
+      }
+      if (url.pathname.endsWith("definitions") && request.method() === "POST") { const saved = { id: "saved", ...request.postDataJSON() }; savedDefinitions.push(saved); return route.fulfill({ json: saved }); }
+      if (url.pathname.endsWith("definitions")) return route.fulfill({ json: savedDefinitions });
       if (url.pathname.endsWith("export")) return route.fulfill({ contentType: "application/pdf", headers: { "content-disposition": 'attachment; filename="synthetic.pdf"' }, body: "%PDF synthetic" });
       if (url.pathname.endsWith("send")) return route.fulfill({ json: { sent: true, status: "accepted" } });
       return route.fulfill({ json: [] });
@@ -73,4 +80,78 @@ test("saving persists private visibility, relative period and presentation", asy
   await page.getByRole("button", { name: "Save as new" }).click();
   await expect.poll(() => requests.filter((r) => r.method === "POST").length).toBe(1);
   expect(requests.find((r) => r.method === "POST")!.body).toMatchObject({ isShared: false, filters: { period: "previousMonth", columns: "ticketNumber,subject,clientName,status,priority,assignedTo,createdAt,attachmentCount", orientation: "landscape" } });
+});
+
+test("compact controls and granular sections stay consistent on screen, in export and saved reports", async ({ page }, testInfo) => {
+  const requests = await mount(page);
+  await expect(page.getByRole("heading", { name: "Reports", exact: true })).toBeVisible();
+  expect(await page.locator(".report-toolbar").evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(100);
+  await page.getByRole("button", { name: "Collapse filters" }).click();
+  await expect(page.getByLabel("Search", { exact: true })).toBeHidden();
+  await page.locator(".report-customize > summary").click();
+  const picker = page.locator(".report-customize");
+  await picker.getByRole("button", { name: "Detail only", exact: true }).click();
+  await picker.getByLabel("Total tickets", { exact: true }).check();
+  await picker.getByLabel("Tickets by client", { exact: true }).check();
+  await expect(page.locator(".report-metric")).toHaveCount(1);
+  await expect(page.locator(".report-breakdown")).toHaveCount(1);
+  await expect(page.locator(".report-trend")).toHaveCount(0);
+  await picker.locator("summary").click();
+  await page.getByRole("button", { name: "Export / send" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Tickets by client", { exact: true })).toBeChecked();
+  await expect(dialog.getByLabel("Ticket activity", { exact: true })).not.toBeChecked();
+  await dialog.getByRole("button", { name: "Download PDF" }).click();
+  await expect.poll(() => requests.filter((r) => r.url.includes("/export?")).length).toBe(1);
+  const exported = new URL(`https://reports.test${requests.find((r) => r.url.includes("/export?"))!.url}`);
+  expect(exported.searchParams.get("sections")).toBe("detail,metric:totalTickets,byClient");
+  await dialog.getByRole("button", { name: "Close export options" }).click();
+  await page.getByRole("button", { name: "Saved reports", exact: true }).click();
+  await page.getByLabel("Report name", { exact: true }).fill("Selected client summary");
+  await page.getByRole("button", { name: "Save as new" }).click();
+  await expect.poll(() => requests.filter((r) => r.method === "POST").length).toBe(1);
+  expect(requests.find((r) => r.method === "POST")!.body).toMatchObject({ filters: { sections: "detail,metric:totalTickets,byClient" } });
+  await page.getByLabel("Load saved report").selectOption("");
+  await page.getByLabel("Load saved report").selectOption("saved");
+  await expect(page.locator(".report-metric")).toHaveCount(1);
+  await expect(page.locator(".report-breakdown")).toHaveCount(1);
+  await page.screenshot({ path: testInfo.outputPath("compact-selected.png"), fullPage: true });
+});
+test("every column sorts and excluded records are removed and restored without mutation", async ({ page }) => {
+  const requests = await mount(page);
+  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await expect.poll(() => requests.some((r) => r.url.includes("sortBy=attachmentCount") && r.url.includes("sortDirection=asc"))).toBe(true);
+  await expect(page.getByRole("columnheader", { name: "Files" })).toHaveAttribute("aria-sort", "ascending");
+  await page.getByLabel("Sort direction").selectOption("desc");
+  await expect(page.getByRole("columnheader", { name: "Files" })).toHaveAttribute("aria-sort", "descending");
+  await page.getByRole("button", { name: "Exclude SYN-1", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Exclude SYN-1", exact: true })).toHaveCount(0);
+  await expect(page.locator(".report-metric").first()).toContainText("2,104");
+  await expect(page.getByRole("button", { name: "Restore excluded records" })).toBeVisible();
+  await page.getByRole("button", { name: "Export / send" }).click();
+  await page.getByRole("button", { name: "Download PDF" }).click();
+  await expect.poll(() => requests.some((r) => r.url.includes("/export?") && r.url.includes("excludedIds=aaaaaaaa-aaaa-4aaa-8aaa-000000000000") && r.url.includes("sortBy=attachmentCount") && r.url.includes("sortDirection=desc"))).toBe(true);
+  await page.getByRole("button", { name: "Close export options" }).click();
+  await page.getByRole("button", { name: "Restore excluded records" }).click();
+  await expect(page.getByRole("button", { name: "Exclude SYN-1", exact: true })).toBeVisible();
+  expect(requests.filter((r) => r.method !== "GET")).toEqual([]);
+});
+
+test("project reports retain custom sorting in saved definitions and exports", async ({ page }) => {
+  const requests = await mount(page);
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Exclude Synthetic project" })).toBeVisible();
+  await page.getByLabel("Sort column").selectOption("openDecisions");
+  await expect.poll(() => requests.some((r) => r.url.includes("executive-summary?") && r.url.includes("sortBy=openDecisions"))).toBe(true);
+  await page.getByRole("button", { name: "Export / send" }).click();
+  await page.getByRole("button", { name: "Download PDF" }).click();
+  await expect.poll(() => requests.some((r) => r.url.includes("executive-export?") && r.url.includes("sortBy=openDecisions"))).toBe(true);
+  await page.getByRole("button", { name: "Close export options" }).click();
+  await page.getByRole("button", { name: "Saved reports", exact: true }).click();
+  await page.getByLabel("Report name", { exact: true }).fill("Project decision review");
+  await page.getByRole("button", { name: "Save as new" }).click();
+  await expect.poll(() => requests.filter((r) => r.method === "POST").length).toBe(1);
+  const body = requests.find((r) => r.method === "POST")!.body as { filters: Record<string, unknown> };
+  expect(body.filters.sortBy).toBe("openDecisions");
+  expect(body.filters).not.toHaveProperty("page"); expect(body.filters).not.toHaveProperty("pageSize");
 });
