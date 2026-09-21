@@ -1,5 +1,14 @@
 # Project Handoff
 
+## Direct Ticket Email Replies — 2026-09-21
+
+- Authorized follow-up from clean canonical `main` at `daedfde`. New operational replies execute directly: a first-line `[Closed]` records the reply and closes the ticket through the existing ticket workflow, with no confirmation request. Public replies and internal notes retain their own permissions and delivery boundaries. Current sender, mailbox, organization, membership and password-change restrictions remain checked; forwarded sender substitution is rejected.
+- A unique source key claims each action before execution. Duplicate syncs, previously rejected source mail, old pending confirmations and legacy `[Confirm ...]` replies do not execute again. Interrupted actions require review, not automatic replay. Completion receipts are informational and cannot cause a completed action to be retried.
+- Outlook Mac's `mail-editor-reference-message-container`, Windows/Exchange quote markers, Gmail quotes and unmarked From/To/Subject blocks are stripped consistently from HTML and text. Fresh signatures retain safe HTML and referenced inline files; quoted inline images are excluded from the posted reply. Existing customer-reply reopening and specialist reply status behavior are retained.
+- Settings/Profile now explain direct execution and no longer expose confirmation validity. Legacy schema/settings fields remain for backward compatibility only; no migration or dependency/environment changes. Existing enabled reply/close policy applies immediately after deployment, without resetting notification preferences.
+- Validation: 233 tests across all 39 API suites passed on disposable PostgreSQL targets; 12 email-control browser tests passed across Chromium, Firefox and WebKit. API/web TypeScript and full production build passed. Three isolated deployment tests cover successful API/web startup, build failure and health failure with restoration of both runtimes.
+- Deployment: `scripts/deploy-ticket-email-direct.sh <full-release-sha>` requires clean native production `main` at `daedfde` or the target for retry, backs up source/API/web, builds both apps and checks both services and public endpoints. Publication/deployment are authorized and pending at commit time. Do not replay legacy proposals or send real ticket replies as an unsolicited smoke test. Actual Outlook acceptance is a post-deployment check.
+
 ## Downloadable Operational Email Attachments — 2026-09-21
 
 - Follow-up implemented locally from clean canonical `main` at `cbf7f7e`. Production was verified at that revision with both services healthy following dependency recovery. Read-only Microsoft inspection confirmed the three reported images existed in sent messages with bytes, inline metadata and matching CID references; the ambiguous “included” label did not distinguish embedded images from downloadable files.

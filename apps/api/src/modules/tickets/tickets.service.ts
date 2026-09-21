@@ -2036,7 +2036,7 @@ export class TicketsService {
   }
 
   async executeEmailReply(input: { ticketId: string; user: AuthenticatedUser; bodyText: string; bodyHtml: string; mode: string; close: boolean; attachments: MailAttachment[]; operationId: string }) {
-    // Email identity and grants are checked at confirmation; enforce the same action grants here too.
+    // Email identity and current grants are checked at ingestion; enforce action grants here too.
     const required = ["tickets.view", "ticket_messages.view", "tickets.reply", input.mode === "INTERNAL" ? "ticket_messages.create_internal" : "ticket_messages.create_public", ...(input.close ? ["tickets.close"] : [])];
     if (required.some((permission) => !input.user.permissions.includes(permission))) throw new ForbiddenException("Email operation is not permitted.");
     await this.ensureTicketExists(input.ticketId, input.user);

@@ -153,6 +153,10 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
       const policy = await this.policy(row.organizationId);
       const user = await this.actor(row.userId, row.organizationId);
       const receipt = row.mode === "NOTICE";
+      if (receipt && row.subject === "Confirm your ticket email action") {
+        await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: { status: "CANCELLED", error: "Legacy confirmation retired. Submit a new email reply for direct processing." } });
+        return;
+      }
       if (!user || !policy.enabled || !await this.eligible(row.ticketId, user, policy, receipt || row.eventType === "newTicketCreated") || (row.mode === "INTERNAL" && !policy.includeInternal)) {
         await this.prisma.ticketEmailDelivery.update({ where: { id: row.id }, data: { status: "CANCELLED", error: "Feature disabled or recipient no longer eligible." } }); return;
       }
@@ -221,7 +225,7 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
           }
         }
         if (Buffer.byteLength(html) > 1024 * 1024) throw new Error("Conversation exceeds the safe email size. Disable assignment history or retrieve the full ticket in the platform.");
-        html += `<hr><p>${policy.repliesEnabled ? `Reply above the separator to submit a ${row.mode === "INTERNAL" ? "staff-only note" : "public reply to the requester and current ticket CCs"}. You will receive a one-time confirmation at your registered email before it is executed.${policy.closeEnabled ? " Place [Closed] on the first line to also close the ticket." : " Email close commands are disabled."}` : "Replies from email are disabled. Use the platform to respond."}</p>`;
+        html += `<hr><p>${policy.repliesEnabled ? `Reply above the separator to submit a ${row.mode === "INTERNAL" ? "staff-only note" : "public reply to the requester and current ticket CCs"}. Authorized replies are processed directly; no confirmation is required.${policy.closeEnabled ? " Place [Closed] on the first line to also close the ticket." : " Email close commands are disabled."}` : "Replies from email are disabled. Use the platform to respond."}</p>`;
       }
       const appUrl = this.config.get<string>("APP_URL") ?? this.config.get<string>("WEB_URL");
       if (appUrl && /^https?:\/\//.test(appUrl)) html += `<p><a href="${escapeEmail(appUrl.replace(/\/$/, ""))}/tickets/${encodeURIComponent(ticket.ticketNumber)}">Open ticket</a></p>`;
@@ -260,38 +264,8 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
     if (isAutomaticEmail(message.internetMessageHeaders)) return true;
     const policy = await this.policy(mailbox.organizationId);
     if (!policy.enabled || !policy.repliesEnabled) return true;
-    if (confirm) {
-      const action = await this.prisma.ticketEmailAction.findFirst({ where: { organizationId: mailbox.organizationId, mailboxId: mailbox.id, confirmationHash: this.hash(confirm) } });
-      if (!action || action.status !== "AWAITING_CONFIRMATION") return true;
-      const user = await this.actor(action.userId, action.organizationId);
-      if (!user || user.email.toLowerCase() !== message.from.email.toLowerCase()) return true;
-      const context = { organizationId: action.organizationId, ticketId: action.ticketId, userId: action.userId };
-      if (action.expiresAt < new Date()) {
-        await this.prisma.ticketEmailAction.updateMany({ where: { id: action.id, status: "AWAITING_CONFIRMATION" }, data: { status: "EXPIRED" } });
-        await this.notice(context, "Email action expired", "The confirmation expired. Submit the reply again; no action was executed.", `expired:${action.id}`); return true;
-      }
-      try {
-        if (action.mode === "PUBLIC" && (action.bodyText || action.hasAttachments) && JSON.stringify(action.recipientSnapshot) !== JSON.stringify(await this.publicRecipients(action.ticketId, action.organizationId))) throw new Error("Recipients changed.");
-        await this.assertAction(user, action.ticketId, action.mode, action.closeTicket, policy);
-      } catch {
-        await this.prisma.ticketEmailAction.update({ where: { id: action.id }, data: { status: "REJECTED", error: "Current permissions, assignment or policy no longer allow this action." } });
-        await this.notice(context, "Email action rejected", "Permissions, assignment, recipients or policy changed. No reply or closure was executed.", `rejected:${action.id}`); return true;
-      }
-      const claimed = await this.prisma.ticketEmailAction.updateMany({ where: { id: action.id, status: "AWAITING_CONFIRMATION" }, data: { status: "PROCESSING" } });
-      if (!claimed.count) return true;
-      try {
-        const attachments = action.hasAttachments ? await loadAttachments(action.providerMessageId) : [];
-        if (action.hasAttachments && !attachments.length) throw new Error("The original email attachments could not be retrieved. Use the platform to verify them.");
-        const result = await execute({ ticketId: action.ticketId, user, bodyText: action.bodyText, bodyHtml: action.bodyHtml, mode: action.mode, close: action.closeTicket, attachments, operationId: action.id });
-        await this.prisma.ticketEmailAction.update({ where: { id: action.id }, data: { status: "COMPLETED", resultMessageId: result.id, completedAt: new Date() } });
-        await this.audit.create({ ...context, entityType: "Ticket", entityId: action.ticketId, action: "ticket.email_action_completed", metadata: { operationId: action.id, messageId: result.id, close: action.closeTicket, mode: action.mode } });
-        await this.notice(context, "Email action completed", `${action.mode === "INTERNAL" ? "Internal note recorded." : action.bodyText ? "Public reply accepted for delivery." : "No new public message was requested."}${action.closeTicket ? " Ticket closed." : ""} Reference: ${action.id}`, `completed:${action.id}`);
-      } catch {
-        await this.prisma.ticketEmailAction.update({ where: { id: action.id }, data: { status: "REVIEW_REQUIRED", error: "Action interrupted. Inspect the ticket and sent mail before retrying; part of the action may have completed." } });
-        await this.notice(context, "Email action needs review", "The operation did not finish normally. Review the ticket and sent mail before submitting it again; part of the action may have completed.", `failed:${action.id}`);
-      }
-      return true;
-    }
+    // Confirmation emails from the retired workflow never execute old proposals.
+    if (confirm) return true;
     const delivery = await this.prisma.ticketEmailDelivery.findFirst({ where: { replyKey: key, organizationId: mailbox.organizationId, status: { in: ["ACCEPTED", "SIMULATED"] }, mode: { in: ["PUBLIC", "INTERNAL"] } } });
     if (!delivery) return true;
     const user = await this.actor(delivery.userId, delivery.organizationId);
@@ -300,30 +274,55 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
     if (!ticket || (ticket.mailboxId && ticket.mailboxId !== mailbox.id)) return true;
     const sourceKey = `${mailbox.organizationId}:${message.internetMessageId ?? `${mailbox.id}:${message.providerMessageId}`}`;
     if (await this.prisma.ticketEmailAction.findUnique({ where: { sourceKey } })) return true;
+    const invalidKey = `invalid:${this.hash(sourceKey)}`;
+    if (await this.prisma.ticketEmailDelivery.findUnique({ where: { dedupeKey: invalidKey } })) return true;
     const context = { organizationId: delivery.organizationId, ticketId: delivery.ticketId, userId: delivery.userId };
+    let operationId: string | null = null;
+    let executionStarted = false;
     try {
-      const pending = await this.prisma.ticketEmailAction.count({ where: { userId: user.id, status: "AWAITING_CONFIRMATION", expiresAt: { gt: new Date() } } });
-      if (pending >= 5) return true;
+      if (message.rawFrom && message.rawFrom.email.toLowerCase() !== user.email.toLowerCase()) throw new BadRequestException("Reply directly from your registered account, not a forwarded sender identity.");
       const parsed = parseStaffReply(message.bodyText, message.bodyHtml, Boolean(message.hasAttachments));
-      const recipientSnapshot = delivery.mode === "PUBLIC" && (parsed.bodyText || message.hasAttachments) ? await this.publicRecipients(ticket.id, mailbox.organizationId) : [];
       await this.assertAction(user, delivery.ticketId, delivery.mode, parsed.close, policy);
-      const token = randomBytes(24).toString("hex");
-      const expiresAt = new Date(Date.now() + policy.confirmationMinutes * 60_000);
-      await this.prisma.$transaction(async (tx) => {
-      const action = await tx.ticketEmailAction.create({ data: { ...context, mailboxId: mailbox.id, sourceKey, providerMessageId: message.providerMessageId, recipientSnapshot, originalBodyText: message.bodyText, originalBodyHtml: message.bodyHtml, bodyText: parsed.bodyText, bodyHtml: parsed.bodyHtml, closeTicket: parsed.close, mode: delivery.mode, hasAttachments: Boolean(message.hasAttachments || /cid:/i.test(message.bodyHtml ?? "")), confirmationHash: this.hash(token), expiresAt } as Prisma.TicketEmailActionUncheckedCreateInput });
-      await this.notice(context, "Confirm your ticket email action", `No action has been executed. This confirmation is sent only to your registered account.\n\nRecipients: ${recipientSnapshot.length ? recipientSnapshot.join(", ") : "Staff-only note or closure without a customer message"}.\n\nProposed action: ${delivery.mode === "INTERNAL" ? "Internal note (staff only)" : "Public reply (requester and current ticket CCs)"}${parsed.close ? " and close ticket" : ""}.\n\n${parsed.bodyText || "Close without a new message."}\n\nAttachments: ${action.hasAttachments ? "will be retrieved from your original email and validated" : "none"}.\n\nTo approve, reply with this exact first line within ${policy.confirmationMinutes} minutes:\n[Confirm ${token}]\n\nIgnore this email if you did not request this action. Do not forward the confirmation code.`, `confirm:${action.id}`, tx);
-      });
+      const recipientSnapshot = delivery.mode === "PUBLIC" && (parsed.bodyText || message.hasAttachments) ? await this.publicRecipients(ticket.id, mailbox.organizationId) : [];
+      // The unique source key atomically claims the incoming email before any send
+      // or ticket mutation. Legacy schema fields remain for historical records.
+      const action = await this.prisma.ticketEmailAction.create({ data: {
+        ...context, mailboxId: mailbox.id, sourceKey, providerMessageId: message.providerMessageId,
+        recipientSnapshot, originalBodyText: message.bodyText, originalBodyHtml: message.bodyHtml,
+        bodyText: parsed.bodyText, bodyHtml: parsed.bodyHtml, closeTicket: parsed.close, mode: delivery.mode,
+        hasAttachments: Boolean(message.hasAttachments || /cid:/i.test(message.bodyHtml ?? "")),
+        confirmationHash: this.hash(randomBytes(24).toString("hex")), expiresAt: new Date(), status: "PROCESSING"
+      } });
+      operationId = action.id;
+      const originals = action.hasAttachments ? await loadAttachments(action.providerMessageId) : [];
+      if (action.hasAttachments && !originals.length) throw new BadRequestException("The original email attachments could not be retrieved. Send a new reply after verifying the files.");
+      const attachments = originals.filter((file) => !file.isInline || Boolean(file.contentId && parsed.bodyHtml.toLowerCase().includes(`cid:${file.contentId.replace(/^<|>$/g, "").toLowerCase()}`)));
+      const currentUser = await this.actor(user.id, user.organizationId);
+      if (!currentUser) throw new BadRequestException("Your account is no longer available for ticket email actions.");
+      await this.assertAction(currentUser, ticket.id, delivery.mode, parsed.close, await this.policy(mailbox.organizationId));
+      if (delivery.mode === "PUBLIC" && JSON.stringify(recipientSnapshot) !== JSON.stringify(await this.publicRecipients(ticket.id, mailbox.organizationId)) && (parsed.bodyText || message.hasAttachments)) throw new BadRequestException("Ticket recipients changed while processing. Send a new reply to use the current recipients.");
+      executionStarted = true;
+      const result = await execute({ ticketId: action.ticketId, user: currentUser, bodyText: parsed.bodyText, bodyHtml: parsed.bodyHtml, mode: action.mode, close: parsed.close, attachments, operationId: action.id });
+      await this.prisma.ticketEmailAction.update({ where: { id: action.id }, data: { status: "COMPLETED", resultMessageId: result.id, completedAt: new Date() } });
+      // A failed informational receipt must not turn a completed reply into a retry.
+      try {
+        await this.audit.create({ ...context, entityType: "Ticket", entityId: action.ticketId, action: "ticket.email_action_completed", metadata: { operationId: action.id, messageId: result.id, close: parsed.close, mode: action.mode } });
+        await this.notice(context, "Ticket email action completed", `${action.mode === "INTERNAL" ? "Internal note recorded." : parsed.bodyText || attachments.length ? "Public reply recorded and accepted for delivery." : "No new public message was requested."}${parsed.close ? " Ticket closed." : ""} No confirmation is required. Reference: ${action.id}`, `completed:${action.id}`);
+      } catch { this.logger.warn("Ticket email action completed; its informational receipt needs review."); }
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return true;
-      // Do not echo untrusted content in rejection messages.
-      await this.notice(context, "Ticket email reply was not accepted", error instanceof Error && error.message.startsWith("No new") ? error.message : "Check your assignment, reply/close permissions and the first-line command. No action was executed. Use the platform if the message contains a forwarded conversation.", `invalid:${this.hash(sourceKey)}`);
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" && !operationId) return true;
+      const detail = error instanceof BadRequestException ? error.message : "Check your assignment, reply/close permissions and the first-line command. No action was executed.";
+      if (operationId) await this.prisma.ticketEmailAction.update({ where: { id: operationId }, data: { status: executionStarted ? "REVIEW_REQUIRED" : "REJECTED", error: executionStarted ? "Action interrupted. Inspect the ticket and sent mail before retrying; part of the action may have completed." : detail } });
+      await this.notice(context, executionStarted ? "Ticket email action needs review" : "Ticket email reply was not accepted", executionStarted ? "The operation did not finish normally. Review the ticket and sent mail before submitting it again; part of the action may have completed." : detail, invalidKey);
     }
     return true;
   }
   private async assertAction(user: AuthenticatedUser, ticketId: string, mode: string, close: boolean, policy: TicketEmailPolicy) {
-    if (user.forcePasswordChange || !await this.eligible(ticketId, user, policy) || !user.permissions.includes("tickets.reply") || !user.permissions.includes(mode === "INTERNAL" ? "ticket_messages.create_internal" : "ticket_messages.create_public")) throw new Error("Email reply permission is required.");
+    if (!policy.enabled || !policy.repliesEnabled) throw new BadRequestException("Email replies are disabled in the organization settings.");
+    if (user.forcePasswordChange) throw new BadRequestException("Change your Avidity One password in Profile > Password, then send a new reply. No action was executed.");
+    if (!await this.eligible(ticketId, user, policy) || !user.permissions.includes("tickets.reply") || !user.permissions.includes(mode === "INTERNAL" ? "ticket_messages.create_internal" : "ticket_messages.create_public")) throw new BadRequestException("Current ticket assignment and reply permissions are required.");
     if (mode === "INTERNAL" && !policy.includeInternal) throw new Error("Internal email is disabled.");
-    if (close && (!policy.closeEnabled || !user.permissions.includes("tickets.close"))) throw new Error("Email closure is not permitted.");
+    if (close && (!policy.closeEnabled || !user.permissions.includes("tickets.close"))) throw new BadRequestException("Email closure is disabled or your account lacks ticket close permission.");
     const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
     if (!ticket || ticket.status === "MERGED") throw new Error("Use the primary ticket in the platform.");
   }
@@ -342,7 +341,7 @@ export class TicketEmailService implements OnModuleInit, OnModuleDestroy {
     const ticket = await this.prisma.ticket.findFirst({ where: { organizationId: mailbox.organizationId, deletedAt: null, OR: matchers } });
     const user = await this.actor(account.id, mailbox.organizationId);
     if (!ticket || !user || !await this.eligible(ticket.id, user, policy)) return false;
-    await this.notice({ organizationId: mailbox.organizationId, ticketId: ticket.id, userId: user.id }, "Reply using your operational ticket email", "This message was not posted as a customer reply. Reply to your own full ticket notification (keep its subject), or use the platform. A personal confirmation is required before any public reply or closure.", `unlinked:${this.hash(`${mailbox.organizationId}:${message.internetMessageId ?? message.providerMessageId}`)}`);
+    await this.notice({ organizationId: mailbox.organizationId, ticketId: ticket.id, userId: user.id }, "Reply using your operational ticket email", "This message was not posted as a customer reply. Reply to your own full ticket notification (keep its subject), or use the platform. Authorized replies are processed directly without a separate confirmation.", `unlinked:${this.hash(`${mailbox.organizationId}:${message.internetMessageId ?? message.providerMessageId}`)}`);
     return true;
   }
 

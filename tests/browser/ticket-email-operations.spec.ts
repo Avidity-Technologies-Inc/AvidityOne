@@ -29,6 +29,8 @@ test("email policy is explicit, saveable and prevents close without replies", as
   await expect(page.getByText("Unsaved email policy changes")).toBeVisible();
   await page.getByRole("button", { name: "Save ticket email settings" }).click();
   expect(writes[0].body).toMatchObject({ enabled: true, repliesEnabled: true, closeEnabled: true });
+  await expect(page.getByLabel("Confirmation validity (minutes)")).toHaveCount(0);
+  await expect(page.getByText(/Authorized email replies and \[Closed\] commands execute directly/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Save ticket email settings" })).toBeDisabled();
   await page.getByRole("checkbox", { name: /^Allow replies from email/ }).uncheck();
   await expect(close).not.toBeChecked(); await expect(close).toBeDisabled();
@@ -42,7 +44,7 @@ test("own profile explains policy and exposes only own records without admin mut
   await expect(page.getByRole("link", { name: "SYN-100" }).first()).toHaveAttribute("href", "/tickets/synthetic-ticket");
   await expect(page.getByRole("button", { name: "Retry delivery" })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByText("AWAITING CONFIRMATION")).toBeVisible();
+  await expect(page.getByText("Legacy pending — send a new reply")).toBeVisible();
   await page.screenshot({ path: info.outputPath("ticket-email-profile-mobile.png"), fullPage: true });
 });
 test("ambiguous retry requires acknowledging possible duplicate delivery", async ({ page }) => {

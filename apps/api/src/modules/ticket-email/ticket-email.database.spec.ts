@@ -58,13 +58,12 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
   async function delivery(mode = "PUBLIC") {
     return prisma.ticketEmailDelivery.create({ data: { organizationId: org, ticketId, userId, eventType: "ticketReplyOnAssignedTicket", replyKey: randomUUID().replaceAll("-", "") + "a".repeat(16), mode, subject: "Synthetic conversation", status: "SIMULATED", dedupeKey: randomUUID() } });
   }
-  async function propose(text = "[Closed]\nCompleted and verified.", mode = "PUBLIC", hasAttachments = false) {
-    const d = await delivery(mode); const message = incoming(`[AO:${d.replyKey}]`, `${text}\n${REPLY_SEPARATOR}\nOld conversation`, { hasAttachments });
-    expect(await service.inbound(sender(), message, loadFiles, execute)).toBe(true);
+  async function submit(text = "[Closed]\nCompleted and verified.", mode = "PUBLIC", hasAttachments = false, bodyHtml?: string) {
+    const d = await delivery(mode);
+    const message = incoming(`[AO:${d.replyKey}]`, `${text}\n${REPLY_SEPARATOR}\nOld conversation`, { hasAttachments, bodyHtml });
+    await service.inbound(sender(), message, loadFiles, execute);
     const action = await prisma.ticketEmailAction.findUniqueOrThrow({ where: { sourceKey: `${org}:${message.internetMessageId}` } });
-    const notice = await prisma.ticketEmailDelivery.findUniqueOrThrow({ where: { dedupeKey: `confirm:${action.id}` } });
-    const token = notice.bodyText!.match(/\[Confirm ([a-f0-9]{48})\]/)![1];
-    return { action, token, message };
+    return { action, message };
   }
   it("captures source events transactionally and copies full public content while keeping notes separate", async () => {
     await ticket();
@@ -78,49 +77,59 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
     expect(publicMail?.bodyHtml).toContain("<b>Complete customer request</b>"); expect(publicMail?.bodyHtml).not.toContain("Never expose");
     expect(await prisma.ticketEmailDelivery.count({ where: { ticketId, mode: "INTERNAL" } })).toBe(0);
   });
-  it("does not execute before personal confirmation and sends a real workflow reply then closes once", async () => {
-    await ticket(); const { action, token, message } = await propose();
-    expect(execute).not.toHaveBeenCalled();
-    expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("NEW");
+  it("posts and closes directly exactly once, including concurrent mailbox retries", async () => {
+    await ticket(); const d = await delivery(); const before = execute.mock.calls.length;
+    const message = incoming(`[AO:${d.replyKey}]`, `[Closed]\nCompleted and verified.\n${REPLY_SEPARATOR}\nOld conversation`);
+    await Promise.all([service.inbound(sender(), message, loadFiles, execute), service.inbound(sender(), message, loadFiles, execute)]);
     await service.inbound(sender(), message, loadFiles, execute);
-    expect(await prisma.ticketEmailAction.count({ where: { sourceKey: action.sourceKey } })).toBe(1);
-    const confirmation = incoming("Confirm action", `[Confirm ${token}]`);
-    await Promise.all([service.inbound(sender(), confirmation, loadFiles, execute), service.inbound(sender(), confirmation, loadFiles, execute)]);
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls.length).toBe(before + 1);
     expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("CLOSED");
     expect(await prisma.ticketMessage.count({ where: { ticketId, authorUserId: userId, direction: "OUTBOUND", bodyText: "Completed and verified." } })).toBe(1);
-    expect((await prisma.ticketEmailAction.findUniqueOrThrow({ where: { id: action.id } })).status).toBe("COMPLETED");
-    const sent = send.mock.calls.map((c) => c[0] as unknown as { to: string[]; bodyText: string }).find((c) => c.bodyText === "Completed and verified.");
-    expect(sent?.to).toEqual(["customer@example.test"]);
+    expect(await prisma.ticketEmailAction.findFirst({ where: { ticketId } })).toMatchObject({ status: "COMPLETED", closeTicket: true });
+    expect(await prisma.ticketEmailDelivery.count({ where: { ticketId, subject: "Confirm your ticket email action" } })).toBe(0);
   });
-  it("rejects forged recipients, automated messages, expired confirmations and permission loss", async () => {
+  it("rejects forged senders, automated mail, forwarded identities and current permission loss", async () => {
     await ticket(); const d = await delivery(); const before = execute.mock.calls.length;
     await service.inbound(sender(), incoming(`[AO:${d.replyKey}]`, "[Closed]\nForged", { from: { email: "attacker@example.test" } }), loadFiles, execute);
-    expect(await prisma.ticketEmailAction.count({ where: { ticketId } })).toBe(0);
     await service.inbound(sender(), incoming(`[AO:${d.replyKey}]`, "[Closed]\nAuto", { internetMessageHeaders: { "auto-submitted": "auto-replied" } }), loadFiles, execute);
+    await service.inbound(sender(), incoming(`[AO:${d.replyKey}]`, "[Closed]\nForwarded", { rawFrom: { email: "forwarder@example.test" } }), loadFiles, execute);
     expect(await prisma.ticketEmailAction.count({ where: { ticketId } })).toBe(0);
-    const first = await propose(); await prisma.ticketEmailAction.update({ where: { id: first.action.id }, data: { expiresAt: new Date(0) } });
-    await service.inbound(sender(), incoming("Confirm", `[Confirm ${first.token}]`), loadFiles, execute);
-    expect((await prisma.ticketEmailAction.findUniqueOrThrow({ where: { id: first.action.id } })).status).toBe("EXPIRED");
-    const second = await propose(); const permission = await prisma.permission.findUniqueOrThrow({ where: { name: "tickets.close" } });
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { name: "tickets.close" } });
     await prisma.rolePermission.deleteMany({ where: { roleId, permissionId: permission.id } });
-    await service.inbound(sender(), incoming("Confirm", `[Confirm ${second.token}]`), loadFiles, execute);
-    expect((await prisma.ticketEmailAction.findUniqueOrThrow({ where: { id: second.action.id } })).status).toBe("REJECTED");
+    try { await service.inbound(sender(), incoming(`[AO:${d.replyKey}]`, "[Closed]\nNo grant"), loadFiles, execute); }
+    finally { await prisma.rolePermission.create({ data: { roleId, permissionId: permission.id } }); }
     expect(execute.mock.calls.length).toBe(before);
-    await prisma.rolePermission.create({ data: { roleId, permissionId: permission.id } });
-  });
-  it("rejects changed public recipients and preserves the ticket state", async () => {
-    await ticket(); const proposed = await propose();
-    await prisma.ticketConversationParticipant.create({ data: { ticketId, email: "new-recipient@example.test" } });
-    await service.inbound(sender(), incoming("Confirm", `[Confirm ${proposed.token}]`), loadFiles, execute);
-    expect((await prisma.ticketEmailAction.findUniqueOrThrow({ where: { id: proposed.action.id } })).status).toBe("REJECTED");
     expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("NEW");
   });
-  it("records staff-only email notes without sending their content to the customer", async () => {
-    await ticket(); const proposed = await propose("Internal investigation detail", "INTERNAL"); const before = send.mock.calls.length;
-    await service.inbound(sender(), incoming("Confirm", `[Confirm ${proposed.token}]`), loadFiles, execute);
-    expect(send.mock.calls.length).toBe(before);
+  it("leaves legacy pending confirmations and rejected source emails unexecuted", async () => {
+    await ticket(); const d = await delivery(); const message = incoming(`[AO:${d.replyKey}]`, "[Closed]\nOld proposal");
+    await prisma.ticketEmailAction.create({ data: { organizationId: org, ticketId, userId, mailboxId, providerMessageId: message.providerMessageId, sourceKey: `${org}:${message.internetMessageId}`, bodyText: "Old proposal", bodyHtml: "<p>Old proposal</p>", mode: "PUBLIC", closeTicket: true, confirmationHash: randomUUID(), expiresAt: new Date(Date.now() + 60000) } });
+    const before = execute.mock.calls.length;
+    await service.inbound(sender(), message, loadFiles, execute);
+    await service.inbound(sender(), incoming(`[AO:${d.replyKey}]`, `[Confirm ${"a".repeat(48)}]`), loadFiles, execute);
+    expect(execute.mock.calls.length).toBe(before);
+    expect(await prisma.ticketEmailAction.findFirst({ where: { ticketId } })).toMatchObject({ status: "AWAITING_CONFIRMATION" });
+    await prisma.user.update({ where: { id: userId }, data: { forcePasswordChange: true } });
+    const rejected = incoming(`[AO:${d.replyKey}]`, "[Closed]\nPassword needed");
+    try { await service.inbound(sender(), rejected, loadFiles, execute); }
+    finally { await prisma.user.update({ where: { id: userId }, data: { forcePasswordChange: false } }); }
+    expect(await prisma.ticketEmailDelivery.findFirst({ where: { ticketId, bodyText: { contains: "Profile > Password" } } })).not.toBeNull();
+    await service.inbound(sender(), rejected, loadFiles, execute);
+    expect(execute.mock.calls.length).toBe(before);
+  });
+  it("records staff-only email notes directly without sending them to the customer", async () => {
+    await ticket(); const before = send.mock.calls.length;
+    const { action } = await submit("Internal investigation detail", "INTERNAL");
+    expect(action.status).toBe("COMPLETED"); expect(send.mock.calls.length).toBe(before);
     expect(await prisma.ticketMessage.count({ where: { ticketId, bodyText: "Internal investigation detail", visibility: "INTERNAL", authorUserId: userId } })).toBe(1);
+  });
+  it("a later specialist reply resumes the closed conversation without duplicating the ticket", async () => {
+    await ticket(); await submit();
+    expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("CLOSED");
+    await submit("Additional follow-up.");
+    expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("WAITING_ON_CUSTOMER");
+    await submit("Staff-only follow-up", "INTERNAL");
+    expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("WAITING_ON_CUSTOMER");
   });
   it("does not reclassify unlinked specialist replies as customer messages", async () => {
     const current = await ticket();
@@ -320,18 +329,31 @@ databaseTests("Ticket email isolated PostgreSQL workflows", () => {
     expect(await service.enqueue({ organizationId: otherOrg.id, ticketId: otherTicket.id, userId, eventType: "newTicketCreated", title: "Legacy" })).toBe(false);
   });
 
-  it("imports original reply attachments with inline metadata before sending and rejects blocked types", async () => {
-    await ticket(); const proposed = await propose("See the attached screenshot.", "PUBLIC", true);
-    loadFiles.mockResolvedValueOnce([{ id: "file", originalFilename: "screenshot.png", mimeType: "image/png", sizeBytes: 4, contentBytes: Buffer.from("test"), isInline: true, contentId: "image001" }]);
-    await service.inbound(sender(), incoming("Confirm", `[Confirm ${proposed.token}]`), loadFiles, execute);
-    const action = await prisma.ticketEmailAction.findUniqueOrThrow({ where: { id: proposed.action.id } }); expect(action.status).toBe("COMPLETED");
-    const imported = await prisma.ticketAttachment.findFirstOrThrow({ where: { ticketMessageId: action.resultMessageId } });
-    expect(imported).toMatchObject({ isInline: true, contentId: "image001", originalFilename: "screenshot.png", uploadedByUserId: userId });
-    await ticket(); const blocked = await propose("[Closed]\nSee this file.", "PUBLIC", true);
+  it("imports fresh signature images and files before sending, excluding quoted inline images", async () => {
+    await ticket();
+    loadFiles.mockResolvedValueOnce([
+      { id: "file", originalFilename: "screenshot.png", mimeType: "image/png", sizeBytes: 4, contentBytes: Buffer.from("test"), isInline: true, contentId: "image001" },
+      { id: "old", originalFilename: "quoted.png", mimeType: "image/png", sizeBytes: 3, contentBytes: Buffer.from("old"), isInline: true, contentId: "old" },
+      { id: "pdf", originalFilename: "report.pdf", mimeType: "application/pdf", sizeBytes: 4, contentBytes: Buffer.from("test"), isInline: false }
+    ]);
+    const { action } = await submit("", "PUBLIC", true, '<div>[Closed]</div><p>Fixed</p><table><tr><td><img src="cid:image001"></td><td style="color:blue">Signature</td></tr></table><div><b>From:</b> Customer<br><b>To:</b> Support<br><b>Subject:</b> Original</div><img src="cid:old">');
+    expect(action.status).toBe("COMPLETED");
+    const files = await prisma.ticketAttachment.findMany({ where: { ticketMessageId: action.resultMessageId } });
+    expect(files.map((f) => f.originalFilename).sort()).toEqual(["report.pdf", "screenshot.png"]);
+    const posted = await prisma.ticketMessage.findUniqueOrThrow({ where: { id: action.resultMessageId! } });
+    expect(posted.sanitizedBodyHtml).toContain('<table>'); expect(posted.sanitizedBodyHtml).toContain('cid:image001');
+    expect(posted.sanitizedBodyHtml).not.toContain('cid:old'); expect(posted.bodyText).not.toContain('[Closed]');
+    expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("CLOSED");
+  });
+  it("rejects unsafe attachments without closing and never replays a failed execution", async () => {
+    await ticket();
     loadFiles.mockResolvedValueOnce([{ id: "blocked", originalFilename: "unsafe.exe", mimeType: "application/octet-stream", sizeBytes: 4, contentBytes: Buffer.from("test"), isInline: false }]);
-    await service.inbound(sender(), incoming("Confirm", `[Confirm ${blocked.token}]`), loadFiles, execute);
-    expect((await prisma.ticketEmailAction.findUniqueOrThrow({ where: { id: blocked.action.id } })).status).toBe("REVIEW_REQUIRED");
+    const { action, message } = await submit("[Closed]\nSee this file.", "PUBLIC", true);
+    expect(action.status).toBe("REVIEW_REQUIRED");
     expect((await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } })).status).toBe("NEW");
+    const before = execute.mock.calls.length;
+    await service.inbound(sender(), message, loadFiles, execute);
+    expect(execute.mock.calls.length).toBe(before);
   });
 
   it("distinguishes explicit followers from obsolete assignment watchers", async () => {
