@@ -28,3 +28,11 @@ Synthetic PDF/Excel exports verified selected-only sections, preserved accents, 
 Deploy with `scripts/deploy-report-controls.sh <full-published-sha>` after fetching `origin`. It requires clean production `main` at the reviewed base or the exact target for retry, rejects database/dependency changes, backs up source and compiled runtime, fast-forwards to the exact release, rebuilds shared/API/web and checks local/public endpoints. Both services are stopped during the build. Configuration is read without modification. On failure it attempts runtime recovery without resetting Git; inspect health before retrying.
 
 After deployment, verify a known report, hide individual indicators/charts, sort a calculated column, exclude/restore a record, save/reload the configuration and compare a PDF/Excel export. Existing schedules continue using their saved settings.
+
+## Export dialog row-order follow-up
+
+The export dialog now offers **Export sort column** and **Export sort direction**. Selectable fields are restricted to the chosen export columns and apply to PDF/Excel/CSV. Changing order refreshes the report preview and view, returning to page 1; **Current page** therefore means the first page of the new order. Save the report to retain this order for subsequent runs. Reordering column positions remains separate.
+
+If the active sort field is removed from exported columns, its order is retained and explicitly labeled as a column not exported; choose another included field to replace it. This preserves existing sort behavior without silently choosing a new criterion.
+
+This follow-up is web-only from `60ae53c`. Use `scripts/deploy-report-export-sort.sh <full-published-sha>` for a guarded web update without API restart or migration.

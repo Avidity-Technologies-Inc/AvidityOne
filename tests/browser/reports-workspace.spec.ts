@@ -155,3 +155,46 @@ test("project reports retain custom sorting in saved definitions and exports", a
   expect(body.filters.sortBy).toBe("openDecisions");
   expect(body.filters).not.toHaveProperty("page"); expect(body.filters).not.toHaveProperty("pageSize");
 });
+
+test("export row ordering uses selected columns, refreshes page one and reaches every format", async ({ page }, testInfo) => {
+  const requests = await mount(page);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText("Page 2 of 85", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Export / send" }).click();
+  const dialog = page.getByRole("dialog");
+  const sortColumn = dialog.getByRole("combobox", { name: "Export sort column", exact: true });
+  const direction = dialog.getByRole("combobox", { name: "Export sort direction", exact: true });
+  await expect(sortColumn.locator("option")).toHaveCount(8);
+  await expect(sortColumn.locator('option[value="requester"]')).toHaveCount(0);
+  await dialog.getByLabel("Requester", { exact: true }).check();
+  await expect(sortColumn.locator('option[value="requester"]')).toHaveCount(1);
+  await sortColumn.selectOption("requester");
+  await expect(page.getByText("Page 1 of 85", { exact: true })).toBeVisible();
+  await expect(direction).toHaveValue("asc");
+  await direction.selectOption("desc");
+  await expect(dialog.getByRole("button", { name: "Download PDF" })).toBeEnabled();
+  await expect(dialog.getByText("Row order: Requester · Descending", { exact: true })).toBeVisible();
+  await sortColumn.scrollIntoViewIfNeeded();
+  await dialog.screenshot({ path: testInfo.outputPath("export-row-order.png") });
+  for (const format of ["pdf", "xlsx", "csv"]) {
+    await dialog.getByRole("combobox", { name: "Format", exact: true }).selectOption(format);
+    await dialog.getByRole("button", { name: `Download ${format.toUpperCase()}` }).click();
+    await expect.poll(() => requests.filter((r) => r.url.includes("/export?") && r.url.includes(`format=${format}`)).length).toBe(1);
+    const url = new URL(`https://reports.test${requests.find((r) => r.url.includes("/export?") && r.url.includes(`format=${format}`))!.url}`);
+    expect(url.searchParams.get("sortBy")).toBe("requester"); expect(url.searchParams.get("sortDirection")).toBe("desc"); expect(url.searchParams.get("page")).toBe("1");
+  }
+  await dialog.getByLabel("Requester", { exact: true }).uncheck();
+  await expect(sortColumn.locator('option[value="requester"]')).toHaveCount(0);
+  await expect(sortColumn).toHaveValue("");
+  await expect(sortColumn).toContainText("column not exported");
+  await sortColumn.selectOption("attachmentCount");
+  await expect(direction).toBeEnabled();
+  await expect(direction).toHaveValue("asc");
+  await dialog.getByRole("button", { name: "Close export options" }).click();
+  await expect(page.getByRole("combobox", { name: "Sort column", exact: true })).toHaveValue("attachmentCount");
+  await page.getByRole("button", { name: "Saved reports", exact: true }).click();
+  await page.getByLabel("Report name", { exact: true }).fill("Export by file count");
+  await page.getByRole("button", { name: "Save as new" }).click();
+  await expect.poll(() => requests.filter((r) => r.method === "POST").length).toBe(1);
+  expect(requests.find((r) => r.method === "POST")!.body).toMatchObject({ filters: { sortBy: "attachmentCount", sortDirection: "asc" } });
+});

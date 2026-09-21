@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Export Row Ordering — 2026-09-21
+
+- Web-only follow-up from clean canonical `main` at `60ae53c`. Export options now expose row sort column/direction using only selected export columns; the preview states the effective order. PDF, Excel and CSV reuse the existing server sort contract.
+- Changing export sort also refreshes the main report and resets pagination to page 1. Saved reports retain the order. Removing the active sort column preserves and explicitly labels the current order until another included column is selected.
+- No API, database, dependency, permission or environment changes. Web TypeScript and production build checks passed. All 24 report browser cases passed across Chromium, Firefox and WebKit, covering selected-column options, pagination reset, directions, all format requests and saved ordering; synthetic data only.
+- Web-only deployment helper: `scripts/deploy-report-export-sort.sh <full-release-sha>`. Requires clean production `main` at `60ae53c` or the exact target for retry. Backs up source/Next runtime, rebuilds/restarts only web and checks health. Production deployment remains pending.
+
 ## Compact Report Controls — 2026-09-21
 
 - Follow-up from canonical `main` at `6189269`: compact toolbar replaces the large Reports banner; filters collapse and controls use less space.
