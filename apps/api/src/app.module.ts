@@ -1,3 +1,4 @@
+import { ComposerSettingsModule } from "./modules/composer/composer-settings.module";
 import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
@@ -75,6 +76,7 @@ import { UsersModule } from "./modules/users/users.module";
     RolesModule,
     PermissionsModule,
     ProfileModule,
+    ComposerSettingsModule,
     ProjectsModule,
     ClientsModule,
     ClientDomainsModule,

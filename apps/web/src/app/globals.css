@@ -12584,11 +12584,11 @@ button.operations-summary-card {
   color: var(--editor-muted);
 }
 
-.editor-surface [style*="color"] {
+.editor-surface:not(.ticket-message-surface) [style*="color"] {
   color: var(--editor-text) !important;
 }
 
-.editor-surface a {
+.editor-surface:not(.ticket-message-surface) a {
   color: var(--editor-link) !important;
 }
 
@@ -16655,3 +16655,27 @@ button.ticket-workflow-toggle { border: 0; cursor: pointer; }
 .ticket-email-history caption { text-align: left; font-weight: 600; margin: 8px 0; }
 .ticket-email-history th, .ticket-email-history td { padding: 8px; border-bottom: 1px solid var(--border, #d9e2ef); vertical-align: top; }
 .ticket-email-history small { display: block; max-width: 480px; overflow-wrap: anywhere; }
+
+/* Ticket email canvas keeps deliberate message colors independent of the application theme. */
+.ticket-composer-panel .ticket-message-surface,
+.ticket-message-surface, .composer-format-sample {
+  background: #fff;
+  color: #172033;
+  color-scheme: light;
+}
+.ticket-message-surface a { color: #165dce; text-decoration: underline; }
+.composer-format-controls, .composer-link-editor {
+  display: flex; flex-wrap: wrap; align-items: end; gap: 8px;
+  padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface);
+}
+.composer-format-controls label { display: grid; gap: 3px; font-size: 11px; font-weight: 600; }
+.composer-format-controls .input { min-height: 30px; padding: 4px 8px; width: auto; max-width: 210px; }
+.composer-format-controls input[type="color"] { width: 34px; height: 30px; border: 1px solid var(--line); border-radius: 5px; padding: 2px; }
+.composer-format-controls .muted { font-size: 11px; flex: 1 1 180px; }
+.composer-align-controls { display: flex; align-items: center; gap: 5px; }
+.composer-link-editor .field { flex: 1 1 200px; }
+.composer-ai-review { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.composer-ai-review .composer-format-sample { max-height: 180px; overflow: auto; }
+.composer-format-sample { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.composer-preferences-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+.composer-undo-ai { align-self: start; }

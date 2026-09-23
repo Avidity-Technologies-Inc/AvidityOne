@@ -414,6 +414,7 @@ model Organization {
 }
 
 model SystemSetting {
+  composerDefaults Json @default("{}")
   id                         String   @id @default(uuid()) @db.Uuid
   organizationId             String   @unique @db.Uuid
   applicationName            String
@@ -573,6 +574,7 @@ model SystemSetting {
 }
 
 model User {
+  composerPreferences Json @default("{}")
   qcAttachments QcAttachment[]
   qcConfigRevisions QcConfigRevision[] @relation("QcConfigRevision_createdBy")
   qcDeliverables QcDeliverable[] @relation("QcDeliverable_owner")

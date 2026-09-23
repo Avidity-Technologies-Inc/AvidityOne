@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Ticket Composer Formatting and Preferences — 2026-09-23
+
+- Follow-up authorized from clean canonical `main` and verified production `d131af9`. Clipboard modes remove foreign dark backgrounds by default, with safe source-format and plain-text alternatives. Expanded formatting and a real link editor retain the existing compact composer and reachable send controls.
+- Settings > Ticket Composer defines organization defaults; Profile > Ticket Writing autosaves account overrides, personal reading zoom and reset-to-inheritance. Two additive JSONB columns hold preferences. Existing settings permissions protect organization edits; changes are audited. No dependency/environment/provider-permission changes.
+- AI writing suggestions require Apply, preserve protected links/images and exclude signatures, reject stale draft replacement and support explicit undo. Existing ticket mail delivery/threading/attachments and historical content are retained.
+- See [behavior, validation and guarded deployment](docs/TICKET_COMPOSER_FORMATTING_2026-09-23.md). Publication and production deployment authorized, pending at commit time. Deploy with `scripts/deploy-composer-preferences.sh <full-release-sha>`; it backs up source/runtime/database, migrates, builds API/web, starts both dependent services and restores runtime on failure. Real Outlook/AI-provider acceptance remains a user check.
+
 ## Ticket Reply Threading — 2026-09-23
 
 - Authorized correction from clean canonical main at `367354e`. Production evidence confirmed that attachment replies fell back from denied draft creation to unthreaded sendMail, causing a client reply to AIT-100645 to create AIT-100673.

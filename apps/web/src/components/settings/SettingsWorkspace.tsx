@@ -1,4 +1,5 @@
 "use client";
+import { ComposerPreferencesPanel } from "@/components/composer/ComposerPreferencesPanel";
 import { TicketEmailPanel } from "@/components/notifications/TicketEmailPanel";
 import { QcContextLink } from "@/components/qc/QcContextLink";
 
@@ -546,6 +547,7 @@ type ActiveSection =
   | "mailboxes"
   | "autoReplies"
   | "teams"
+  | "ticketComposer"
   | "ticketWorkflow"
   | "routing"
   | "domains"
@@ -580,6 +582,7 @@ const SETTINGS_GROUPS: Array<{ label: string; sections: Array<{ key: ActiveSecti
       { key: "mailboxes", label: "Mailboxes" },
       { key: "autoReplies", label: "Auto Replies" },
       { key: "ticketWorkflow", label: "Ticket Workflow" },
+      { key: "ticketComposer", label: "Ticket Composer" },
       { key: "routing", label: "Ticket Routing" },
       { key: "domains", label: "Domain Mapping" },
       { key: "notifications", label: "Notifications" },
@@ -4119,6 +4122,7 @@ export function SettingsWorkspace() {
           ) : null}
 
           {activeSection === "ticketWorkflow" ? <TicketWorkflowConfigPanel /> : null}
+          {activeSection === "ticketComposer" ? <ComposerPreferencesPanel organization /> : null}
 
           {activeSection === "routing" ? (
       <section className="panel settings-section">

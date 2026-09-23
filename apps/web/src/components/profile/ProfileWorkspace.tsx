@@ -1,4 +1,5 @@
 "use client";
+import { ComposerPreferencesPanel } from "@/components/composer/ComposerPreferencesPanel";
 import { TicketEmailPanel } from "@/components/notifications/TicketEmailPanel";
 import { ProfileAccess } from "./ProfileAccess";
 import { QcContextLink } from "@/components/qc/QcContextLink";
@@ -32,7 +33,7 @@ import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { apiFetch } from "@/lib/api";
 import { ThemePreference, useTheme } from "@/components/providers/ThemeProvider";
 
-type ProfileSection = "access" | "account" | "password" | "appearance" | "notifications" | "signature";
+type ProfileSection = "access" | "account" | "password" | "writing" | "appearance" | "notifications" | "signature";
 
 interface ProfileUser {
   id: string;
@@ -130,6 +131,7 @@ const SECTIONS: Array<{ key: ProfileSection; label: string; icon: typeof UserRou
   { key: "access", label: "My Access", icon: KeyRound },
   { key: "password", label: "Password", icon: KeyRound },
   { key: "appearance", label: "Appearance", icon: SunMoon },
+  { key: "writing", label: "Ticket Writing", icon: PenLine },
   { key: "notifications", label: "Notifications", icon: Mail },
   { key: "signature", label: "Signature", icon: PenLine }
 ];
@@ -713,6 +715,7 @@ export function ProfileWorkspace() {
             </section>
           ) : null}
 
+          {activeSection === "writing" ? <ComposerPreferencesPanel /> : null}
           {activeSection === "appearance" ? (
             <section className="panel profile-panel">
               <div className="section-heading">

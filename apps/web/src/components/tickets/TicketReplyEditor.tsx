@@ -15,7 +15,8 @@ import {
   RemoveFormatting,
   Send,
   Strikethrough,
-  Underline
+  Underline,
+  Undo2, Redo2, AlignLeft, AlignCenter, AlignRight, SlidersHorizontal
 } from "lucide-react";
 import { ClipboardEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
@@ -35,6 +36,8 @@ import {
   setEditorSignature,
   stripLegacySignature
 } from "@/lib/editor-content";
+import { useComposerPreferences } from "../composer/useComposerPreferences";
+import { fallbackMessageFormat, normalizeClipboard, safeLink, escapeMessageText, serializeComposer, prepareWritingInput, restoreWritingHtml } from "@/lib/composer-content";
 import { AttachmentDropzone } from "./AttachmentDropzone";
 import { AttachmentPreviewItem, AttachmentPreviewList } from "./AttachmentPreviewList";
 import { SignatureInserter } from "./SignatureInserter";
@@ -72,6 +75,16 @@ interface TicketReplyEditorProps {
 
 export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], conversationParticipants = [], insertRequest, onSaved }: TicketReplyEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const preferences = useComposerPreferences();
+  const format = preferences.data?.effective ?? fallbackMessageFormat;
+  const savedSelection = useRef<Range | null>(null);
+  const pendingFontSize = useRef<string | null>(null);
+  const plainPasteOnce = useRef(false);
+  const [expandedTools, setExpandedTools] = useState(false);
+  const [linkEditor, setLinkEditor] = useState<{ text: string; url: string; anchor: HTMLAnchorElement | null } | null>(null);
+  const [aiSuggestion, setAiSuggestion] = useState<{ html: string; before: string; range: Range | null } | null>(null);
+  const [aiUndo, setAiUndo] = useState<{ before: string; after: string } | null>(null);
+  const [uploading, setUploading] = useState(0);
   const extrasRef = useRef<HTMLDetailsElement>(null);
   const draftRestoredRef = useRef(false);
   const autocompleteRequestRef = useRef(0);
@@ -89,6 +102,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
   const [saving, setSaving] = useState(false);
   const [aiBusy, setAiBusy] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
+  const [draftRevision, setDraftRevision] = useState(0);
   const [autocompleteSuggestion, setAutocompleteSuggestion] = useState("");
   const [autocompleteDismissedFor, setAutocompleteDismissedFor] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -138,7 +152,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
       return;
     }
     window.localStorage.setItem(`ticket-reply-draft:${ticketId}`, JSON.stringify({ html, mode, ccEmails, ccUserIds, persistCc, includePersistentCc }));
-  }, [ccEmails, ccUserIds, conversationParticipants, draftText, includePersistentCc, persistCc, mode, ticketId]);
+  }, [ccEmails, ccUserIds, conversationParticipants, draftText, draftRevision, includePersistentCc, persistCc, mode, ticketId]);
 
   useEffect(() => {
     let mounted = true;
@@ -170,14 +184,14 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
 
     clearWritingSuggestions();
     editorRef.current.innerHTML = composeEditorHtml(insertRequest.text, signatureHtmlRef.current);
-    setDraftText(getEditorText());
+    setDraftText(getEditorText()); setDraftRevision(value => value + 1);
     editorRef.current.focus();
   // The request id intentionally drives each explicit insertion action.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insertRequest?.id]);
 
   useEffect(() => {
-    if (!ticketId || preview || aiBusy || saving) {
+    if (!ticketId || preview || aiBusy || aiSuggestion || saving) {
       return;
     }
 
@@ -208,14 +222,100 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     }, AUTOCOMPLETE_DELAY_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [aiBusy, autocompleteDismissedFor, draftText, preview, saving, ticketId]);
+  }, [aiBusy, aiSuggestion, autocompleteDismissedFor, draftText, preview, saving, ticketId]);
+
+  useEffect(() => {
+    const remember = () => {
+      const editor = editorRef.current;
+      if (editor) {
+        const range = captureEditorSelection(editor, window.getSelection());
+        if (range && !selectionIntersectsSignature(editor, window.getSelection())) savedSelection.current = range;
+      }
+    };
+    document.addEventListener("selectionchange", remember);
+    return () => document.removeEventListener("selectionchange", remember);
+  }, []);
+
+  function restoreSelection() {
+    const editor = editorRef.current;
+    if (!editor || preview || saving) return false;
+    if (selectionIntersectsSignature(editor, window.getSelection())) { setError("Select only the message text above the signature to format it."); return false; }
+    editor.focus();
+    const selection = window.getSelection();
+    const range = savedSelection.current;
+    if (range && editor.contains(range.commonAncestorContainer)) {
+      selection?.removeAllRanges(); selection?.addRange(range);
+    } else {
+      const next = document.createRange();
+      const signature = editor.querySelector(EDITOR_SIGNATURE_SELECTOR);
+      next.selectNodeContents(editor);
+      if (signature) { next.setEndBefore(signature); next.collapse(false); } else next.collapse(false);
+      selection?.removeAllRanges(); selection?.addRange(next);
+    }
+    return !selectionIntersectsSignature(editor, selection);
+  }
 
   function runCommand(command: string, value?: string) {
-    removeInlineAutocomplete();
-    setAutocompleteSuggestion("");
-    editorRef.current?.focus();
-    document.execCommand(command, false, value);
-    setDraftText(getEditorText());
+    removeInlineAutocomplete(); setAutocompleteSuggestion("");
+    if (!restoreSelection()) return;
+    if (command === "removeFormat") {
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (range && !range.collapsed) {
+        const content = document.createElement("div"); content.append(range.cloneContents());
+        document.execCommand("insertHTML", false, normalizeClipboard(content.innerHTML, content.textContent || "", "adapt"));
+      }
+      document.execCommand("removeFormat", false);
+    } else {
+      document.execCommand("styleWithCSS", false, "true");
+      document.execCommand(command, false, value);
+    }
+    savedSelection.current = captureEditorSelection(editorRef.current!, window.getSelection());
+    setDraftText(getEditorText()); setDraftRevision(value => value + 1);
+  }
+
+  function normalizeFontSizes() {
+    if (!pendingFontSize.current) return;
+    editorRef.current?.querySelectorAll('font[size="7"]').forEach(node => {
+      if (node.closest(EDITOR_SIGNATURE_SELECTOR)) return;
+      (node as HTMLElement).style.fontSize = `${pendingFontSize.current}px`;
+      node.removeAttribute("size");
+    });
+  }
+
+  function applyFontSize(size: string) {
+    if (!restoreSelection()) return;
+    pendingFontSize.current = size;
+    // Keep native edit nodes intact for undo; serialization converts legacy font tags to spans.
+    document.execCommand("styleWithCSS", false, "false");
+    document.execCommand("fontSize", false, "7");
+    normalizeFontSizes();
+    document.execCommand("styleWithCSS", false, "true");
+    savedSelection.current = captureEditorSelection(editorRef.current!, window.getSelection());
+    setDraftText(getEditorText()); setDraftRevision(value => value + 1);
+  }
+
+  function openLinkEditor() {
+    if (!restoreSelection()) return;
+    const selection = window.getSelection();
+    savedSelection.current = captureEditorSelection(editorRef.current!, selection);
+    const element = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
+    const anchor = element?.closest("a") as HTMLAnchorElement | null;
+    setLinkEditor({ text: anchor?.textContent || selection?.toString() || "", url: anchor?.getAttribute("href") || "", anchor });
+  }
+
+  function applyLink(remove = false) {
+    if (!linkEditor || !restoreSelection()) return;
+    const url = remove ? null : safeLink(linkEditor.url);
+    if (!remove && !url) { setError("Enter a valid https://, http:// or mailto: link."); return; }
+    if (linkEditor.anchor && editorRef.current?.contains(linkEditor.anchor)) {
+      const range = document.createRange(); range.selectNodeContents(linkEditor.anchor);
+      window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range);
+    }
+    document.execCommand("unlink", false);
+    const text = linkEditor.text || linkEditor.url;
+    document.execCommand("insertHTML", false, remove ? escapeMessageText(text) : `<a href="${escapeMessageText(url!)}" rel="noopener noreferrer">${escapeMessageText(text)}</a>`);
+    setLinkEditor(null); setError(null); setDraftText(getEditorText()); setDraftRevision(value => value + 1);
   }
 
   function getEditorText() {
@@ -229,10 +329,6 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
 
   function stripSignatureFromText(value: string) {
     return stripLegacySignature(value, signatureTextRef.current);
-  }
-
-  function composeDraftWithSignature(draft: string) {
-    return composeEditorHtml(draft, signatureHtmlRef.current);
   }
 
   function getTextBeforeCursor() {
@@ -283,9 +379,10 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
   }
 
   function handleEditorInput() {
+    normalizeFontSizes();
     autocompleteRequestRef.current += 1;
     removeInlineAutocomplete();
-    setDraftText(getEditorText());
+    setDraftText(getEditorText()); setDraftRevision(value => value + 1);
     setAutocompleteSuggestion("");
   }
 
@@ -396,7 +493,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     editorRef.current.focus();
     replaceEditorRangeWithText(editorRef.current, range, acceptedText);
     setAutocompleteSuggestion("");
-    setDraftText(getEditorText());
+    setDraftText(getEditorText()); setDraftRevision(value => value + 1);
   }
 
   function dismissAutocompleteSuggestion() {
@@ -414,6 +511,8 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
   }
 
   function handleEditorKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    plainPasteOnce.current = (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "v";
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openLinkEditor(); return; }
     const hasInlineSuggestion = Boolean(getInlineAutocompleteNode());
     if (event.key === "Tab" && (autocompleteSuggestion || hasInlineSuggestion)) {
       event.preventDefault();
@@ -455,19 +554,23 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
 
   function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
     clearWritingSuggestions();
-    const items = Array.from(event.clipboardData.items);
-    const images = items.filter((item) => item.type.startsWith("image/"));
-    if (images.length === 0) {
-      return;
-    }
-
     event.preventDefault();
+    if (!editorRef.current || selectionIntersectsSignature(editorRef.current, window.getSelection())) return;
+    savedSelection.current = captureEditorSelection(editorRef.current, window.getSelection());
+    const html = event.clipboardData.getData("text/html");
+    const text = event.clipboardData.getData("text/plain");
+    const pasted = normalizeClipboard(html, text, plainPasteOnce.current ? "text" : preferences.data?.effective.pasteMode ?? "adapt");
+    plainPasteOnce.current = false;
+    if (pasted) runCommand("insertHTML", pasted);
+    const images = Array.from(event.clipboardData.items).filter(item => item.type.startsWith("image/"));
     images.forEach((item, index) => {
       const file = item.getAsFile();
       if (file) {
-        void uploadPastedImage(file, index);
+        setUploading(value => value + 1);
+        void uploadPastedImage(file, index).catch(() => setError("A pasted image could not be uploaded. Please attach it again.")).finally(() => setUploading(value => value - 1));
       }
     });
+    if (html && /<img\b/i.test(html) && !images.length) setError("Copied remote images were not imported. Attach the image files separately to include them securely.");
   }
 
   function changeMode(nextMode: "public" | "internal") {
@@ -496,7 +599,8 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     }
 
     clearWritingSuggestions();
-    const bodyHtml = editorRef.current.innerHTML;
+    if (uploading) { setError("Wait for pasted images to finish uploading."); return; }
+    const bodyHtml = serializeComposer(editorRef.current, format);
     const bodyText = editorRef.current.innerText.trim();
     if (!bodyText) {
       setError("Message body is required.");
@@ -665,7 +769,11 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
       return;
     }
     const selectedRange = selectedText ? captureEditorSelection(editorRef.current, window.getSelection()) : null;
-    const draft = selectedText || getEditorTextWithoutSignature();
+    const input = document.createElement("div");
+    if (selectedRange) input.append(selectedRange.cloneContents()); else input.innerHTML = editorRef.current.innerHTML;
+    const prepared = prepareWritingInput(input);
+    const draft = prepared.text;
+    const before = editorRef.current.innerHTML;
     if (action !== "suggest-reply" && !draft) {
       setError(action === "paraphrase" ? "Select text to paraphrase or write a draft first." : "Write a draft first.");
       return;
@@ -679,16 +787,9 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
         body: JSON.stringify({ draft })
       });
 
+      if (editorRef.current.innerHTML !== before) throw new Error("Your draft changed while the suggestion was being prepared. Your edits have been kept; run the tool again when ready.");
       const resultText = stripSignatureFromText(result.text);
-      if (selectedText) {
-        if (!selectedRange || !replaceEditorRangeWithText(editorRef.current, selectedRange, resultText)) {
-          throw new Error("The selected text changed before the AI result was ready. Please select it again.");
-        }
-      } else {
-        removeInlineAutocomplete();
-        editorRef.current.innerHTML = composeDraftWithSignature(resultText);
-      }
-      setDraftText(getEditorText());
+      setAiSuggestion({ html: restoreWritingHtml(resultText, prepared.protectedContent), before, range: selectedRange });
       setAutocompleteSuggestion("");
     } catch (requestError) {
       const detail = requestError instanceof Error ? requestError.message : "";
@@ -696,6 +797,23 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
     } finally {
       setAiBusy(null);
     }
+  }
+
+  function applyAiSuggestion() {
+    const editor = editorRef.current;
+    if (!editor || !aiSuggestion) return;
+    if (editor.innerHTML !== aiSuggestion.before) { setError("Your draft changed. Generate a new suggestion to preserve your edits."); setAiSuggestion(null); return; }
+    editor.focus();
+    const range = aiSuggestion.range ?? document.createRange();
+    if (!aiSuggestion.range) {
+      range.selectNodeContents(editor);
+      const signature = editor.querySelector(EDITOR_SIGNATURE_SELECTOR);
+      if (signature) range.setEndBefore(signature);
+    }
+    window.getSelection()?.removeAllRanges(); window.getSelection()?.addRange(range);
+    document.execCommand("insertHTML", false, aiSuggestion.html);
+    setAiUndo({ before: aiSuggestion.before, after: editor.innerHTML });
+    setAiSuggestion(null); setDraftText(getEditorText()); setDraftRevision(value => value + 1);
   }
 
   function actionLabel(selectedAction: ComposerAction) {
@@ -716,7 +834,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
   return (
     <div className="editor ticket-reply-editor">
       <div className="ticket-reply-scroll-content">
-      <div className="editor-toolbar editor-format-toolbar" aria-label="Reply tools">
+      <div className="editor-toolbar editor-format-toolbar" aria-label="Reply tools" onMouseDown={event => { if ((event.target as Element).closest("button")) event.preventDefault(); }}>
         {toolbar.map((item) => {
           const Icon = item.icon;
           return (
@@ -726,13 +844,14 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
               title={item.label}
               aria-label={item.label}
               key={item.label}
+              disabled={preview || saving}
               onClick={() => runCommand(item.command, "value" in item ? item.value : undefined)}
             >
               <Icon size={17} aria-hidden="true" />
             </button>
           );
         })}
-        <button className="icon-button" type="button" title="Link" aria-label="Link" onClick={() => runCommand("createLink", "https://")}>
+        <button className="icon-button" type="button" title="Link" aria-label="Link" disabled={preview || saving} onClick={openLinkEditor}>
           <Link size={17} aria-hidden="true" />
         </button>
         <button className="icon-button" type="button" title="CC and attachments" aria-label="Open CC and attachments" onClick={() => {
@@ -753,23 +872,45 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
         >
           <Eye size={17} aria-hidden="true" />
         </button>
-        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("paraphrase")} disabled={Boolean(aiBusy)}>
+        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("paraphrase")} disabled={Boolean(aiBusy) || preview || saving}>
           <Wand2 size={15} aria-hidden="true" />
           <span>Paraphrase</span>
         </button>
-        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("improve-reply")} disabled={Boolean(aiBusy)}>
+        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("improve-reply")} disabled={Boolean(aiBusy) || preview || saving}>
           <Wand2 size={15} aria-hidden="true" />
           <span>Rewrite Draft</span>
         </button>
-        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("fix-grammar")} disabled={Boolean(aiBusy)}>
+        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("fix-grammar")} disabled={Boolean(aiBusy) || preview || saving}>
           <Wand2 size={15} aria-hidden="true" />
           <span>Fix Grammar</span>
         </button>
-        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("suggest-reply")} disabled={Boolean(aiBusy)}>
+        <button className="button secondary compact-button" type="button" onClick={() => runAiAction("suggest-reply")} disabled={Boolean(aiBusy) || preview || saving}>
           <Wand2 size={15} aria-hidden="true" />
           <span>Draft Reply</span>
         </button>
+        <button className="icon-button" type="button" title="Undo" aria-label="Undo" disabled={preview || saving} onClick={() => runCommand("undo")}><Undo2 size={16} /></button>
+        <button className="icon-button" type="button" title="Redo" aria-label="Redo" disabled={preview || saving} onClick={() => runCommand("redo")}><Redo2 size={16} /></button>
+        <button className="button secondary compact-button" type="button" aria-expanded={expandedTools} onClick={() => setExpandedTools(value => !value)}><SlidersHorizontal size={15} /> Format &amp; paste</button>
       </div>
+      {expandedTools ? <div className="composer-format-controls" aria-label="Additional formatting">
+        <label>Font<select className="input" aria-label="Selected text font" defaultValue={format.fontFamily} disabled={preview || saving} onChange={event => runCommand("fontName", event.target.value)}>{(preferences.data?.fonts ?? [format.fontFamily]).map(font => <option key={font}>{font}</option>)}</select></label>
+        <label>Size<select className="input" aria-label="Selected text size" defaultValue={format.fontSize} disabled={preview || saving} onChange={event => applyFontSize(event.target.value)}>{Array.from({ length: 23 }, (_, i) => i + 10).map(size => <option key={size} value={size}>{size}px</option>)}</select></label>
+        <label>Color<input type="color" aria-label="Selected text color" defaultValue={format.color} disabled={preview || saving} onChange={event => runCommand("foreColor", event.target.value)} /></label>
+        <label>Highlight<input type="color" aria-label="Selected text highlight" defaultValue="#fff2ac" disabled={preview || saving} onChange={event => runCommand("hiliteColor", event.target.value)} /></label>
+        <div className="composer-align-controls" onMouseDown={event => event.preventDefault()}>{[{ command: "justifyLeft", label: "Align left", icon: AlignLeft }, { command: "justifyCenter", label: "Align center", icon: AlignCenter }, { command: "justifyRight", label: "Align right", icon: AlignRight }].map(item => <button key={item.command} className="icon-button" type="button" aria-label={item.label} title={item.label} disabled={preview || saving} onClick={() => runCommand(item.command)}><item.icon size={16} /></button>)}</div>
+        <label>Paste<select className="input" aria-label="Paste behavior" value={preferences.data?.effective.pasteMode ?? "adapt"} disabled={!preferences.data} onChange={event => preferences.update({ pasteMode: event.target.value })}><option value="adapt">Match message</option><option value="keep">Keep source format</option><option value="text">Plain text only</option></select></label>
+        <span className="muted">Defaults and reading zoom: Profile → Ticket Writing</span>
+        {preferences.error ? <span role="alert">{preferences.error} <button className="button secondary compact-button" onClick={preferences.retry}>Retry</button></span> : <small role="status">{preferences.status}</small>}
+      </div> : null}
+      {linkEditor ? <div className="composer-link-editor" role="dialog" aria-label="Edit link">
+        <label className="field"><span>Display text</span><input className="input" autoFocus value={linkEditor.text} onChange={event => setLinkEditor({ ...linkEditor, text: event.target.value })} /></label>
+        <label className="field"><span>Link address</span><input className="input" placeholder="https://example.com" value={linkEditor.url} onChange={event => setLinkEditor({ ...linkEditor, url: event.target.value })} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); applyLink(); } if (event.key === "Escape") setLinkEditor(null); }} /></label>
+        <button className="button compact-button" type="button" onClick={() => applyLink()}>Apply link</button>
+        {linkEditor.anchor ? <button className="button secondary compact-button" type="button" onClick={() => applyLink(true)}>Remove link</button> : null}
+        <button className="button secondary compact-button" type="button" onClick={() => setLinkEditor(null)}>Cancel</button>
+      </div> : null}
+      {aiSuggestion ? <div className="composer-ai-review" role="region" aria-label="AI writing suggestion"><strong>Review suggestion</strong><div className="composer-format-sample" dangerouslySetInnerHTML={{ __html: aiSuggestion.html }} /><div className="composer-align-controls"><button className="button compact-button" type="button" onClick={applyAiSuggestion}>Apply suggestion</button><button className="button secondary compact-button" type="button" onClick={() => setAiSuggestion(null)}>Discard</button></div></div> : null}
+      {aiUndo && !aiSuggestion ? <button className="button secondary compact-button composer-undo-ai" type="button" onClick={() => { if (editorRef.current?.innerHTML === aiUndo.after) { editorRef.current.innerHTML = aiUndo.before; setDraftText(getEditorText()); setDraftRevision(value => value + 1); setAiUndo(null); } else setError("The draft has changed since the AI edit. Use Undo to step back through recent edits."); }}>Undo last AI edit</button> : null}
       <div className="reply-mode-toggle">
         <button className={`button ${mode === "public" ? "" : "secondary"}`} type="button" onClick={() => changeMode("public")}>
           Public Reply
@@ -780,10 +921,11 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
       </div>
       <div className="editor-body-frame">
         <div
-          className="editor-surface signature-render"
+          className="editor-surface signature-render ticket-message-surface"
+          style={{ fontFamily: format.fontFamily, fontSize: format.fontSize, lineHeight: format.lineHeight, color: format.color, zoom: (preferences.data?.effective.displayScale ?? 100) / 100 }}
           autoCapitalize="sentences"
           autoCorrect="on"
-          contentEditable={!preview}
+          contentEditable={!preview && !saving}
           dir="ltr"
           lang="en-US"
           spellCheck
@@ -880,7 +1022,7 @@ export function TicketReplyEditor({ ticketId, ccUsers = [], ccContacts = [], con
           signatureHtmlRef.current = html;
           signatureTextRef.current = htmlToEditorText(html);
           setEditorSignature(editorRef.current, html);
-          setDraftText(getEditorText());
+          setDraftText(getEditorText()); setDraftRevision(value => value + 1);
         }} />
         {error ? <span className="error">{error}</span> : null}
         <div className="split-action">
