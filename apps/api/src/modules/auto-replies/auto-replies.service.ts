@@ -1,3 +1,4 @@
+import { ticketMailSubject, replyReferences } from "../mailboxes/providers/mail-threading";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { AutoReplyScope, AutoReplyTemplateType, AutoReplyTrigger, MessageDirection, MessageVisibility } from "@prisma/client";
 import { HtmlSanitizerService } from "../../common/html/html-sanitizer.service";
@@ -151,16 +152,16 @@ export class AutoRepliesService {
       };
       const bodyHtml = this.htmlSanitizer.sanitize(this.renderTemplate(template.bodyHtml, variables));
       const bodyText = this.renderTemplate(template.bodyText, variables);
-      const subject = this.renderTemplate(template.subject, variables);
+      const subject = ticketMailSubject(this.renderTemplate(template.subject, variables), ticket.ticketNumber);
       const sendResult = await this.mailDelivery.sendTicketReply({
         organizationId: input.organizationId,
         mailboxId: input.mailboxId ?? ticket.mailboxId,
         to: [input.senderEmail],
         subject,
-        bodyHtml,
-        bodyText,
+        bodyHtml: this.htmlSanitizer.sanitize(`${bodyHtml}<p>Ticket: ${ticket.ticketNumber}</p>`),
+        bodyText: `${bodyText}\n\nTicket: ${ticket.ticketNumber}`,
         inReplyTo: input.inReplyTo,
-        references: input.references,
+        references: replyReferences(input.references, input.inReplyTo).join(" ") || null,
         replyToProviderMessageId: input.replyToProviderMessageId
       });
 

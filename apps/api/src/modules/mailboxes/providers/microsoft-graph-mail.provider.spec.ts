@@ -66,12 +66,65 @@ describe("MicrosoftGraphMailProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps existing customer sendMail behavior", async () => {
-    authenticate().mockResolvedValueOnce({ ok: true, status: 202 });
-    await operationalProvider().sendMessage({ ...operationalInput, trackDelivery: false, replyToProviderMessageId: null });
-    const body = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(body.message.ccRecipients).toEqual([{ emailAddress: { address: "must-not-inherit@example.test" } }]);
+  const customerInput = { ...operationalInput, trackDelivery: false, replyToProviderMessageId: "inbound-message",
+    inReplyTo: "<parent@example.test>", references: "<original@example.test>", subject: "Re: [AIT-100001] Diseño" };
+  const mimeRequest = () => Buffer.from(fetchMock.mock.calls[1][1].body, "base64").toString();
+
+  it("replies with MIME attachments using Mail.Send and retains the submitted message identity", async () => {
+    authenticate().mockResolvedValueOnce({ status: 202 }).mockImplementationOnce(async (url: string) => {
+      const filter = new URL(url).searchParams.get("$filter")!;
+      return { ok: true, json: async () => ({ value: [{ id: "real-sent-id", internetMessageId: filter.split("'")[1], conversationId: "real-thread" }] }) };
+    });
+    const result = await operationalProvider().sendMessage(customerInput);
+    expect(result).toMatchObject({ providerMessageId: "real-sent-id", conversationId: "real-thread" });
+    expect(fetchMock.mock.calls[1][0]).toContain("/messages/inbound-message/reply");
+    expect(fetchMock.mock.calls[1][1].headers["Content-Type"]).toBe("text/plain");
+    expect(mimeRequest()).toContain(`Message-ID: ${result.internetMessageId}`);
+    expect(mimeRequest()).toContain("In-Reply-To: <parent@example.test>");
+    expect(mimeRequest()).toContain("References: <original@example.test>\r\n <parent@example.test>");
+    expect(mimeRequest()).toContain("Cc: <must-not-inherit@example.test>");
+    expect(mimeRequest()).toContain("Content-ID: <photo>");
+    expect(mimeRequest()).toContain(Buffer.from(customerInput.bodyHtml).toString("base64"));
+    expect(mimeRequest()).toContain(Buffer.from("photo").toString("base64"));
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("createReply"))).toBe(true);
+  });
+
+  it("does not resend or lose acceptance when Sent Items has not indexed the message", async () => {
+    authenticate().mockResolvedValueOnce({ status: 202 }).mockRejectedValueOnce(new Error("lookup unavailable"));
+    const result = await operationalProvider().sendMessage(customerInput);
+    expect(result.internetMessageId).toMatch(/^<[^>]+@example.test>$/);
+    expect(result.conversationId).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, request]) => request.method === "POST")).toHaveLength(2); // token + send
+  });
+
+  it.each([403, 404, 500])("never falls back to unrelated sendMail after reply HTTP %s", async (status) => {
+    authenticate().mockResolvedValueOnce({ status });
+    await expect(operationalProvider().sendMessage(customerInput)).rejects.toMatchObject({ outcome: status === 500 ? "UNKNOWN" : "NOT_SENT" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain("/reply");
+  });
+
+  it("uses explicit public recipients and RFC references for forwarded ingestion mailboxes", async () => {
+    authenticate().mockResolvedValueOnce({ status: 202 }).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    await operationalProvider().sendMessage({ ...customerInput, mailboxEmailAddress: "ingestion@example.test" });
+    expect(fetchMock.mock.calls[1][0]).toBe("https://graph.microsoft.com/v1.0/users/support%40example.test/sendMail");
+    expect(mimeRequest()).toContain("From: <support@example.test>");
+    expect(mimeRequest()).toContain("To: <specialist@example.test>");
+    expect(mimeRequest()).toContain("In-Reply-To: <parent@example.test>");
+    expect(mimeRequest()).not.toContain("ingestion@example.test");
+  });
+
+  it("also preserves threading for replies without files and new manual-ticket email", async () => {
+    authenticate().mockResolvedValueOnce({ status: 202 }).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    await operationalProvider().sendMessage({ ...customerInput, attachments: [], replyToProviderMessageId: null });
+    expect(fetchMock.mock.calls[1][0]).toContain("/sendMail");
+    expect(mimeRequest()).toContain("In-Reply-To: <parent@example.test>");
+    expect(mimeRequest()).toContain("multipart/alternative");
+  });
+
+  it("rejects injected recipients before any Microsoft request", async () => {
+    await expect(operationalProvider().sendMessage({ ...customerInput, to: ["client@example.test\r\nBcc: other@example.test"] })).rejects.toMatchObject({ outcome: "NOT_SENT" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("projects full HTML/plain-text bodies instead of the truncated preview", async () => {

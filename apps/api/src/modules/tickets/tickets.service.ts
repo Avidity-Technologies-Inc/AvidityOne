@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from "@nestjs/common";
 import { MailDeliveryStatus, MessageDirection, MessageVisibility, Prisma, TicketPriority, TicketSource, TicketStatus, TicketWorkflowTrigger } from "@prisma/client";
 import { TicketAttachmentsService } from "../ticket-attachments/ticket-attachments.service";
+import { messageReferences, replyReferences, ticketMailSubject } from "../mailboxes/providers/mail-threading";
+import { MailDeliveryError } from "../mailboxes/providers/mail-delivery.error";
 import { MailAttachment } from "../mailboxes/providers/mail-provider.interface";
 import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
@@ -1384,7 +1386,7 @@ export class TicketsService {
     return { ticket: result.ticket, message: result.message };
   }
 
-  async hasExistingInboundConversation(input: Pick<CreateInboundEmailTicketInput, "organizationId" | "subject" | "bodyText" | "emailConversationId" | "inReplyTo" | "references">) {
+  async hasExistingInboundConversation(input: Pick<CreateInboundEmailTicketInput, "organizationId" | "senderEmail" | "subject" | "bodyText" | "emailConversationId" | "inReplyTo" | "references">) {
     return Boolean(await this.findExistingTicketForInbound(input as CreateInboundEmailTicketInput));
   }
 
@@ -2112,7 +2114,6 @@ export class TicketsService {
       if (!requesterEmail) {
         throw new BadRequestException("A public reply requires a requester email address. Add a requester before sending.");
       }
-      const hasProviderThread = Boolean(latestInboundMessage?.emailMessageId || latestInboundMessage?.emailInternetMessageId);
       try {
         sendResult = await this.mailDelivery.sendTicketReply({
           organizationId: user.organizationId,
@@ -2120,15 +2121,11 @@ export class TicketsService {
           mailboxId: ticket.mailboxId,
           to: [requesterEmail],
           cc: deliveredCcEmails,
-          subject: ticket.subject.startsWith("Re:")
-            ? ticket.subject
-            : hasProviderThread
-              ? `Re: ${ticket.subject}`
-              : `Re: [${ticket.ticketNumber}] ${ticket.subject}`,
-          bodyHtml: sanitizedBodyHtml ?? `<p>${this.escapeHtml(input.bodyText).replace(/\n/g, "<br>")}</p>`,
-          bodyText: input.bodyText,
-          inReplyTo: latestInboundMessage?.emailInternetMessageId ?? latestInboundMessage?.emailMessageId ?? null,
-          references: latestInboundMessage?.emailReferences ?? latestInboundMessage?.emailInternetMessageId ?? null,
+          subject: ticketMailSubject(/^re:/i.test(ticket.subject) ? ticket.subject : `Re: ${ticket.subject}`, ticket.ticketNumber),
+          bodyHtml: `${sanitizedBodyHtml ?? `<p>${this.escapeHtml(input.bodyText).replace(/\n/g, "<br>")}</p>`}<p>Ticket: ${this.escapeHtml(ticket.ticketNumber)}</p>`,
+          bodyText: `${input.bodyText}\n\nTicket: ${ticket.ticketNumber}`,
+          inReplyTo: latestInboundMessage?.emailInternetMessageId ?? null,
+          references: replyReferences(latestInboundMessage?.emailReferences, latestInboundMessage?.emailInternetMessageId).join(" ") || null,
           replyToProviderMessageId: latestInboundMessage?.emailMessageId ?? null,
           attachmentIds: input.attachmentIds
         });
@@ -2143,7 +2140,9 @@ export class TicketsService {
             error: error instanceof Error ? error.message.slice(0, 500) : "Unknown delivery error"
           }
         });
-        throw new ServiceUnavailableException("The email could not be delivered. No public reply was saved.");
+        throw new ServiceUnavailableException(error instanceof MailDeliveryError && error.outcome === "UNKNOWN"
+          ? "Microsoft may have accepted this email, but delivery could not be confirmed. Check Sent Items before sending again. No public reply was saved."
+          : "The email could not be delivered. No public reply was saved.");
       }
       if (!sendResult) {
         await this.auditLogs.create({
@@ -2169,6 +2168,8 @@ export class TicketsService {
         emailMessageId: sendResult?.providerMessageId ?? null,
         emailInternetMessageId: sendResult?.internetMessageId ?? null,
         emailConversationId: sendResult?.conversationId ?? latestInboundMessage?.emailConversationId ?? null,
+        inReplyTo: sendsPublicEmail ? latestInboundMessage?.emailInternetMessageId ?? null : null,
+        emailReferences: sendsPublicEmail ? replyReferences(latestInboundMessage?.emailReferences, latestInboundMessage?.emailInternetMessageId).join(" ") || null : null,
         ccEmails: deliveredCcEmails,
         notifiedUserIds,
         suppressOperationalEmail: isInternal && action === "save_note",
@@ -2284,79 +2285,57 @@ export class TicketsService {
   }
 
   private async findExistingTicketForInbound(input: CreateInboundEmailTicketInput) {
-    const messageReferences = this.extractMessageReferences(input.references);
-    if (input.inReplyTo?.trim()) {
-      messageReferences.push(input.inReplyTo.trim());
+    const scope = { organizationId: input.organizationId, deletedAt: null };
+    // Match the direct parent first, then ancestors from newest to oldest. A recent
+    // unrelated update must not outrank an exact message reference.
+    const references = [...new Set([
+      ...messageReferences(input.inReplyTo).reverse(),
+      ...messageReferences(input.references).reverse()
+    ])].slice(0, 50);
+    for (const reference of references) {
+      const ticket = await this.prisma.ticket.findFirst({
+        where: { ...scope, OR: [{ messages: { some: { emailInternetMessageId: reference } } }] },
+        orderBy: { createdAt: "asc" }
+      });
+      if (ticket) return ticket;
     }
 
-    const uniqueMessageReferences = [...new Set(messageReferences)];
-    const ticketNumber = this.extractTicketNumber(`${input.subject}\n${input.bodyText ?? ""}`);
-    const matchers: Prisma.TicketWhereInput[] = [];
-
+    const sender = input.senderEmail?.trim().toLowerCase();
+    const participant: Prisma.TicketWhereInput = { OR: [
+      { senderEmail: { equals: sender, mode: "insensitive" } },
+      { contact: { email: { equals: sender, mode: "insensitive" } } },
+      { conversationParticipants: { some: { email: { equals: sender, mode: "insensitive" }, isActive: true } } },
+      { messages: { some: { visibility: "PUBLIC", OR: [
+        { senderEmail: { equals: sender, mode: "insensitive" } }, { ccEmails: { has: sender } }
+      ] } } }
+    ] };
+    const subjectNumber = this.extractTicketNumber(input.subject);
+    if (subjectNumber && sender) {
+      const ticket = await this.prisma.ticket.findFirst({ where: { ...scope, ticketNumber: subjectNumber, AND: [participant] } });
+      if (ticket) return ticket;
+    }
     if (input.emailConversationId?.trim()) {
-      matchers.push({
-        messages: {
-          some: {
-            emailConversationId: input.emailConversationId.trim()
-          }
-        }
+      const ticket = await this.prisma.ticket.findFirst({
+        where: { ...scope, messages: { some: { emailConversationId: input.emailConversationId.trim() } } },
+        orderBy: { createdAt: "asc" }
       });
+      if (ticket) return ticket;
     }
-
-    if (uniqueMessageReferences.length > 0) {
-      matchers.push({
-        messages: {
-          some: {
-            emailInternetMessageId: { in: uniqueMessageReferences }
-          }
-        }
-      });
+    const bodyNumber = this.extractTicketNumber(input.bodyText ?? "");
+    if (bodyNumber && sender) {
+      return this.prisma.ticket.findFirst({ where: { ...scope, ticketNumber: bodyNumber, AND: [participant] } });
     }
-
-    if (ticketNumber) {
-      matchers.push({ ticketNumber });
-    }
-
-    if (matchers.length === 0) {
-      return null;
-    }
-
-    return this.prisma.ticket.findFirst({
-      where: {
-        organizationId: input.organizationId,
-        deletedAt: null,
-        OR: matchers
-      },
-      orderBy: { updatedAt: "desc" }
-    });
+    return null;
   }
 
   private shouldReopenFromInbound(status: TicketStatus) {
     return status === TicketStatus.CLOSED || status === TicketStatus.RESOLVED || status === TicketStatus.CANCELLED;
   }
 
-  private extractMessageReferences(value: string | null | undefined) {
-    if (!value) {
-      return [];
-    }
-
-    const references = new Set<string>();
-    for (const match of value.match(/<[^>]+>/g) ?? []) {
-      references.add(match.trim());
-    }
-
-    for (const token of value.split(/\s+/)) {
-      const normalized = token.trim();
-      if (normalized.includes("@")) {
-        references.add(normalized);
-      }
-    }
-
-    return [...references];
-  }
-
   private extractTicketNumber(value: string) {
-    return value.match(/\b[A-Z]{2,10}-\d{3,}\b/i)?.[0]?.toUpperCase() ?? null;
+    const numbers = [...new Set((value.match(/\b[A-Z]{2,10}-\d{3,}\b/gi) ?? []).map((number) => number.toUpperCase()))];
+    // Multiple ticket mentions in a forwarded history are ambiguous.
+    return numbers.length === 1 ? numbers[0] : null;
   }
 
   private async recordUnknownSenderDomain(

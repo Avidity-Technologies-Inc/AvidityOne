@@ -1,5 +1,13 @@
 # Project Handoff
 
+## Ticket Reply Threading — 2026-09-23
+
+- Authorized correction from clean canonical main at `367354e`. Production evidence confirmed that attachment replies fell back from denied draft creation to unthreaded sendMail, causing a client reply to AIT-100645 to create AIT-100673.
+- MIME replies now carry HTML/text, attachments, CID images, a unique Internet Message-ID and parent references using existing Mail.Send. No silent second-send fallback or additional permission. A bounded readback retrieves sent metadata when indexed; failure retains the submitted RFC ID and logs pending correlation without resending.
+- Ticket numbers are included in outbound subject/body; inbound parent references outrank other evidence, number-only fallback checks established participants, and same-subject requests are not guessed together. Existing direct staff replies/[Closed], reopen and merge flows remain in place. Historical duplicate tickets are not automatically merged or replayed.
+- API checks/build, 223 tests in 39 suites (28 separate QC/activity DB cases skipped), independent MIME parser and four isolated deployment/recovery checks passed. No dependency/schema/environment changes or unsolicited live test mail. Publication and production deployment authorized, pending at commit time; live Outlook acceptance remains a user check.
+- Deploy with `scripts/deploy-ticket-email-threading.sh <full-release-sha>` from reviewed production `367354e`; it manages both dependent services and restores the previous API runtime on failure. See [threading diagnosis, behavior and validation](docs/TICKET_EMAIL_THREADING_2026-09-23.md).
+
 ## Direct Ticket Email Replies — 2026-09-21
 
 - Authorized follow-up from clean canonical `main` at `daedfde`. New operational replies execute directly: a first-line `[Closed]` records the reply and closes the ticket through the existing ticket workflow, with no confirmation request. Public replies and internal notes retain their own permissions and delivery boundaries. Current sender, mailbox, organization, membership and password-change restrictions remain checked; forwarded sender substitution is rejected.

@@ -585,7 +585,7 @@ describe("TicketsService", () => {
     expect(deliveredHtml).toContain("width:500px");
     expect(deliveredHtml).toContain("width:26px");
     expect(deliveredHtml).not.toContain("<script");
-    expect(prisma.ticketMessage.create).toHaveBeenCalledWith({ data: expect.objectContaining({ bodyHtml: signedHtml, sanitizedBodyHtml: deliveredHtml }) });
+    expect(prisma.ticketMessage.create).toHaveBeenCalledWith({ data: expect.objectContaining({ bodyHtml: signedHtml, sanitizedBodyHtml: deliveredHtml.replace(/<p>Ticket: AIT-100001<\/p>$/, "") }) });
 
     expect(prisma.ticket.update).toHaveBeenCalledWith({
       where: { id: "ticket-1" },

@@ -53,6 +53,8 @@ else: raise RuntimeError(name)
 '''
 
 class TransportDeploymentTests(unittest.TestCase):
+    script_name = "deploy-ticket-email-transport.sh"
+    backup_prefix = "ticket-email-transport-backup"
     def run_deployment(self, failure='', previous='518a3b64f5f30924da514df478a455d30e1d1e53'):
         with tempfile.TemporaryDirectory(prefix='avidity-deploy-test-') as directory:
             root = Path(directory)
@@ -70,9 +72,9 @@ class TransportDeploymentTests(unittest.TestCase):
                 path = bins / name
                 path.write_text(STUB)
                 path.chmod(0o755)
-            script = (ROOT / 'scripts/deploy-ticket-email-transport.sh').read_text()
+            script = (ROOT / 'scripts' / self.script_name).read_text()
             script = script.replace('app=/opt/avidity/app', f'app={app}')
-            script = script.replace('/opt/avidity/ticket-email-transport-backup.', f'{root}/backup.')
+            script = script.replace(f'/opt/avidity/{self.backup_prefix}.', f'{root}/backup.')
             script = script.replace("[[ $EUID -eq 0 ]] || { echo 'Run as root (sudo).'; exit 1; }", ': # isolated test, no privileges')
             target = root / 'deploy.sh'
             target.write_text(script)

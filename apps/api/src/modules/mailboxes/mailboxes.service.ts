@@ -612,6 +612,7 @@ export class MailboxesService implements OnModuleInit, OnModuleDestroy {
         const existingTicketConversation = this.ticketsService.hasExistingInboundConversation
           ? await this.ticketsService.hasExistingInboundConversation({
               organizationId: mailbox.organizationId,
+              senderEmail: message.from.email,
               subject: message.subject,
               bodyText: message.bodyText,
               emailConversationId: message.conversationId,

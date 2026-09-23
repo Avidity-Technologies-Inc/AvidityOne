@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { MailDeliveryError } from "./mail-delivery.error";
 import { emailText } from "../../ticket-email/ticket-email.policy";
-import { Injectable, InternalServerErrorException, NotImplementedException } from "@nestjs/common";
+import { Injectable, InternalServerErrorException, Logger, NotImplementedException } from "@nestjs/common";
+import { buildReplyMime } from "./mail-threading";
 import { ConfigService } from "@nestjs/config";
 import {
   GetMessageAttachmentsInput,
@@ -17,6 +18,8 @@ import {
 
 @Injectable()
 export class MicrosoftGraphMailProvider implements MailProvider {
+  private readonly logger = new Logger(MicrosoftGraphMailProvider.name);
+
   constructor(private readonly config: ConfigService) {}
 
   async syncInboundMessages(input: SyncInboundMessagesInput): Promise<SyncInboundMessagesResult> {
@@ -40,113 +43,58 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     }
 
     if (input.trackDelivery) return this.sendTrackedMessage(input);
+    const messageId = `<${randomUUID()}@${(input.fromAddress || input.mailboxEmailAddress).split("@")[1]}>`;
+    let body: string;
+    try {
+      for (const file of input.attachments ?? []) this.ensureSmallGraphAttachment(file.originalFilename, file.contentBytes.length);
+      body = Buffer.from(buildReplyMime(input, messageId, randomUUID())).toString("base64");
+    } catch {
+      throw new MailDeliveryError("Email could not be prepared. Check recipients, message headers and attachments. Nothing was sent.", "NOT_SENT");
+    }
     const token = await this.getAccessToken(input);
-    const sendAsAddress = input.fromAddress || input.mailboxEmailAddress;
-    const attachments = input.attachments ?? [];
-
-    if (input.replyToProviderMessageId) {
-      const mailboxUser = encodeURIComponent(input.mailboxEmailAddress);
-      const messageId = encodeURIComponent(input.replyToProviderMessageId);
-      let fallbackToSendMail = false;
-
-      if (attachments.length > 0) {
-        try {
-          const draft = await this.graphPostJson<GraphDraftMessage>(
-            `https://graph.microsoft.com/v1.0/users/${mailboxUser}/messages/${messageId}/createReply`,
-            token,
-            {
-              message: {
-                ccRecipients: input.cc?.map((address) => ({
-                  emailAddress: { address }
-                })),
-                body: {
-                  contentType: "HTML",
-                  content: input.bodyHtml
-                }
-              }
-            }
-          );
-
-          for (const attachment of attachments) {
-            this.ensureSmallGraphAttachment(attachment.originalFilename, attachment.sizeBytes);
-            await this.graphPostJson(
-              `https://graph.microsoft.com/v1.0/users/${mailboxUser}/messages/${encodeURIComponent(draft.id)}/attachments`,
-              token,
-              this.toGraphFileAttachment(attachment)
-            );
-          }
-
-          await this.graphFetchNoBody(`https://graph.microsoft.com/v1.0/users/${mailboxUser}/messages/${encodeURIComponent(draft.id)}/send`, token, null);
-
-          return {
-            providerMessageId: draft.id,
-            internetMessageId: draft.internetMessageId ?? null,
-            conversationId: draft.conversationId ?? input.inReplyTo ?? null
-          };
-        } catch (error) {
-          if (!this.isGraphAccessDenied(error)) {
-            throw error;
-          }
-          fallbackToSendMail = true;
+    const sendAs = input.fromAddress || input.mailboxEmailAddress;
+    // A forwarded ingestion mailbox must not become the sender or receive the reply.
+    // MIME References also preserve linkage when the public sending mailbox differs.
+    const nativeReply = input.replyToProviderMessageId && sendAs.toLowerCase() === input.mailboxEmailAddress.toLowerCase();
+    const endpoint = nativeReply
+      ? `messages/${encodeURIComponent(input.replyToProviderMessageId!)}/reply`
+      : "sendMail";
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sendAs)}/${endpoint}`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+        body, signal: AbortSignal.timeout(60_000)
+      });
+    } catch {
+      this.logger.warn(`mail.threaded_send.uncertain mailbox=${input.mailboxId}`);
+      throw new MailDeliveryError("Microsoft send request was interrupted. Inspect Sent Items before retrying; the email may have been accepted.", "UNKNOWN");
+    }
+    if (response.status !== 202) {
+      this.logger.warn(`mail.threaded_send.rejected mailbox=${input.mailboxId} status=${response.status}`);
+      const confirmed = response.status >= 400 && response.status < 500 && response.status !== 408;
+      throw new MailDeliveryError(`Microsoft returned HTTP ${response.status}. ${confirmed ? "Nothing was sent." : "Inspect Sent Items before retrying."}`, confirmed ? "NOT_SENT" : "UNKNOWN");
+    }
+    // A readback failure must never turn accepted mail into a retry/second email.
+    // Retain the RFC Message-ID submitted in MIME even if Sent Items is not yet indexed.
+    try {
+      const query = new URLSearchParams({
+        "$filter": `internetMessageId eq '${messageId.replace(/'/g, "''")}'`,
+        "$select": "id,internetMessageId,conversationId", "$top": "2"
+      });
+      const readback = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sendAs)}/mailFolders/sentitems/messages?${query}`, {
+        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2000)
+      });
+      if (readback.ok) {
+        const data = await readback.json() as { value?: Array<{ id: string; internetMessageId: string; conversationId?: string }> };
+        if (data.value?.length === 1 && data.value[0].internetMessageId === messageId) {
+          const sent = data.value[0];
+          return { providerMessageId: sent.id, internetMessageId: sent.internetMessageId, conversationId: sent.conversationId ?? null };
         }
       }
-
-      if (!fallbackToSendMail) {
-        await this.graphFetchNoBody(`https://graph.microsoft.com/v1.0/users/${mailboxUser}/messages/${messageId}/reply`, token, {
-          message: {
-            ccRecipients: input.cc?.map((address) => ({
-              emailAddress: { address }
-            })),
-            body: {
-              contentType: "HTML",
-              content: input.bodyHtml
-            }
-          }
-        });
-
-        const sentAt = Date.now();
-        return {
-          providerMessageId: `graph-reply-${sentAt}`,
-          internetMessageId: null,
-          conversationId: input.inReplyTo ?? null
-        };
-      }
-    }
-
-    const endpointUser = encodeURIComponent(sendAsAddress);
-    const message = {
-      subject: input.subject,
-      body: {
-        contentType: "HTML",
-        content: input.bodyHtml
-      },
-      toRecipients: input.to.map((address) => ({
-        emailAddress: { address }
-      })),
-      ccRecipients: input.cc?.map((address) => ({
-        emailAddress: { address }
-      })),
-      attachments: attachments.length ? attachments.map((attachment) => this.toGraphFileAttachment(attachment)) : undefined,
-      replyTo: input.replyToAddress
-        ? [
-            {
-              emailAddress: { address: input.replyToAddress }
-            }
-          ]
-        : undefined
-    };
-
-    await this.graphFetchNoBody(`https://graph.microsoft.com/v1.0/users/${endpointUser}/sendMail`, token, {
-      message,
-      saveToSentItems: true
-    });
-
-    const sentAt = Date.now();
-    return {
-      providerMessageId: `graph-send-${sentAt}`,
-      internetMessageId: null,
-      conversationId: input.inReplyTo ?? null
-    };
+    } catch { /* Accepted mail remains accepted when the read-only lookup is unavailable. */ }
+    this.logger.warn(`mail.threaded_send.readback_pending mailbox=${input.mailboxId} message=${messageId}`);
+    return { providerMessageId: `graph-send-${randomUUID()}`, internetMessageId: messageId, conversationId: null };
   }
 
   private async sendTrackedMessage(input: SendMessageInput): Promise<SendMessageResult> {
@@ -387,48 +335,6 @@ export class MicrosoftGraphMailProvider implements MailProvider {
     return response.json() as Promise<T>;
   }
 
-  private async graphFetchNoBody(url: string, token: string, body: unknown): Promise<void> {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: body === null ? undefined : JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const details = await response.text();
-      throw new InternalServerErrorException(
-        `Microsoft Graph request failed with status ${response.status}${details ? `: ${details.slice(0, 500)}` : "."}`
-      );
-    }
-  }
-
-  private isGraphAccessDenied(error: unknown) {
-    return error instanceof InternalServerErrorException && error.message.includes("ErrorAccessDenied");
-  }
-
-  private async graphPostJson<T = unknown>(url: string, token: string, body: unknown): Promise<T> {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const details = await response.text();
-      throw new InternalServerErrorException(
-        `Microsoft Graph request failed with status ${response.status}${details ? `: ${details.slice(0, 500)}` : "."}`
-      );
-    }
-
-    return response.json() as Promise<T>;
-  }
-
   private toGraphFileAttachment(attachment: {
     originalFilename: string;
     mimeType: string;
@@ -626,11 +532,6 @@ interface GraphInternetMessageHeader {
   value: string;
 }
 
-interface GraphDraftMessage {
-  id: string;
-  internetMessageId?: string | null;
-  conversationId?: string | null;
-}
 
 interface GraphAttachmentsResponse {
   "@odata.nextLink"?: string;
