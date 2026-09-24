@@ -15,7 +15,7 @@ as_app() { runuser -u avidity -- "$@"; }
 [[ $(as_app git branch --show-current) == main ]] || { echo 'Expected main; stop and inspect.'; exit 1; }
 [[ -z $(as_app git status --porcelain) ]] || { echo 'Preserve and review local server changes before deploying.'; exit 1; }
 previous=$(as_app git rev-parse HEAD)
-[[ $previous == "$base" || $previous == "$release" ]] || { echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1; }
+[[ $previous == "$base" || $previous == 677b069d495f13199627ff23c64f66e19ea3a899 || $previous == "$release" ]] || { echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1; }
 as_app git cat-file -e "$release^{commit}"
 as_app git merge-base --is-ancestor "$base" "$release"
 as_app git merge-base --is-ancestor "$release" origin/main

@@ -75,3 +75,17 @@
 .operations-workspace .operations-section-heading p { font-size: 13px; line-height: 1.45; margin-top: 4px; }
 .operations-workspace .operations-section-heading { padding: 14px 16px; }
 .system-status-clock.unknown .system-status-dot { background: var(--text-muted); box-shadow: none; }
+
+/* QC is an optional fifth control; an inflexible four-column grid clipped the range selector. */
+.operations-workspace .operations-toolbar { flex-wrap: wrap; }
+.operations-workspace .operations-toolbar-controls { display: flex; flex: 1 1 780px; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.operations-workspace .operations-toolbar-controls .segmented-control { flex: 0 0 auto; max-width: 100%; }
+.operations-workspace .operations-toolbar-controls .segmented-control button { white-space: nowrap; flex-shrink: 0; }
+.operations-workspace .operations-search { flex: 1 1 160px; width: 210px; max-width: 240px; }
+@media (max-width: 1120px) {
+  .operations-workspace .operations-toolbar-controls { flex-basis: auto; justify-content: flex-start; }
+}
+@media (max-width: 700px) {
+  .operations-workspace .operations-toolbar-controls { width: 100%; }
+  .operations-workspace .operations-search { max-width: none; }
+}

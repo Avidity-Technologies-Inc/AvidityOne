@@ -46,3 +46,11 @@ Completeness currently uses projected full collections with UI pagination. Large
 - Isolated deployment tests passed for success, build failure and failed health-check recovery. Both API and web are restored together; the web service depends on the API service.
 - `scripts/deploy-operational-ui.sh <full-release-sha>` requires root on avidityhelpdesk, clean main at the reviewed baseline or retry release, published ancestry, unchanged dependencies/schema, healthy services and expected runtime artifacts. It checks migration status without applying migrations; backs up source/runtime; builds with the existing production environment loaded without NODE_OPTIONS; starts and checks both services and all three public domains. On failure it restores the prior runtime without resetting Git or touching database/environment. The script prints a recovery directory and final release SHA.
 - Publication and production deployment are authorized. Do not infer deployed status merely from this document or a Git commit; verify the final SHA, clean checkout, services, endpoints and authenticated pages after deployment.
+
+## Production verification and visual follow-up
+
+Release `677b069d495f13199627ff23c64f66e19ea3a899` deployed successfully on September 24. Independent inspection confirmed that exact clean checkout, both systemd services active, API health OK and web HTTP 200. The deployment also verified the three public domains. Recovery: `/opt/avidity/operational-ui-backup.SCacl9NF`. Authenticated Operations displayed real work counts and the activity agenda; Clients and Dashboard loaded their real data.
+
+The real administrator view exposed an existing four-column Operations toolbar grid receiving a fifth conditional QC control, compressing the range selector. The follow-up replaces that fixed grid with wrapping flex controls and adds a browser regression with QC access enabled. The deployment guard explicitly accepts the verified `677b069` checkout for this follow-up.
+
+GitHub reported dependency alerts during push (35 total, including 2 critical at that time). These are platform-reported alerts, not independently validated findings in this UX release; no dependency upgrade or vulnerability scan was included. Review them separately using the repository's security/dependency workflow.
