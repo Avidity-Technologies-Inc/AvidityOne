@@ -144,6 +144,7 @@ export function ProjectsWorkspace() {
   const [dependencyProjectId, setDependencyProjectId] = useState("");
   const [projectView, setProjectView] = useState<ProjectView>("PORTFOLIO");
   const [timelineRange, setTimelineRange] = useState<TimelineRange>("90");
+  const [clientFilter, setClientFilter] = useState(searchParams.get("clientId") ?? "ALL");
   const [projectQuery, setProjectQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | "ALL">("ALL");
   const [healthFilter, setHealthFilter] = useState<ProjectHealth | "ALL">("ALL");
@@ -407,6 +408,7 @@ export function ProjectsWorkspace() {
     const entries: TimelineEntry[] = [];
 
     for (const project of data?.items ?? []) {
+      if (clientFilter !== "ALL" && project.client?.id !== clientFilter) continue;
       if (project.targetDate) {
         entries.push({ id: `${project.id}:target`, projectId: project.id, projectName: project.name, date: project.targetDate, kind: "TARGET", title: "Project target", status: project.status, overdue: new Date(project.targetDate) < today && isIncomplete(project.status) });
       }
@@ -424,7 +426,7 @@ export function ProjectsWorkspace() {
     }
 
     return entries.filter((entry) => entry.overdue || (new Date(entry.date) >= today && new Date(entry.date) <= rangeEnd)).sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime());
-  }, [data, timelineRange]);
+  }, [clientFilter, data, timelineRange]);
 
   const showProjectInPortfolio = (projectId: string) => {
     const project = data?.items.find((item) => item.id === projectId) ?? null;
@@ -507,6 +509,7 @@ export function ProjectsWorkspace() {
 
     return (data?.items ?? [])
       .filter((project) => {
+      if (clientFilter !== "ALL" && project.client?.id !== clientFilter) return false;
         const searchable = `${project.name} ${project.description ?? ""} ${project.client?.name ?? "Internal"} ${project.owner ? `${project.owner.firstName} ${project.owner.lastName}` : "Unassigned"}`.toLowerCase();
         return (!query || searchable.includes(query))
           && (statusFilter === "ALL" || project.status === statusFilter)
@@ -521,7 +524,7 @@ export function ProjectsWorkspace() {
           : String(leftValue).localeCompare(String(rightValue));
         return projectSortDirection === "asc" ? comparison : -comparison;
       });
-  }, [data, healthFilter, ownerFilter, projectQuery, projectSortDirection, projectSortKey, statusFilter]);
+  }, [clientFilter, data, healthFilter, ownerFilter, projectQuery, projectSortDirection, projectSortKey, statusFilter]);
 
   const totalProjectPages = projectPageSize === "ALL" ? 1 : Math.max(1, Math.ceil(filteredProjects.length / projectPageSize));
   const safeProjectPage = Math.min(projectPage, totalProjectPages);
@@ -573,13 +576,13 @@ export function ProjectsWorkspace() {
         <section className="panel projects-portfolio-panel">
           <div className="projects-portfolio-heading">
             <div><h2>Projects</h2><p>{filteredProjects.length} of {data?.items.length ?? 0} planning records</p></div>
-            <div className="projects-portfolio-filters">
+            <div className="projects-portfolio-filters"><select className="input" aria-label="Filter projects by client" value={clientFilter} onChange={event => { setClientFilter(event.target.value); setProjectPage(1); }}><option value="ALL">All clients</option>{data?.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select>
               <Filter size={15} aria-hidden="true" />
               <label className="projects-search"><Search size={14} aria-hidden="true" /><input value={projectQuery} onChange={(event) => { setProjectQuery(event.target.value); setProjectPage(1); }} placeholder="Search projects" aria-label="Search projects" /></label>
               <select className="input" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value as ProjectStatus | "ALL"); setProjectPage(1); }} aria-label="Filter projects by status"><option value="ALL">All statuses</option>{(["PLANNING", "ACTIVE", "ON_HOLD", "COMPLETED", "CANCELLED"] as ProjectStatus[]).map((status) => <option value={status} key={status}>{label(status)}</option>)}</select>
               <select className="input" value={healthFilter} onChange={(event) => { setHealthFilter(event.target.value as ProjectHealth | "ALL"); setProjectPage(1); }} aria-label="Filter projects by health"><option value="ALL">All health</option>{(["ON_TRACK", "AT_RISK", "OFF_TRACK"] as ProjectHealth[]).map((health) => <option value={health} key={health}>{label(health)}</option>)}</select>
               <select className="input" value={ownerFilter} onChange={(event) => { setOwnerFilter(event.target.value); setProjectPage(1); }} aria-label="Filter projects by owner"><option value="ALL">All owners</option><option value="UNASSIGNED">Unassigned</option>{(data?.assignableUsers ?? []).map((owner) => <option value={owner.id} key={owner.id}>{owner.firstName} {owner.lastName}</option>)}</select>
-              <button className="button secondary icon-button" type="button" onClick={() => { setProjectQuery(""); setStatusFilter("ALL"); setHealthFilter("ALL"); setOwnerFilter("ALL"); setProjectPage(1); }} title="Clear filters" aria-label="Clear project filters"><X size={15} aria-hidden="true" /></button>
+              <button className="button secondary icon-button" type="button" onClick={() => { setClientFilter("ALL"); setProjectQuery(""); setStatusFilter("ALL"); setHealthFilter("ALL"); setOwnerFilter("ALL"); setProjectPage(1); }} title="Clear filters" aria-label="Clear project filters"><X size={15} aria-hidden="true" /></button>
             </div>
           </div>
           <div className="projects-table-scroll">
@@ -601,7 +604,7 @@ export function ProjectsWorkspace() {
                     <td><button className="button secondary projects-open-button" type="button" onClick={() => showProjectInPortfolio(project.id)}><Eye size={14} aria-hidden="true" /> Open</button></td>
                   </tr>;
                 })}
-                {!loading && !visibleProjects.length ? <tr><td className="projects-table-empty" colSpan={10}>{data?.items.length ? "No projects match the current filters." : "No projects have been created."}</td></tr> : null}
+                {!loading && !visibleProjects.length ? <tr><td className="projects-table-empty" colSpan={10}>{data?.items.length ? "No projects match the current filters." : "No projects have been created. Start with a project plan, assign its owner, then add milestones and link existing tickets or event requests. Creative QC deliverables can reference that project."}</td></tr> : null}
               </tbody>
             </table>
           </div>

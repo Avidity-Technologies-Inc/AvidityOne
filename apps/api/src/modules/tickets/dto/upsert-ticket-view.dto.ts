@@ -4,6 +4,8 @@ import {
   IsArray,
   IsBoolean,
   IsDefined,
+  IsDateString,
+  ValidateIf,
   IsIn,
   IsInt,
   IsObject,
@@ -17,6 +19,15 @@ import {
 } from "class-validator";
 
 export class TicketViewStateDto {
+  @IsOptional()
+  @ValidateIf((state) => state.updatedBefore !== "")
+  @IsDateString()
+  updatedBefore?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  highPriority?: boolean;
+
   @IsOptional()
   @IsInt()
   @Min(1)

@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Operational Accuracy and Interface Refinement — 2026-09-24
+
+- Authorized consolidation from local/GitHub and independently inspected production `f0a6ca1`. ISFA was already corrected by the user; no client merging or historical repair.
+- Dashboard metric/filter parity and organization-local calendar buckets; Operations complete active-work aggregation, identity-based workload and scheduled ticket activities; full client directory with search/pagination/permission-aware actions and contextual links; RMM normalization/fair scheduling; event-task lifecycle context; compact shared presentation, QC readiness and public-form accessibility.
+- No schema, dependency, environment, credentials or QC activation changes. Calendar/mail delivery and ticket composer behavior remain intact.
+- See [release behavior, validation, remaining audit items and deployment](docs/OPERATIONAL_REFINEMENT_2026-09-24.md). Guarded native deployment: `scripts/deploy-operational-ui.sh <full-release-sha>`. Publication and production deployment authorized; completion is verified separately after commit.
+
 ## Ticket Composer Formatting and Preferences — 2026-09-23
 
 - Follow-up authorized from clean canonical `main` and verified production `d131af9`. Clipboard modes remove foreign dark backgrounds by default, with safe source-format and plain-text alternatives. Expanded formatting and a real link editor retain the existing compact composer and reachable send controls.

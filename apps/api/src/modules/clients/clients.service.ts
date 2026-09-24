@@ -33,8 +33,7 @@ export class ClientsService {
           }
         }
       },
-      orderBy: { name: "asc" },
-      take: 50
+      orderBy: [{ name: "asc" }, { id: "asc" }]
     });
   }
 

@@ -83,7 +83,7 @@ export function SystemStatusClock() {
     return () => window.clearInterval(interval);
   }, []);
 
-  const status = failed ? "error" : summary?.status ?? "warning";
+  const status = failed ? "error" : summary?.status ?? "unknown";
   const timezone = summary?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const dateFormat = summary?.dateFormat ?? "MMM dd, yyyy";
   const timeFormat = summary?.timeFormat ?? "12h";

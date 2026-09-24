@@ -100,7 +100,7 @@ const statuses: EventStatus[] = ["NEW", "UNDER_REVIEW", "SCHEDULED", "ASSIGNED",
 const taskStatuses: TaskStatus[] = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE", "CANCELLED"];
 const priorities: Priority[] = ["LOW", "NORMAL", "HIGH", "URGENT", "CRITICAL"];
 const simplifiedStatusOptions: Array<{ status: EventStatus; label: string; description: string }> = [
-  { status: "UNDER_REVIEW", label: "Confirm", description: "Acknowledge that Avidity will review and coordinate the request." },
+  { status: "UNDER_REVIEW", label: "Review", description: "Acknowledge that Avidity will review and coordinate the request." },
   { status: "SCHEDULED", label: "Schedule", description: "Mark the event as scheduled on the operations calendar." },
   { status: "IN_PROGRESS", label: "Start", description: "Move active work into progress." },
   { status: "WAITING_ON_CLIENT", label: "Waiting", description: "Pause while waiting for requester details or approval." },
@@ -109,7 +109,7 @@ const simplifiedStatusOptions: Array<{ status: EventStatus; label: string; descr
 
 const eventStatusLabels: Record<EventStatus, string> = {
   NEW: "New",
-  UNDER_REVIEW: "Confirmed",
+  UNDER_REVIEW: "Under Review",
   SCHEDULED: "Scheduled",
   ASSIGNED: "Assigned",
   IN_PROGRESS: "In Progress",
@@ -238,6 +238,7 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
   const detailPage = Boolean(detailTrackingNumber);
   const [activeTab, setActiveTab] = useState<"requests" | "myTasks">("requests");
   const [requests, setRequests] = useState<EventServiceRequest[]>([]);
+  const [showTaskHistory, setShowTaskHistory] = useState(false);
   const [myTasks, setMyTasks] = useState<EventServiceTaskAssignment[]>([]);
   const [myTaskDrafts, setMyTaskDrafts] = useState<Record<string, { status: TaskStatus; comment: string }>>({});
   const [selectedId, setSelectedId] = useState<string | null>(detailTrackingNumber ?? null);
@@ -261,6 +262,9 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const activeMyTasks = myTasks.filter(task => !["DONE", "CANCELLED"].includes(task.status) && !["COMPLETED", "CANCELLED", "CONVERTED_TO_TICKET"].includes(task.request.status));
+  const visibleMyTasks = showTaskHistory ? myTasks : activeMyTasks;
 
   const summary = useMemo(() => ({
     total: requests.length,
@@ -719,7 +723,7 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
       <section className="dashboard-kpi-grid event-kpi-grid event-compact-kpi-grid">
         <div className="dashboard-kpi-card event-kpi-card"><ClipboardList size={18} /><span>Total Requests</span><strong>{summary.total}</strong><small>Current filtered view</small></div>
         <div className="dashboard-kpi-card event-kpi-card"><CalendarDays size={18} /><span>New</span><strong>{summary.newRequests}</strong><small>Needs review</small></div>
-        <div className="dashboard-kpi-card event-kpi-card"><UsersRound size={18} /><span>Assigned Specialists</span><strong>{summary.assigned}</strong><small>Direct assignments</small></div>
+        <div className="dashboard-kpi-card event-kpi-card"><UsersRound size={18} /><span>Assigned requests</span><strong>{summary.assigned}</strong><small>Includes task assignments</small></div>
         <div className="dashboard-kpi-card event-kpi-card"><CheckCircle2 size={18} /><span>Completed</span><strong>{summary.completed}</strong><small>Finished events</small></div>
       </section>
 
@@ -729,7 +733,7 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
         </button>
         <button className={activeTab === "myTasks" ? "active" : ""} type="button" onClick={() => setActiveTab("myTasks")}>
           My Tasks
-          <span>{myTasks.length}</span>
+          <span>{activeMyTasks.length}</span>
         </button>
       </div>
 
@@ -1164,6 +1168,7 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
               <span>Refresh</span>
             </button>
           </div>
+          <label className="audit-toggle"><input type="checkbox" checked={showTaskHistory} onChange={event => setShowTaskHistory(event.target.checked)} /> Include completed tasks and tasks from closed or cancelled events ({myTasks.length - activeMyTasks.length})</label>
           <div className="table-scroll event-table-scroll">
             <table className="tickets-table event-task-table">
               <thead>
@@ -1178,12 +1183,12 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
                 </tr>
               </thead>
               <tbody>
-                {myTasks.length === 0 ? (
+                {visibleMyTasks.length === 0 ? (
                   <tr>
-                    <td colSpan={7}><span className="muted">{loading ? "Loading tasks..." : "No event tasks are assigned to you."}</span></td>
+                    <td colSpan={7}><span className="muted">{loading ? "Loading tasks..." : "No active event tasks. Include history to review completed or cancelled work."}</span></td>
                   </tr>
                 ) : null}
-                {myTasks.map((task) => {
+                {visibleMyTasks.map((task) => {
                   const draftTask = myTaskDrafts[task.id] ?? { status: task.status, comment: "" };
                   return (
                     <tr key={task.id}>
@@ -1193,7 +1198,7 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
                       </td>
                       <td data-label="Event">
                         <strong className="event-task-meta">{task.request.trackingNumber}</strong>
-                        <span className="muted event-task-description">{task.request.eventName}</span>
+                        <span className="muted event-task-description">{task.request.eventName}</span><span className="status-pill">Event: {eventStatusLabel(task.request.status)}</span>
                       </td>
                       <td data-label="Date / Time">
                         <strong className="event-task-meta">{formatDate(task.request.eventDate)}</strong>
@@ -1211,7 +1216,7 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
                       <td data-label="Action">
                         <div className="event-task-actions">
                           <button className="button secondary" type="button" onClick={() => openRequest(task.request)}>Open Event</button>
-                          <button className="button" type="button" onClick={() => void saveMyTask(task.id)} disabled={busy === `my-task-${task.id}`}>Save</button>
+                          <button className="button" type="button" onClick={() => void saveMyTask(task.id)} disabled={busy === `my-task-${task.id}` || (draftTask.status === task.status && !draftTask.comment.trim())}>Save</button>
                         </div>
                       </td>
                     </tr>

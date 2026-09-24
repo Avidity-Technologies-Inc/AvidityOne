@@ -1,5 +1,5 @@
 import { TicketPriority, TicketSource, TicketStatus } from "@prisma/client";
-import { IsEnum, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsDateString, IsEnum, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
 export class ListTicketsQueryDto {
   @IsOptional()
@@ -44,6 +44,14 @@ export class ListTicketsQueryDto {
   @IsString()
   @MaxLength(2000)
   statusDefinitionIds?: string;
+
+  @IsOptional()
+  @IsDateString()
+  updatedBefore?: string;
+
+  @IsOptional()
+  @IsIn(["true"])
+  highPriority?: string;
 
   @IsOptional()
   @IsEnum(TicketPriority)

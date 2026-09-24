@@ -10988,8 +10988,7 @@ button.operations-summary-card {
   background: var(--success);
 }
 
-.report-activity-bars .closed,
-.dashboard-chart-legend .closed {
+.report-activity-bars .closed {
   background: #64748b;
 }
 

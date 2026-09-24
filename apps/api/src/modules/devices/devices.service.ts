@@ -847,10 +847,10 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       this.pickString(record, ["site_name", "siteName", "location"]) ??
       this.pickString(siteRecord ?? {}, ["name", "site_name"]);
     const operatingSystem = this.pickString(record, ["operating_system", "operatingSystem", "os", "platform", "plat"]);
-    const osVersion = this.pickString(record, ["os_version", "osVersion", "version", "build"]);
+    const osVersion = this.pickString(record, ["os_version", "osVersion", "os_build", "osBuild"]);
     const statusSource = this.pickString(record, ["status", "agent_status", "monitoring_status"]) ?? "";
     const online = this.pickBoolean(record, ["online", "is_online", "isOnline"]);
-    const status = online === true || /online|active|ok/i.test(statusSource) ? DeviceStatus.ACTIVE : DeviceStatus.INACTIVE;
+    const status = online === true || (online === null && /^(online|active|ok)$/i.test(statusSource.trim())) ? DeviceStatus.ACTIVE : DeviceStatus.INACTIVE;
     const lastSeenAt = this.pickDate(record, ["last_seen", "lastSeen", "last_checkin", "lastCheckin", "updated_at", "updatedAt"]);
     const serialNumber = this.pickString(record, ["serial_number", "serialNumber", "serial"]);
     const assetTag = this.pickString(record, ["asset_tag", "assetTag", "asset"]);
@@ -945,7 +945,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
           continue;
         }
 
-        if (await this.shouldDeferRemoteAccessAutoSync(settings.organizationId, now)) {
+        if (await this.shouldDeferRemoteAccessAutoSync(settings.organizationId, now, settings.remoteAccessLastSyncAt, settings.remoteAccessAutoSyncIntervalMinutes ?? RMM_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES)) {
           await this.deferRemoteAccessAutoSync(settings.organizationId, "Automatic RMM sync deferred to avoid overlapping priority sync work.");
           continue;
         }
@@ -986,7 +986,11 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async shouldDeferRemoteAccessAutoSync(organizationId: string, now: Date) {
+  private async shouldDeferRemoteAccessAutoSync(organizationId: string, now: Date, lastAttemptAt: Date | null = null, intervalMinutes = RMM_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES) {
+    // Yield to observed mailbox locks; future due times must not starve inventory.
+    const activeMailboxes = await this.prisma.mailbox.count({ where: { organizationId, isActive: true, autoSyncEnabled: true, autoSyncLockedAt: { gte: new Date(now.getTime() - 10 * 60_000) } } });
+    if (activeMailboxes > 0) return true;
+    if (!lastAttemptAt || now.getTime() - lastAttemptAt.getTime() >= Math.max(intervalMinutes, RMM_AUTO_SYNC_DEFER_MINUTES) * 2 * 60_000) return false;
     const priorityWindowEnd = new Date(now.getTime() + RMM_SYNC_PRIORITY_WINDOW_MS);
     const recentMailboxLockCutoff = new Date(now.getTime() - 10 * 60_000);
     const [priorityMailboxes, dueReports] = await Promise.all([
@@ -1194,7 +1198,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         disks: this.normalizeDisks(record)
       },
       agent: {
-        version: normalized?.osVersion ?? this.pickString(record, ["agent_version", "agentVersion", "version", "agentver"]),
+        version: this.pickString(record, ["agent_version", "agentVersion", "version", "agentver"]),
         bootTime: this.pickString(record, ["boot_time", "bootTime", "boot_time_utc", "bootTimeUtc"]),
         uptime: this.pickString(record, ["uptime", "uptime_text", "uptimeText"]),
         lastResponse:

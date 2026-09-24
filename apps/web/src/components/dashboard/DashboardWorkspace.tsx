@@ -41,6 +41,8 @@ interface DashboardTicket {
 }
 
 interface DashboardStats {
+  timeZone?: string;
+  staleBefore?: string;
   summary: {
     totalOpen: number;
     newTickets: number;
@@ -323,8 +325,8 @@ function ActivityChart({ items }: { items: DashboardStats["activityByDay"] }) {
         {items.map((item, index) => (
           <div className="dashboard-activity-day" key={item.date} title={`${item.label}: ${item.created} created, ${item.closed} closed`}>
             <div className="dashboard-activity-bars">
-              <span className="created" style={{ height: `${Math.max(4, (item.created / maxValue) * 100)}%` }} />
-              <span className="closed" style={{ height: `${Math.max(4, (item.closed / maxValue) * 100)}%` }} />
+              <span className="created" style={{ height: `${Math.max(0, (item.created / maxValue) * 100)}%` }} />
+              <span className="closed" style={{ height: `${Math.max(0, (item.closed / maxValue) * 100)}%` }} />
             </div>
             {index % 5 === 0 || index === items.length - 1 ? <small>{item.label}</small> : <small aria-hidden="true" />}
           </div>
@@ -381,8 +383,8 @@ function SpecialistTrendChart({ items }: { items: NonNullable<DashboardStats["sp
             {points.map((point, index) => (
               <div className="dashboard-activity-day" key={point.date} title={`${point.label}: ${point.assigned} assigned, ${point.closed} closed`}>
                 <div className="dashboard-activity-bars">
-                  <span className="assigned" style={{ height: `${Math.max(4, (point.assigned / maxValue) * 100)}%` }} />
-                  <span className="closed" style={{ height: `${Math.max(4, (point.closed / maxValue) * 100)}%` }} />
+                  <span className="assigned" style={{ height: `${Math.max(0, (point.assigned / maxValue) * 100)}%` }} />
+                  <span className="closed" style={{ height: `${Math.max(0, (point.closed / maxValue) * 100)}%` }} />
                 </div>
                 {index % 5 === 0 || index === points.length - 1 ? <small>{point.label}</small> : <small aria-hidden="true" />}
               </div>
@@ -417,7 +419,7 @@ function HourChart({ items }: { items: DashboardStats["createdByHour"] }) {
       </div>
       <div className="dashboard-hour-chart" role="img" aria-label="Tickets created by hour">
         {items.map((item) => (
-          <span key={item.hour} title={`${item.label}: ${item.count}`} style={{ height: `${Math.max(4, (item.count / maxValue) * 100)}%` }} />
+          <span key={item.hour} title={`${item.label}: ${item.count}`} style={{ height: `${Math.max(0, (item.count / maxValue) * 100)}%` }} />
         ))}
       </div>
       <div className="dashboard-hour-axis">
@@ -489,10 +491,10 @@ function DeviceOverviewCard({ stats }: { stats: DashboardDeviceStats | null }) {
   const maxOs = Math.max(1, ...stats.byOperatingSystem.map((item) => item.count));
   const deviceCards = [
     { title: "Total Devices", value: stats.summary.total, tone: "primary", icon: Monitor, note: "Managed assets", href: deviceHref({}) },
-    { title: "Tactical Active", value: stats.summary.active, tone: "success", icon: CheckCircle2, note: "RMM active", href: deviceHref({}) },
-    { title: "Tactical Inactive", value: stats.summary.inactive, tone: "muted", icon: Clock3, note: "RMM inactive", href: deviceHref({}) },
-    { title: "Servers", value: stats.summary.servers, tone: "info", icon: Server, note: "Server assets", href: deviceHref({}) },
-    { title: "Workstations", value: stats.summary.workstations, tone: "neutral", icon: HardDrive, note: "Desktop/laptop", href: deviceHref({}) }
+    { title: "Tactical Active", value: stats.summary.active, tone: "success", icon: CheckCircle2, note: "RMM active", href: deviceHref({ status: "ACTIVE" }) },
+    { title: "Tactical Inactive", value: stats.summary.inactive, tone: "muted", icon: Clock3, note: "RMM inactive", href: deviceHref({ status: "INACTIVE" }) },
+    { title: "Servers", value: stats.summary.servers, tone: "info", icon: Server, note: "Server assets", href: deviceHref({ deviceTab: "servers" }) },
+    { title: "Workstations", value: stats.summary.workstations, tone: "neutral", icon: HardDrive, note: "Desktop/laptop", href: deviceHref({ deviceTab: "workstations" }) }
   ];
 
   return (
@@ -523,7 +525,7 @@ function DeviceOverviewCard({ stats }: { stats: DashboardDeviceStats | null }) {
                 const activeWidth = Math.max(0, (client.active / maxClient) * 100);
                 const inactiveWidth = Math.max(0, (client.inactive / maxClient) * 100);
                 return (
-                  <Link className="dashboard-device-client-row" href={deviceHref({})} key={client.clientId}>
+                  <Link className="dashboard-device-client-row" href={deviceHref({ clientId: client.clientId })} key={client.clientId}>
                     <span>
                       <strong>{client.name}</strong>
                       <small>{client.servers} servers - {client.workstations} workstations</small>
@@ -905,10 +907,10 @@ export function DashboardWorkspace() {
       { title: "New Tickets", value: stats.summary.newTickets, href: ticketHref({ statuses: ["NEW"] }), tone: "info", icon: Inbox, note: "Needs triage" },
       { title: "Closed Tickets", value: stats.summary.closedTickets, href: ticketHref({ statuses: ["CLOSED"] }), tone: "success", icon: CheckCircle2, note: "Completed" },
       { title: "Unassigned", value: stats.summary.unassignedTickets, href: ticketHref({ scope: "unassigned", statuses: activeStatuses }), tone: "warning", icon: UserX, note: "Needs owner" },
-      { title: "High Priority", value: stats.summary.highPriorityTickets, href: ticketHref({ priority: "HIGH", statuses: activeStatuses }), tone: "danger", icon: AlertTriangle, note: "Escalated" },
+      { title: "High Priority", value: stats.summary.highPriorityTickets, href: ticketHref({ highPriority: "true", statuses: activeStatuses }), tone: "danger", icon: AlertTriangle, note: "High, urgent and critical" },
       { title: "Awaiting Customer", value: stats.summary.awaitingCustomer, href: ticketHref({ statuses: ["WAITING_ON_CUSTOMER"] }), tone: "neutral", icon: Clock3, note: "External wait" },
       { title: "Awaiting Technician", value: stats.summary.awaitingTechnician, href: ticketHref({ statuses: ["WAITING_ON_TECHNICIAN"] }), tone: "info", icon: Clock3, note: "Internal action" },
-      { title: "No Recent Update", value: stats.summary.noRecentUpdate, href: ticketHref({ statuses: activeStatuses, sortBy: "updatedAt", sortDirection: "asc" }), tone: "muted", icon: Zap, note: "7+ days idle" }
+      { title: "No Recent Update", value: stats.summary.noRecentUpdate, href: ticketHref({ statuses: activeStatuses, updatedBefore: stats.staleBefore, sortBy: "updatedAt", sortDirection: "asc" }), tone: "muted", icon: Zap, note: "7+ days idle" }
     ];
   }, [stats]);
 
@@ -982,7 +984,7 @@ export function DashboardWorkspace() {
   const statusItems = stats.byStatus.map((item) => ({ label: item.label, count: item.count, href: ticketHref(item.filter) }));
   const priorityItems = stats.byPriority.map((item) => ({ label: label(item.priority), count: item.count, href: ticketHref({ priority: item.filter.priority }) }));
   const sourceItems = stats.bySource.map((item) => ({ label: label(item.source), count: item.count, href: ticketHref({ source: item.filter.source }) }));
-  const clientItems = stats.byClient.map((item) => ({ label: item.name, count: item.count, href: item.clientId ? ticketHref({ clientId: item.clientId }) : undefined }));
+  const clientItems = stats.byClient.map((item) => ({ label: item.name, count: item.count, href: item.clientId ? ticketHref({ clientId: item.clientId, statuses: activeStatuses }) : undefined }));
   const workloadItems = stats.workload.map((item) => ({ label: item.name, count: item.count, href: ticketHref({ assignedUserId: item.filter.assignedUserId, statuses: activeStatuses }) }));
   const agingItems = (stats.agingBuckets ?? []).map((item) => ({ label: item.label, count: item.count }));
   const staleSpecialistItems = (stats.staleBySpecialist ?? []).map((item) => ({
@@ -1000,7 +1002,7 @@ export function DashboardWorkspace() {
         return (
           <>
             <div className="dashboard-section-heading">
-              <h2>Tickets</h2>
+              <h2>Tickets</h2><small className="muted">Calendar charts: {stats.timeZone ?? "UTC"}</small>
             </div>
             <section className="dashboard-kpi-grid dashboard-ticket-kpi-grid">
               {summaryCards.map((card) => (

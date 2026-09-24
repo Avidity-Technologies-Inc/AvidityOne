@@ -1,0 +1,77 @@
+/* Shared operational density. Keep editor and email-content geometry independent. */
+.compact-page-header {
+  min-height: 0;
+  padding: 14px 18px;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.compact-page-header h1 { margin: 0; font-size: 24px; line-height: 1.25; }
+.compact-page-header p { margin: 5px 0 0; font-size: 13px; line-height: 1.5; }
+.compact-page-header .page-eyebrow,
+.compact-page-header .device-page-eyebrow { display: none; }
+.clients-summary-grid, .profile-summary-grid, .knowledge-summary-grid { gap: 10px; }
+.client-summary-card, .profile-summary-card, .knowledge-summary-card { min-height: 0; padding: 12px 16px; gap: 4px; }
+.client-summary-card strong, .profile-summary-card strong, .knowledge-summary-card strong { font-size: 23px; }
+.operations-summary-card small { white-space: normal; overflow: visible; line-height: 1.4; }
+.audit-table-toolbar, .audit-context-links, .applied-filter-chips {
+  display: flex; gap: 10px; align-items: end; flex-wrap: wrap; padding: 10px 0;
+}
+.audit-table-toolbar label { display: grid; gap: 5px; font-size: 13px; }
+.audit-table-toolbar label:first-child { flex: 1; min-width: 200px; }
+.audit-table-pagination { display: flex; align-items: center; justify-content: end; gap: 12px; padding: 12px; border-top: 1px solid var(--line); }
+.audit-toggle { display: flex; gap: 8px; align-items: center; padding: 10px 0; font-size: 13px; }
+.audit-agenda { display: grid; gap: 10px; }
+.audit-agenda article { display: flex; gap: 16px; justify-content: space-between; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.audit-agenda article > div { display: grid; gap: 4px; min-width: 0; }
+.audit-agenda small { color: var(--text-muted); }
+.audit-agenda time { font-variant-numeric: tabular-nums; }
+.audit-agenda article a { overflow-wrap: anywhere; }
+
+/* The builder previously fell back to native browser styling. */
+.support-portal-config-panel :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  width: 100%; min-width: 0; min-height: 38px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--surface-raised); color: var(--text);
+  font: inherit; font-size: 13px;
+}
+.support-portal-config-panel textarea { min-height: 80px; resize: vertical; }
+.support-portal-config-panel button:not(.button) {
+  min-height: 32px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 7px; color: var(--text); background: var(--surface-raised); cursor: pointer;
+}
+.support-portal-config-panel button:disabled { opacity: .5; cursor: not-allowed; }
+.support-settings-grid label, .support-field-editor label { gap: 6px; font-size: 13px; line-height: 1.45; }
+.support-portal-config-panel :is(input, select, textarea, button):focus-visible {
+  outline: 2px solid var(--brand-primary); outline-offset: 2px;
+}
+
+/* Public forms use a light surface independently of the authenticated theme. */
+.public-event-hero, .public-support-hero { min-height: 0; gap: 16px; padding: 28px 24px 64px; }
+.public-event-hero h1, .public-support-hero h1 { font-size: clamp(28px, 3vw, 40px); line-height: 1.15; }
+.public-event-hero :is(p, span) { font-size: 16px; }
+.public-event-form-card { gap: 16px; padding: 24px; }
+.public-event-form-card .muted { color: #475569; }
+.public-event-form-card > .section-heading { text-align: left; justify-content: flex-start; padding-bottom: 0; }
+.public-event-form-card > .section-heading :is(h2, p) { margin-left: 0; }
+.public-event-form-card > .section-heading h2 { font-size: 22px; }
+
+@media (max-width: 760px) {
+  .compact-page-header { padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+  .compact-page-header h1 { font-size: 22px; }
+  .audit-table-toolbar label { width: 100%; }
+  .audit-agenda article { flex-direction: column; gap: 8px; }
+  .public-event-hero, .public-support-hero { gap: 12px; padding: 22px 18px 54px; }
+  .public-event-form-card { padding: 18px; }
+  .public-event-form-card > .section-heading h2 { font-size: 20px; }
+}
+
+.settings-nav-group > span { font-size: 11px; letter-spacing: .02em; }
+.settings-page .settings-nav button:hover:not(.active) { background: var(--surface); color: var(--text); box-shadow: none; }
+@media (min-width: 1000px) and (max-width: 1450px) {
+  .settings-page .settings-layout { grid-template-columns: 190px minmax(0, 1fr); }
+  .settings-page .settings-nav { padding: 6px; }
+}
+
+.operations-workspace .operations-section-heading h2 { font-size: 18px; line-height: 1.3; }
+.operations-workspace .operations-section-heading p { font-size: 13px; line-height: 1.45; margin-top: 4px; }
+.operations-workspace .operations-section-heading { padding: 14px 16px; }
+.system-status-clock.unknown .system-status-dot { background: var(--text-muted); box-shadow: none; }

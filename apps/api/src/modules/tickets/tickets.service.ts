@@ -26,6 +26,8 @@ import { UpdateTicketPlanningDto } from "./dto/update-ticket-planning.dto";
 import { UpdateTicketStateDto } from "./dto/update-ticket-state.dto";
 import { UpsertTicketViewDto } from "./dto/upsert-ticket-view.dto";
 
+import { localDay, reportRange, shiftDay } from "../reports/report-time";
+
 export interface CreateInboundEmailTicketInput {
   organizationId: string;
   mailboxId?: string | null;
@@ -207,7 +209,10 @@ export class TicketsService {
       deletedAt: null,
       status: { in: activeStatuses }
     };
-    const recentSince = this.daysAgo(29);
+    const calendarSettings = await this.prisma.systemSetting.findUnique({ where: { organizationId: user.organizationId }, select: { defaultTimezone: true } });
+    const timeZone = calendarSettings?.defaultTimezone ?? "UTC";
+    const range = reportRange({ period: "last30" }, timeZone);
+    const recentSince = range.start;
     const staleCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const now = new Date();
 
@@ -244,7 +249,7 @@ export class TicketsService {
           assignees: { none: {} }
         }
       }),
-      this.prisma.ticket.count({ where: { ...activeWhere, priority: TicketPriority.HIGH } }),
+      this.prisma.ticket.count({ where: { ...activeWhere, priority: { in: [TicketPriority.HIGH, TicketPriority.URGENT, TicketPriority.CRITICAL] } } }),
       this.prisma.ticket.count({ where: { ...baseWhere, status: TicketStatus.WAITING_ON_CUSTOMER } }),
       this.prisma.ticket.count({ where: { ...baseWhere, status: TicketStatus.WAITING_ON_TECHNICIAN } }),
       this.prisma.ticket.count({ where: { ...activeWhere, updatedAt: { lt: staleCutoff } } }),
@@ -266,7 +271,7 @@ export class TicketsService {
       }),
       this.prisma.ticket.groupBy({
         by: ["clientId"],
-        where: baseWhere,
+        where: activeWhere,
         _count: { _all: true },
         orderBy: { _count: { clientId: "desc" } },
         take: 8
@@ -345,13 +350,16 @@ export class TicketsService {
       }))
     );
     const specialistPerformance = await this.buildSpecialistPerformance(activeUsers, activeWhere, baseWhere, recentSince);
-    const specialistTrend = await this.buildSpecialistTrend(specialistPerformance.slice(0, 5), baseWhere, recentSince);
+    const specialistTrend = await this.buildSpecialistTrend(specialistPerformance.slice(0, 5), baseWhere, recentSince, timeZone, range.startDay);
     const [agingBuckets, staleBySpecialist] = await Promise.all([
       this.buildTicketAgingBuckets(activeWhere, now),
       this.buildStaleBySpecialist(activeUsers, activeWhere, staleCutoff)
     ]);
 
     return {
+      timeZone,
+      staleBefore: staleCutoff.toISOString(),
+      period: { startDay: range.startDay, endDay: range.endDay },
       summary: {
         totalOpen,
         newTickets,
@@ -388,18 +396,14 @@ export class TicketsService {
       staleBySpecialist,
       specialistPerformance,
       specialistTrend,
-      activityByDay: this.buildActivityByDay(recentCreatedTickets, recentClosedTickets),
-      createdByHour: this.buildCreatedByHour(recentCreatedTickets),
+      activityByDay: this.buildActivityByDay(recentCreatedTickets, recentClosedTickets, timeZone, range.startDay),
+      createdByHour: this.buildCreatedByHour(recentCreatedTickets, timeZone),
       insightTickets: {
         critical: criticalTickets.map((ticket) => this.toDashboardTicket(ticket)),
         unassigned: unassignedTicketList.map((ticket) => this.toDashboardTicket(ticket)),
         stale: staleTicketList.map((ticket) => this.toDashboardTicket(ticket))
       }
     };
-  }
-
-  private daysAgo(days: number) {
-    return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   }
 
   private dashboardTicketSelect() {
@@ -418,13 +422,13 @@ export class TicketsService {
     } satisfies Prisma.TicketSelect;
   }
 
-  private buildActivityByDay(createdTickets: Array<{ createdAt: Date }>, closedTickets: Array<{ closedAt: Date | null; updatedAt: Date }>) {
+  private buildActivityByDay(createdTickets: Array<{ createdAt: Date }>, closedTickets: Array<{ closedAt: Date | null; updatedAt: Date }>, timeZone = "UTC", startDay = shiftDay(localDay(new Date(), timeZone), -29)) {
     const buckets = Array.from({ length: 30 }, (_, index) => {
-      const date = this.daysAgo(29 - index);
-      const key = this.dateBucketKey(date);
+      const key = shiftDay(startDay, index);
+      const date = new Date(`${key}T12:00:00Z`);
       return {
         date: key,
-        label: date.toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
+        label: date.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "2-digit" }),
         created: 0,
         closed: 0
       };
@@ -432,14 +436,14 @@ export class TicketsService {
     const bucketMap = new Map(buckets.map((bucket) => [bucket.date, bucket]));
 
     createdTickets.forEach((ticket) => {
-      const bucket = bucketMap.get(this.dateBucketKey(ticket.createdAt));
+      const bucket = bucketMap.get(localDay(ticket.createdAt, timeZone));
       if (bucket) {
         bucket.created += 1;
       }
     });
 
     closedTickets.forEach((ticket) => {
-      const bucket = bucketMap.get(this.dateBucketKey(ticket.closedAt ?? ticket.updatedAt));
+      const bucket = bucketMap.get(localDay(ticket.closedAt ?? ticket.updatedAt, timeZone));
       if (bucket) {
         bucket.closed += 1;
       }
@@ -448,10 +452,11 @@ export class TicketsService {
     return buckets;
   }
 
-  private buildCreatedByHour(createdTickets: Array<{ createdAt: Date }>) {
+  private buildCreatedByHour(createdTickets: Array<{ createdAt: Date }>, timeZone = "UTC") {
     const buckets = Array.from({ length: 24 }, (_, hour) => ({ hour, label: `${hour.toString().padStart(2, "0")}:00`, count: 0 }));
     createdTickets.forEach((ticket) => {
-      buckets[ticket.createdAt.getHours()].count += 1;
+      const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", hourCycle: "h23" }).format(ticket.createdAt));
+      buckets[hour].count += 1;
     });
     return buckets;
   }
@@ -501,7 +506,7 @@ export class TicketsService {
             OR: [{ assignedUserId: technician.id }, { assignees: { some: { userId: technician.id } } }]
           }
         }),
-        filter: { assignedUserId: technician.id, statuses: this.activeStatusFilter(), sortBy: "updatedAt", sortDirection: "asc" }
+        filter: { assignedUserId: technician.id, statuses: this.activeStatusFilter(), updatedBefore: staleCutoff.toISOString(), sortBy: "updatedAt", sortDirection: "asc" }
       }))
     );
 
@@ -599,7 +604,9 @@ export class TicketsService {
   private async buildSpecialistTrend(
     specialists: Array<{ userId: string; name: string }>,
     baseWhere: Prisma.TicketWhereInput,
-    recentSince: Date
+    recentSince: Date,
+    timeZone: string,
+    startDay: string
   ) {
     return Promise.all(
       specialists.map(async (specialist) => {
@@ -629,7 +636,7 @@ export class TicketsService {
             orderBy: { updatedAt: "asc" }
           })
         ]);
-        const points = this.buildSpecialistTrendPoints(assignedTickets, closedTickets);
+        const points = this.buildSpecialistTrendPoints(assignedTickets, closedTickets, timeZone, startDay);
 
         return {
           userId: specialist.userId,
@@ -640,13 +647,13 @@ export class TicketsService {
     );
   }
 
-  private buildSpecialistTrendPoints(createdTickets: Array<{ createdAt: Date }>, closedTickets: Array<{ closedAt: Date | null; updatedAt: Date }>) {
+  private buildSpecialistTrendPoints(createdTickets: Array<{ createdAt: Date }>, closedTickets: Array<{ closedAt: Date | null; updatedAt: Date }>, timeZone = "UTC", startDay = shiftDay(localDay(new Date(), timeZone), -29)) {
     const buckets = Array.from({ length: 30 }, (_, index) => {
-      const date = this.daysAgo(29 - index);
-      const key = this.dateBucketKey(date);
+      const key = shiftDay(startDay, index);
+      const date = new Date(`${key}T12:00:00Z`);
       return {
         date: key,
-        label: date.toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
+        label: date.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "2-digit" }),
         assigned: 0,
         closed: 0
       };
@@ -654,14 +661,14 @@ export class TicketsService {
     const bucketMap = new Map(buckets.map((bucket) => [bucket.date, bucket]));
 
     createdTickets.forEach((ticket) => {
-      const bucket = bucketMap.get(this.dateBucketKey(ticket.createdAt));
+      const bucket = bucketMap.get(localDay(ticket.createdAt, timeZone));
       if (bucket) {
         bucket.assigned += 1;
       }
     });
 
     closedTickets.forEach((ticket) => {
-      const bucket = bucketMap.get(this.dateBucketKey(ticket.closedAt ?? ticket.updatedAt));
+      const bucket = bucketMap.get(localDay(ticket.closedAt ?? ticket.updatedAt, timeZone));
       if (bucket) {
         bucket.closed += 1;
       }
@@ -674,10 +681,6 @@ export class TicketsService {
     return {
       OR: [{ assignedUserId: userId }, { assignees: { some: { userId } } }]
     };
-  }
-
-  private dateBucketKey(date: Date) {
-    return date.toISOString().slice(0, 10);
   }
 
   private toDashboardTicket(ticket: {
@@ -2960,7 +2963,7 @@ export class TicketsService {
     }
 
     if (query.scope === "unassigned") {
-      filters.push({ assignedUserId: null, assignedTeamId: null, assignedGroupId: null });
+      filters.push({ assignedUserId: null, assignedTeamId: null, assignedGroupId: null, assignees: { none: {} } });
     }
 
     if (query.assignedUserId) {
@@ -2999,6 +3002,9 @@ export class TicketsService {
     } else {
       filters.push({ status: { not: TicketStatus.MERGED } });
     }
+
+    if (query.updatedBefore) filters.push({ updatedAt: { lt: new Date(query.updatedBefore) } });
+    if (query.highPriority === "true") filters.push({ priority: { in: [TicketPriority.HIGH, TicketPriority.URGENT, TicketPriority.CRITICAL] } });
 
     if (query.priority) {
       filters.push({ priority: query.priority });

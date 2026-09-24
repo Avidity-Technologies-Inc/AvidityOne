@@ -1,6 +1,26 @@
 import { OperationsService, OperationsWorkItem } from "./operations.service";
 
 describe("OperationsService", () => {
+  it("keeps all active work and same-name specialists distinct, including group assignments", async () => {
+    const specialists = Array.from({ length: 14 }, (_, i) => ({ id: `user-${i}`, firstName: "Alex", lastName: "Example" }));
+    const tickets = Array.from({ length: 181 }, (_, i) => ({ id: `ticket-${i}`, ticketNumber: `AIT-${i}`, subject: "Synthetic work", status: "OPEN", priority: "NORMAL", targetDate: null, updatedAt: new Date(), client: null, assignedUser: specialists[i % 14], assignedTeam: null, assignedGroup: null, assignees: [{ user: specialists[i % 14] }] }));
+    const groupTicket = { ...tickets[0], id: "group-ticket", assignedUser: null, assignedGroup: { name: "Dispatch" }, assignees: [] };
+    const prisma = { ticket: { findMany: jest.fn().mockResolvedValue([...tickets, groupTicket]) }, eventServiceRequest: { findMany: jest.fn() }, eventServiceTask: { findMany: jest.fn() }, project: { findMany: jest.fn() }, ticketMeeting: { findMany: jest.fn().mockResolvedValue([{ id: "scheduled-activity" }]) } };
+    const service = new OperationsService(prisma as never, { getOperationsSettings: async () => ({ capacityBaseline: 12, capacityWarningPercent: 75, dueSoonDays: 7 }) } as never);
+    const overview = await service.overview({ id: "user-0", organizationId: "org", permissions: ["operations.view", "tickets.view", "ticket_meetings.view"] } as never);
+    expect(overview.items).toHaveLength(182);
+    expect(overview.summary.activeTickets).toBe(182);
+    expect(overview.summary.unassignedTickets).toBe(0);
+    expect(overview.workload).toHaveLength(14);
+    expect(overview.workload.reduce((sum, row) => sum + row.total, 0)).toBe(181);
+    expect(overview.agenda).toEqual([{ id: "scheduled-activity" }]);
+    expect(prisma.ticket.findMany.mock.calls[0][0]).not.toHaveProperty("take");
+    expect(prisma.eventServiceRequest.findMany).not.toHaveBeenCalled();
+    expect(prisma.eventServiceTask.findMany).not.toHaveBeenCalled();
+    expect(prisma.project.findMany).not.toHaveBeenCalled();
+    expect(prisma.ticketMeeting.findMany.mock.calls[0][0].where.organizationId).toBe("org");
+  });
+
   it("calculates specialist capacity independently for shared work", () => {
     const service = new OperationsService({} as never, {} as never);
     const workload = (service as unknown as { workload(items: OperationsWorkItem[], capacityBaseline: number, capacityWarningPercent: number): Array<{ owner: string; total: number; attention: number; capacityStatus: string }> }).workload(

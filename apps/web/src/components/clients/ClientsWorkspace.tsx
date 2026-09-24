@@ -1,4 +1,6 @@
 "use client";
+import Link from "next/link";
+import { usePermissions } from "@/lib/use-permissions";
 import { QcContextLink } from "@/components/qc/QcContextLink";
 
 import {
@@ -136,6 +138,10 @@ function requesterCount(client: Client): number {
 }
 
 export function ClientsWorkspace() {
+  const permissions = usePermissions();
+  const [clientSearch, setClientSearch] = useState("");
+  const [clientOrder, setClientOrder] = useState("asc");
+  const [clientPage, setClientPage] = useState(1);
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClientContacts, setSelectedClientContacts] = useState<Contact[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -152,6 +158,9 @@ export function ClientsWorkspace() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const matchingClients = useMemo(() => clients.filter(client => [client.name, client.shortName, ...client.domains.map(d => d.domain)].filter(Boolean).join(" ").toLowerCase().includes(clientSearch.trim().toLowerCase())).sort((a, b) => (clientOrder === "asc" ? 1 : -1) * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })), [clients, clientSearch, clientOrder]);
+  const clientPages = Math.max(1, Math.ceil(matchingClients.length / 25));
+  const visibleClients = matchingClients.slice((Math.min(clientPage, clientPages) - 1) * 25, Math.min(clientPage, clientPages) * 25);
   const selectedClient = useMemo(
     () => clients.find((client) => client.id === selectedClientId) ?? null,
     [clients, selectedClientId]
@@ -438,7 +447,7 @@ export function ClientsWorkspace() {
             <RefreshCcw size={16} aria-hidden="true" />
             <span>Refresh</span>
           </button>
-          <button className="button" type="button" onClick={openCreateClient}>
+          <button className="button" type="button" disabled={!permissions.includes("clients.create")} onClick={openCreateClient}>
             <Plus size={16} aria-hidden="true" />
             <span>Add Institution</span>
           </button>
@@ -476,6 +485,7 @@ export function ClientsWorkspace() {
             <span className="status-pill">{clients.length} total</span>
           </div>
 
+          <div className="audit-table-toolbar"><label>Search clients<input className="input" value={clientSearch} onChange={event => { setClientSearch(event.target.value); setClientPage(1); }} placeholder="Name or routing domain" /></label><label>Order<select className="input" value={clientOrder} onChange={event => { setClientOrder(event.target.value); setClientPage(1); }}><option value="asc">Name A–Z</option><option value="desc">Name Z–A</option></select></label><span>{matchingClients.length} matching clients</span></div>
           <div className="client-table-wrap">
             <table className="client-table">
               <thead>
@@ -493,12 +503,12 @@ export function ClientsWorkspace() {
                     <td className="client-table-state" colSpan={5}>Loading clients...</td>
                   </tr>
                 ) : null}
-                {!loading && clients.length === 0 ? (
+                {!loading && matchingClients.length === 0 ? (
                   <tr>
-                    <td className="client-table-state" colSpan={5}>No institutions yet. Use Add Institution to create the first one.</td>
+                    <td className="client-table-state" colSpan={5}>No matching clients. Adjust the search or add an institution if you have permission.</td>
                   </tr>
                 ) : null}
-                {clients.map((client) => (
+                {visibleClients.map((client) => (
                   <tr key={client.id}>
                     <td>
                       <button className="client-name-button" type="button" onClick={() => openClientDetail(client)}>
@@ -528,10 +538,10 @@ export function ClientsWorkspace() {
                         <button className="icon-button" type="button" title="Open institution" aria-label="Open institution" onClick={() => openClientDetail(client)}>
                           <Building2 size={16} aria-hidden="true" />
                         </button>
-                        <button className="icon-button" type="button" title="Edit institution" aria-label="Edit institution" onClick={() => openEditClient(client)}>
+                        <button className="icon-button" type="button" title="Edit institution" aria-label="Edit institution" disabled={!permissions.includes("clients.update")} onClick={() => openEditClient(client)}>
                           <Edit3 size={16} aria-hidden="true" />
                         </button>
-                        <button className="icon-button danger-icon" type="button" title="Deactivate institution" aria-label="Deactivate institution" onClick={() => deleteClient(client)} disabled={saving}>
+                        <button className="icon-button danger-icon" type="button" title="Deactivate institution" aria-label="Deactivate institution" onClick={() => deleteClient(client)} disabled={saving || !permissions.includes("clients.delete")}>
                           <Trash2 size={16} aria-hidden="true" />
                         </button>
                       </div>
@@ -541,6 +551,7 @@ export function ClientsWorkspace() {
               </tbody>
             </table>
           </div>
+          <div className="audit-table-pagination"><button className="button secondary" type="button" disabled={clientPage <= 1} onClick={() => setClientPage(p => p - 1)}>Previous</button><span>Page {Math.min(clientPage, clientPages)} of {clientPages}</span><button className="button secondary" type="button" disabled={clientPage >= clientPages} onClick={() => setClientPage(p => p + 1)}>Next</button></div>
         </div>
         ) : null}
 
@@ -563,12 +574,13 @@ export function ClientsWorkspace() {
                       <ArrowLeft size={16} aria-hidden="true" />
                       <span>Client Directory</span>
                     </button>
-                    <button className="button secondary" type="button" onClick={() => openEditClient(selectedClient)}>
+                    <button className="button secondary" type="button" disabled={!permissions.includes("clients.update")} onClick={() => openEditClient(selectedClient)}>
                       <Edit3 size={16} aria-hidden="true" />
                       <span>Edit Institution</span>
                     </button>
                   </div>
                 </div>
+                <nav className="audit-context-links" aria-label="Related client work">{permissions.includes("tickets.view") && <Link className="button secondary" href={`/tickets?clientId=${selectedClient.id}`}>Tickets</Link>}{permissions.includes("devices.view") && <Link className="button secondary" href={`/devices?clientId=${selectedClient.id}`}>Devices</Link>}{permissions.includes("projects.view") && <Link className="button secondary" href={`/projects?clientId=${selectedClient.id}`}>Projects</Link>}</nav>
                 <div className="client-detail-grid">
                   <button type="button" onClick={() => setActiveClientTab("domains")}>
                     <span>Routing domains</span>
@@ -638,9 +650,9 @@ export function ClientsWorkspace() {
                       </div>
                       <Globe2 size={18} aria-hidden="true" />
                     </div>
-                    <form className="inline-form" onSubmit={addDomain}>
+                    <form className="inline-form" onSubmit={addDomain} aria-label="Add routing domain">
                       <input className="input" placeholder="example.com" value={domain} onChange={(event) => setDomain(event.target.value)} required />
-                      <button className="button" type="submit" disabled={saving}>
+                      <button className="button" type="submit" disabled={saving || !permissions.includes("client_domains.create")}>
                         <Plus size={16} aria-hidden="true" />
                         <span>Add Domain</span>
                       </button>
@@ -656,10 +668,10 @@ export function ClientsWorkspace() {
                             </span>
                           </div>
                           <div className="row-actions">
-                            <button className="icon-button" type="button" title="Toggle verification" aria-label="Toggle verification" onClick={() => updateDomain(clientDomain, { isVerified: !clientDomain.isVerified })}>
+                            <button className="icon-button" type="button" title="Toggle verification" aria-label="Toggle verification" disabled={!permissions.includes("client_domains.update")} onClick={() => updateDomain(clientDomain, { isVerified: !clientDomain.isVerified })}>
                               <CheckCircle2 size={16} aria-hidden="true" />
                             </button>
-                            <button className="icon-button danger-icon" type="button" title="Deactivate domain" aria-label="Deactivate domain" onClick={() => deleteDomain(clientDomain)}>
+                            <button className="icon-button danger-icon" type="button" title="Deactivate domain" aria-label="Deactivate domain" disabled={!permissions.includes("client_domains.delete")} onClick={() => deleteDomain(clientDomain)}>
                               <Trash2 size={16} aria-hidden="true" />
                             </button>
                           </div>
@@ -676,7 +688,7 @@ export function ClientsWorkspace() {
                         <h2>Requesters</h2>
                         <p className="muted">Full requester list for {selectedClient.name}.</p>
                       </div>
-                      <button className="button secondary" type="button" onClick={openCreateContact}>
+                      <button className="button secondary" type="button" disabled={!permissions.includes("contacts.create")} onClick={openCreateContact}>
                         <UserPlus size={16} aria-hidden="true" />
                         <span>Add Requester</span>
                       </button>
@@ -733,10 +745,10 @@ export function ClientsWorkspace() {
                               </td>
                               <td>
                                 <div className="row-actions">
-                                  <button className="icon-button" type="button" title="Edit requester" aria-label="Edit requester" onClick={() => openEditContact(contact)}>
+                                  <button className="icon-button" type="button" title="Edit requester" aria-label="Edit requester" disabled={!permissions.includes("contacts.update")} onClick={() => openEditContact(contact)}>
                                     <Edit3 size={16} aria-hidden="true" />
                                   </button>
-                                  <button className="icon-button danger-icon" type="button" title="Delete requester" aria-label="Delete requester" onClick={() => deleteContact(contact)}>
+                                  <button className="icon-button danger-icon" type="button" title="Delete requester" aria-label="Delete requester" disabled={!permissions.includes("contacts.delete")} onClick={() => deleteContact(contact)}>
                                     <Trash2 size={16} aria-hidden="true" />
                                   </button>
                                 </div>

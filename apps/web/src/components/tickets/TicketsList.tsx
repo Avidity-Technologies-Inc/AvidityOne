@@ -126,6 +126,8 @@ interface ColumnDefinition {
 }
 
 interface TicketViewState {
+  updatedBefore: string;
+  highPriority: boolean;
   version: number;
   search: string;
   clientId: string;
@@ -194,7 +196,7 @@ const allColumns: ColumnDefinition[] = [
   { id: "subject", label: "Subject", sortable: "subject" },
   { id: "client", label: "Client", sortable: "client" },
   { id: "requester", label: "Requester" },
-  { id: "readState", label: "Read" },
+  { id: "readState", label: "Opened" },
   { id: "assignees", label: "Specialists" },
   { id: "team", label: "Team" },
   { id: "status", label: "Status", sortable: "status" },
@@ -344,6 +346,8 @@ function normalizeTicketViewState(value: unknown): TicketViewState {
       : [];
 
   return {
+    updatedBefore: typeof state.updatedBefore === "string" && Number.isFinite(Date.parse(state.updatedBefore)) ? new Date(state.updatedBefore).toISOString() : "",
+    highPriority: state.highPriority === true,
     version: TICKET_VIEW_VERSION,
     search: typeof state.search === "string" ? state.search.slice(0, 160) : "",
     clientId: normalizeUuidV4(state.clientId),
@@ -371,6 +375,8 @@ function ticketViewStateSignature(value: unknown) {
 }
 
 const ticketUrlFilterKeys = [
+  "updatedBefore",
+  "highPriority",
   "search",
   "clientId",
   "scope",
@@ -407,6 +413,8 @@ export function TicketsList() {
   const [ticketViews, setTicketViews] = useState<TicketView[]>([]);
   const [selectedViewId, setSelectedViewId] = useState("built-in:all");
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [updatedBefore, setUpdatedBefore] = useState("");
+  const [highPriority, setHighPriority] = useState(false);
   const [scope, setScope] = useState("all");
   const [assignedUserId, setAssignedUserId] = useState("");
   const [assignedTeamId, setAssignedTeamId] = useState("");
@@ -477,7 +485,7 @@ export function TicketsList() {
     [columnOrder, visibleColumns]
   );
 
-  const hasActiveFilters = Boolean(search || clientId || requester || selectedStatuses.length > 0 || priority || source || scope !== "all" || assignedUserId || assignedTeamId || externalSpecialistId);
+  const hasActiveFilters = Boolean(updatedBefore || highPriority || search || clientId || requester || selectedStatuses.length > 0 || priority || source || scope !== "all" || assignedUserId || assignedTeamId || externalSpecialistId);
   const selectedSavedView = selectedViewId.startsWith("saved:")
     ? ticketViews.find((view) => `saved:${view.id}` === selectedViewId) ?? null
     : null;
@@ -493,6 +501,8 @@ export function TicketsList() {
     setError(null);
     try {
       const params = new URLSearchParams();
+      if (updatedBefore) params.set("updatedBefore", updatedBefore);
+      if (highPriority) params.set("highPriority", "true");
       if (search.trim()) {
         params.set("search", search.trim().slice(0, 160));
       }
@@ -605,6 +615,8 @@ export function TicketsList() {
 
   function currentViewState(): TicketViewState {
     return {
+      updatedBefore,
+      highPriority,
       version: TICKET_VIEW_VERSION,
       search,
       clientId,
@@ -633,6 +645,8 @@ export function TicketsList() {
 
   function applyViewState(nextState: Partial<TicketViewState>) {
     const normalized = normalizeTicketViewState(nextState);
+    setUpdatedBefore(normalized.updatedBefore);
+    setHighPriority(normalized.highPriority);
     setSearch(normalized.search);
     setClientId(normalized.clientId);
     setScope(normalized.scope);
@@ -990,6 +1004,8 @@ export function TicketsList() {
     setExternalSpecialistId("");
     setRequester("");
     setSelectedStatuses([]);
+    setUpdatedBefore("");
+    setHighPriority(false);
     setPriority("");
     setSource("");
   }
@@ -1117,7 +1133,7 @@ export function TicketsList() {
       case "readState":
         return (
           <span className={`status-pill ${ticket.firstReadAt ? "read-pill" : "unread-pill"}`} title={ticket.firstReadBy ? `Opened by ${ticket.firstReadBy.firstName} ${ticket.firstReadBy.lastName}` : undefined}>
-            {ticket.firstReadAt ? "Read" : "Unread"}
+            {ticket.firstReadAt ? "Opened" : "Not opened"}
           </span>
         );
       case "assignees":
@@ -1215,6 +1231,9 @@ export function TicketsList() {
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
     const hasUrlFilters = hasExplicitTicketUrlFilters(searchParams);
+    const before = searchParams.get("updatedBefore");
+    if (before && Number.isFinite(Date.parse(before))) setUpdatedBefore(new Date(before).toISOString());
+    setHighPriority(searchParams.get("highPriority") === "true");
     const requestedView = searchParams.get("view")?.trim() ?? "";
     const initialSearch = searchParams.get("search")?.trim();
     const initialClientId = searchParams.get("clientId")?.trim();
@@ -1333,7 +1352,7 @@ export function TicketsList() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, clientId, scope, assignedUserId, assignedTeamId, externalSpecialistId, requester, selectedStatuses, priority, source, sortBy, sortDirection, trashMode, pageSize]);
+  }, [updatedBefore, highPriority, search, clientId, scope, assignedUserId, assignedTeamId, externalSpecialistId, requester, selectedStatuses, priority, source, sortBy, sortDirection, trashMode, pageSize]);
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -1357,7 +1376,7 @@ export function TicketsList() {
     }, 300);
     return () => window.clearTimeout(timeoutId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, clientId, scope, assignedUserId, assignedTeamId, externalSpecialistId, requester, selectedStatuses, priority, source, sortBy, sortDirection, trashMode, page, pageSize]);
+  }, [updatedBefore, highPriority, search, clientId, scope, assignedUserId, assignedTeamId, externalSpecialistId, requester, selectedStatuses, priority, source, sortBy, sortDirection, trashMode, page, pageSize]);
 
   useEffect(() => {
     void loadNewTicketContacts(newTicketClientId);
@@ -1446,6 +1465,7 @@ export function TicketsList() {
       </div>
       {error ? <div className="error-banner">{error}</div> : null}
       {viewNotice ? <div className="success-banner">{viewNotice}</div> : null}
+      {(updatedBefore || highPriority) ? <div className="applied-filter-chips" aria-label="Dashboard criteria">{updatedBefore ? <button type="button" className="button secondary compact-button" onClick={() => setUpdatedBefore("")}>Updated before {new Date(updatedBefore).toLocaleString()} <X size={14} /></button> : null}{highPriority ? <button type="button" className="button secondary compact-button" onClick={() => setHighPriority(false)}>High, urgent and critical <X size={14} /></button> : null}</div> : null}
       {showAdvancedFilters ? (
         <section className="panel tickets-toolbar-panel">
           <div className="tickets-filter-grid">

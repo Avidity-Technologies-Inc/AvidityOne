@@ -162,7 +162,7 @@ export function DevicesWorkspace() {
       const response = await apiFetch<DeviceSavedViewRecord[]>("/devices/views");
       setSavedViews(response);
       const defaultView = response.find((item) => item.isDefault);
-      if (defaultView && !selectedViewId) {
+      if (defaultView && !selectedViewId && !["search", "clientId", "status", "type", "deviceTab"].some((key) => new URLSearchParams(window.location.search).has(key))) {
         applySavedView(defaultView);
       }
     } catch {
@@ -346,6 +346,13 @@ export function DevicesWorkspace() {
   }, [query]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setSearch(params.get("search") ?? "");
+    setClientId(params.get("clientId") ?? "");
+    const initialStatus = params.get("status");
+    if (["ACTIVE", "INACTIVE", "RETIRED"].includes(initialStatus ?? "")) setStatus(initialStatus!);
+    const initialTab = params.get("deviceTab");
+    if (initialTab === "servers" || initialTab === "workstations") setDeviceTab(initialTab);
     void loadSavedViews();
   }, []);
 
@@ -360,7 +367,7 @@ export function DevicesWorkspace() {
           <div className="device-header-summary" aria-label="Device inventory summary">
             <span><strong>Devices:</strong> {totalDeviceCount}</span>
             <span><strong>Devices in this view:</strong> {loading ? "Loading..." : activeDevices.length}</span>
-            <span><strong>Last sync:</strong> {lastSyncMessage}</span>
+            <span><strong>Inventory status:</strong> {data?.remoteAccess.lastSyncStatus ?? "Not checked"} · Last sync attempt: {data?.remoteAccess.lastSyncAt ? new Date(data.remoteAccess.lastSyncAt).toLocaleString() : "No recorded sync"}</span><span className="muted">{lastSyncMessage} Device status reflects the last observation, not a live availability check.</span>
           </div>
         </div>
         <div className="button-row device-header-actions">

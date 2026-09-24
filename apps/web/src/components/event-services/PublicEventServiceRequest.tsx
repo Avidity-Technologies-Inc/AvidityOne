@@ -286,15 +286,15 @@ export function PublicEventServiceRequest() {
             <label><CalendarDays size={15} /> {dateField.label}{dateField.required ? " *" : ""}<input className="public-event-input" type="date" required={dateField.required} value={fieldValue(formData, "eventDate")} onChange={(event) => updateField("eventDate", event.target.value)} />{dateField.helpText ? <small>{dateField.helpText}</small> : null}</label>
             <div className="public-event-time-group">
               <span><Clock size={15} /> Start Time *</span>
-              <select required value={startHour} onChange={(event) => setStartHour(event.target.value)}><option value="">HH</option>{hourOptions.map((hour) => <option key={hour} value={hour}>{hour}</option>)}</select>
-              <select value={startMinute} onChange={(event) => setStartMinute(event.target.value)}>{minuteOptions.map((minute) => <option key={minute} value={minute}>{minute}</option>)}</select>
-              {usesTwelveHourTime ? <select value={startPeriod} onChange={(event) => setStartPeriod(event.target.value as "AM" | "PM")}><option value="AM">AM</option><option value="PM">PM</option></select> : null}
+              <select aria-label="Start hour" required value={startHour} onChange={(event) => setStartHour(event.target.value)}><option value="">HH</option>{hourOptions.map((hour) => <option key={hour} value={hour}>{hour}</option>)}</select>
+              <select aria-label="Start minute" value={startMinute} onChange={(event) => setStartMinute(event.target.value)}>{minuteOptions.map((minute) => <option key={minute} value={minute}>{minute}</option>)}</select>
+              {usesTwelveHourTime ? <select aria-label="Start AM or PM" value={startPeriod} onChange={(event) => setStartPeriod(event.target.value as "AM" | "PM")}><option value="AM">AM</option><option value="PM">PM</option></select> : null}
             </div>
             <div className="public-event-time-group">
               <span><Clock size={15} /> End Time *</span>
-              <select required value={endHour} onChange={(event) => setEndHour(event.target.value)}><option value="">HH</option>{hourOptions.map((hour) => <option key={hour} value={hour}>{hour}</option>)}</select>
-              <select value={endMinute} onChange={(event) => setEndMinute(event.target.value)}>{minuteOptions.map((minute) => <option key={minute} value={minute}>{minute}</option>)}</select>
-              {usesTwelveHourTime ? <select value={endPeriod} onChange={(event) => setEndPeriod(event.target.value as "AM" | "PM")}><option value="AM">AM</option><option value="PM">PM</option></select> : null}
+              <select aria-label="End hour" required value={endHour} onChange={(event) => setEndHour(event.target.value)}><option value="">HH</option>{hourOptions.map((hour) => <option key={hour} value={hour}>{hour}</option>)}</select>
+              <select aria-label="End minute" value={endMinute} onChange={(event) => setEndMinute(event.target.value)}>{minuteOptions.map((minute) => <option key={minute} value={minute}>{minute}</option>)}</select>
+              {usesTwelveHourTime ? <select aria-label="End AM or PM" value={endPeriod} onChange={(event) => setEndPeriod(event.target.value as "AM" | "PM")}><option value="AM">AM</option><option value="PM">PM</option></select> : null}
             </div>
           </div>
         </div>
@@ -314,7 +314,7 @@ export function PublicEventServiceRequest() {
 
         <div className="public-event-grid">
           <label>Your Name *<input className="public-event-input" required placeholder="First" value={fieldValue(formData, "requesterFirstName")} onChange={(event) => updateField("requesterFirstName", event.target.value)} /></label>
-          <label>&nbsp;<input className="public-event-input" required placeholder="Last" value={fieldValue(formData, "requesterLastName")} onChange={(event) => updateField("requesterLastName", event.target.value)} /></label>
+          <label>&nbsp;<input className="public-event-input" aria-label="Last name" required placeholder="Last" value={fieldValue(formData, "requesterLastName")} onChange={(event) => updateField("requesterLastName", event.target.value)} /></label>
           <label><Mail size={15} /> Email *<input className="public-event-input" type="email" required value={fieldValue(formData, "requesterEmail")} onChange={(event) => updateField("requesterEmail", event.target.value)} /></label>
           <label>Phone<input className="public-event-input" value={fieldValue(formData, "requesterPhone")} onChange={(event) => updateField("requesterPhone", event.target.value)} /></label>
           <label className="span-2">{additionalInfoField.label}{additionalInfoField.required ? " *" : ""}<textarea className="public-event-input" required={additionalInfoField.required} placeholder={additionalInfoField.placeholder} value={fieldValue(formData, "additionalInfo")} onChange={(event) => updateField("additionalInfo", event.target.value)} />{additionalInfoField.helpText ? <small>{additionalInfoField.helpText}</small> : null}</label>

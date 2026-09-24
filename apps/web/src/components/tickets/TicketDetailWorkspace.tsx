@@ -259,6 +259,13 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
   const [meetingData, setMeetingData] = useState<TicketMeetingCollection | null>(null);
   const [meetingDrawerOpen, setMeetingDrawerOpen] = useState(false);
   const [meetingTargetId, setMeetingTargetId] = useState<string | null>(null);
+  useEffect(() => {
+    const activity = new URLSearchParams(window.location.search).get("activity");
+    if (activity && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(activity)) {
+      setMeetingTargetId(activity);
+      setMeetingDrawerOpen(true);
+    }
+  }, []);
   const [sideTab, setSideTab] = useState<"DETAILS" | "GOAL" | "ASSIGNMENT" | "FILES">("DETAILS");
   const [composerCollapsed, setComposerCollapsed] = useState(false);
   const [composerScrollState, setComposerScrollState] = useState<"NORMAL" | "PINNED" | "HIDDEN">("NORMAL");
@@ -1084,8 +1091,8 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
               {permissionSet.has("ticket_meetings.view") ? <button className="button secondary" type="button" onClick={() => { setMeetingTargetId(null); setMeetingDrawerOpen(true); }} disabled={!meetingData} title="Schedule work, service visits, and meetings"><CalendarClock size={14} aria-hidden="true" /><span>Activities{meetingData?.meetings.length ? ` (${meetingData.meetings.length})` : ""}</span></button> : null}
               {permissionSet.has("tickets.merge") ? <button className="button secondary" type="button" onClick={openMergeModal} disabled={isMergedTicket} title="Merge tickets"><GitMerge size={14} aria-hidden="true" /><span>Merge</span></button> : null}
               {permissionSet.has("knowledge_base.create") ? <button className="button secondary" type="button" onClick={() => void createKnowledgeArticleDraft()} disabled={toolBusy === "KB"} title="Create Knowledge Base draft"><BookOpen size={14} aria-hidden="true" /><span>KB Draft</span></button> : null}
-              {permissionSet.has("spam.manage") ? <button className="button secondary" type="button" onClick={() => blockSender("EMAIL")} disabled={!ticket.senderEmail || toolBusy === "EMAIL"} title="Block sender"><X size={14} aria-hidden="true" /><span>Sender</span></button> : null}
-              {permissionSet.has("spam.manage") ? <button className="button secondary" type="button" onClick={() => blockSender("DOMAIN")} disabled={!ticket.senderDomain || toolBusy === "DOMAIN"} title="Block domain"><X size={14} aria-hidden="true" /><span>Domain</span></button> : null}
+              {permissionSet.has("spam.manage") ? <button className="button secondary" type="button" onClick={() => blockSender("EMAIL")} disabled={!ticket.senderEmail || toolBusy === "EMAIL"} title="Block sender"><X size={14} aria-hidden="true" /><span>Block sender</span></button> : null}
+              {permissionSet.has("spam.manage") ? <button className="button secondary" type="button" onClick={() => blockSender("DOMAIN")} disabled={!ticket.senderDomain || toolBusy === "DOMAIN"} title="Block domain"><X size={14} aria-hidden="true" /><span>Block domain</span></button> : null}
             </div>
             <div className={`ticket-rail-tabs${canUseAi ? " has-goal" : ""}`} role="tablist" aria-label="Ticket workspace panels">
               <button className={sideTab === "DETAILS" ? "active" : ""} type="button" role="tab" aria-selected={sideTab === "DETAILS"} onClick={() => setSideTab("DETAILS")}><Info size={14} aria-hidden="true" /> Details</button>
@@ -1112,7 +1119,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
               <div><dt>Source</dt><dd>{label(ticket.source)}</dd></div>
               <div><dt>Sender</dt><dd className="ticket-detail-email" title={ticket.senderEmail ?? undefined}>{ticket.senderEmail ?? "Not set"}</dd></div>
               <div><dt>Inline images</dt><dd>{inlineAttachments.length}</dd></div>
-              <div><dt>Files</dt><dd>{realAttachments.length}</dd></div>
+              <div><dt>Downloadable files</dt><dd>{realAttachments.length}</dd></div>
               {ticket.reopenedAt && !ticket.closedAt ? <div><dt>Reopened</dt><dd>{new Date(ticket.reopenedAt).toLocaleString()}</dd></div> : null}
               {ticket.mergedAt ? <div><dt>Merged</dt><dd>{new Date(ticket.mergedAt).toLocaleString()}</dd></div> : null}
             </dl>
@@ -1302,7 +1309,7 @@ export function TicketDetailWorkspace({ ticketId }: { ticketId: string }) {
           </div>
         </aside>
       </section>
-      <TicketMeetingDrawer open={meetingDrawerOpen} ticketId={ticketRef} data={meetingData} initialMeetingId={meetingTargetId} users={users} permissions={permissionSet} onClose={() => setMeetingDrawerOpen(false)} onChanged={loadMeetings} />
+      <TicketMeetingDrawer open={meetingDrawerOpen && permissionSet.has("ticket_meetings.view")} ticketId={ticketRef} data={meetingData} initialMeetingId={meetingTargetId} users={users} permissions={permissionSet} onClose={() => setMeetingDrawerOpen(false)} onChanged={loadMeetings} />
       {showMergeModal ? (
         <div className="modal-backdrop" role="presentation">
           <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="ticket-detail-merge-modal-title">

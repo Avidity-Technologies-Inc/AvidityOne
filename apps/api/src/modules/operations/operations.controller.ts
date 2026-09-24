@@ -12,7 +12,7 @@ export class OperationsController {
   constructor(private readonly operations: OperationsService) {}
 
   @Get("overview")
-  @RequirePermissions("operations.view", "tickets.view", "event_services.view")
+  @RequirePermissions("operations.view")
   overview(@CurrentUser() user: AuthenticatedUser) {
     return this.operations.overview(user);
   }

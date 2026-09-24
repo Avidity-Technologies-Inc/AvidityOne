@@ -11,6 +11,7 @@ type WorkKind = "TICKET" | "EVENT" | "EVENT_TASK" | "PROJECT";
 type CapacityStatus = "AVAILABLE" | "NEAR_CAPACITY" | "OVER_CAPACITY";
 
 interface ProjectCommitment {
+  ownerId?: string;
   owner: string;
   attention: boolean;
   id: string;
@@ -45,12 +46,14 @@ export interface OperationsWorkItem {
   priority: TicketPriority | null;
   owner: string | null;
   teamName: string | null;
+  groupName?: string | null;
   dueAt: Date | null;
   updatedAt: Date;
   href: string;
   attention: boolean;
   requestId?: string;
   internalOwners: string[];
+  internalOwnerIds?: string[];
 }
 
 export interface OperationsDecision {
@@ -98,7 +101,7 @@ export class OperationsService {
     nextWeek.setDate(nextWeek.getDate() + settings.dueSoonDays);
 
     const [tickets, requests, tasks, projects] = await Promise.all([
-      this.prisma.ticket.findMany({
+      user.permissions.includes("tickets.view") ? this.prisma.ticket.findMany({
         where: { organizationId: user.organizationId, deletedAt: null, status: { notIn: CLOSED_TICKET_STATUSES } },
         select: {
           id: true,
@@ -111,14 +114,14 @@ export class OperationsService {
           targetDate: true,
           updatedAt: true,
           client: { select: { name: true } },
-          assignedUser: { select: { firstName: true, lastName: true } },
+          assignedUser: { select: { id: true, firstName: true, lastName: true } },
           assignedTeam: { select: { name: true } },
-          assignees: { select: { user: { select: { firstName: true, lastName: true } } }, take: 3 }
+          assignedGroup: { select: { name: true } },
+          assignees: { select: { user: { select: { id: true, firstName: true, lastName: true } } } }
         },
-        orderBy: { updatedAt: "desc" },
-        take: 80
-      }),
-      this.prisma.eventServiceRequest.findMany({
+        orderBy: { updatedAt: "desc" }
+      }) : Promise.resolve([]),
+      user.permissions.includes("event_services.view") ? this.prisma.eventServiceRequest.findMany({
         where: { organizationId: user.organizationId, deletedAt: null, status: { notIn: CLOSED_EVENT_STATUSES } },
         select: {
           id: true,
@@ -130,12 +133,11 @@ export class OperationsService {
           updatedAt: true,
           client: { select: { name: true } },
           assignedTeam: { select: { name: true } },
-          assignees: { select: { user: { select: { firstName: true, lastName: true } } }, take: 3 }
+          assignees: { select: { user: { select: { id: true, firstName: true, lastName: true } } } }
         },
-        orderBy: [{ eventDate: "asc" }, { updatedAt: "desc" }],
-        take: 80
-      }),
-      this.prisma.eventServiceTask.findMany({
+        orderBy: [{ eventDate: "asc" }, { updatedAt: "desc" }]
+      }) : Promise.resolve([]),
+      user.permissions.includes("event_services.view") ? this.prisma.eventServiceTask.findMany({
         where: {
           status: { notIn: CLOSED_TASK_STATUSES },
           request: { organizationId: user.organizationId, deletedAt: null, status: { notIn: CLOSED_EVENT_STATUSES } }
@@ -146,13 +148,12 @@ export class OperationsService {
           status: true,
           dueAt: true,
           updatedAt: true,
-          assignedUser: { select: { firstName: true, lastName: true } },
+          assignedUser: { select: { id: true, firstName: true, lastName: true } },
           externalSpecialist: { select: { name: true } },
           request: { select: { id: true, trackingNumber: true, eventName: true, priority: true, client: { select: { name: true } }, assignedTeam: { select: { name: true } } } }
         },
-        orderBy: [{ dueAt: "asc" }, { updatedAt: "desc" }],
-        take: 80
-      }),
+        orderBy: [{ dueAt: "asc" }, { updatedAt: "desc" }]
+      }) : Promise.resolve([]),
       user.permissions.includes("projects.view")
         ? this.prisma.project.findMany({
             where: { organizationId: user.organizationId, deletedAt: null, status: { notIn: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED] } },
@@ -164,7 +165,7 @@ export class OperationsService {
               targetDate: true,
               updatedAt: true,
               client: { select: { name: true } },
-              owner: { select: { firstName: true, lastName: true } },
+              owner: { select: { id: true, firstName: true, lastName: true } },
               milestones: {
                 where: { status: { not: ProjectMilestoneStatus.COMPLETED } },
                 select: {
@@ -172,7 +173,7 @@ export class OperationsService {
                   title: true,
                   status: true,
                   dueAt: true,
-                  assignedUser: { select: { firstName: true, lastName: true } }
+                  assignedUser: { select: { id: true, firstName: true, lastName: true } }
                 }
               },
               decisions: {
@@ -184,24 +185,24 @@ export class OperationsService {
                   status: true,
                   dueAt: true,
                   createdAt: true,
-                  owner: { select: { firstName: true, lastName: true } }
+                  owner: { select: { id: true, firstName: true, lastName: true } }
                 }
               },
               dependencies: { where: { dependsOnProject: { status: { not: ProjectStatus.COMPLETED } } }, select: { id: true } }
             },
-            orderBy: [{ targetDate: "asc" }, { updatedAt: "desc" }],
-            take: 80
+            orderBy: [{ targetDate: "asc" }, { updatedAt: "desc" }]
           })
         : Promise.resolve([])
     ]);
 
     const ticketItems: OperationsWorkItem[] = tickets.map((ticket) => {
-      const owners = [ticket.assignedUser, ...ticket.assignees.map((assignment) => assignment.user)]
-        .filter((assignee): assignee is { firstName: string; lastName: string } => Boolean(assignee))
-        .map((assignee) => this.userName(assignee));
+      const specialists = [...new Map([ticket.assignedUser, ...ticket.assignees.map((assignment) => assignment.user)]
+        .filter((assignee): assignee is { id: string; firstName: string; lastName: string } => Boolean(assignee))
+        .map((assignee) => [assignee.id, assignee])).values()];
+      const owners = specialists.map((assignee) => this.userName(assignee));
       const overdue = ticket.targetDate !== null && ticket.targetDate < now;
       const dueSoon = ticket.targetDate !== null && ticket.targetDate <= nextWeek;
-      const attention = (!owners.length && !ticket.assignedTeam) || ticket.priority === TicketPriority.CRITICAL || ticket.priority === TicketPriority.URGENT || overdue || dueSoon;
+      const attention = (!owners.length && !ticket.assignedTeam && !ticket.assignedGroup) || ticket.priority === TicketPriority.CRITICAL || ticket.priority === TicketPriority.URGENT || overdue || dueSoon;
       return {
         id: ticket.id,
         kind: "TICKET",
@@ -214,11 +215,13 @@ export class OperationsService {
         priority: ticket.priority,
         owner: this.uniqueNames(owners),
         teamName: ticket.assignedTeam?.name ?? null,
+        groupName: ticket.assignedGroup?.name ?? null,
         dueAt: ticket.targetDate,
         updatedAt: ticket.updatedAt,
         href: `/tickets/${ticket.ticketNumber}`,
         attention,
-        internalOwners: [...new Set(owners)]
+        internalOwners: owners,
+        internalOwnerIds: specialists.map((specialist) => specialist.id)
       };
     });
 
@@ -240,7 +243,8 @@ export class OperationsService {
         updatedAt: request.updatedAt,
         href: `/event-services/${request.trackingNumber}`,
         attention: (!owners.length && !request.assignedTeam) || overdue || dueSoon,
-        internalOwners: [...new Set(owners)]
+        internalOwners: request.assignees.map((a) => this.userName(a.user)),
+        internalOwnerIds: request.assignees.map((a) => a.user.id)
       };
     });
 
@@ -262,7 +266,8 @@ export class OperationsService {
         href: `/event-services/${task.request.trackingNumber}`,
         attention: task.status === EventServiceTaskStatus.BLOCKED || overdue || !owner,
         requestId: task.request.id,
-        internalOwners: task.assignedUser ? [this.userName(task.assignedUser)] : []
+        internalOwners: task.assignedUser ? [this.userName(task.assignedUser)] : [],
+        internalOwnerIds: task.assignedUser ? [task.assignedUser.id] : []
       };
     });
 
@@ -275,7 +280,7 @@ export class OperationsService {
       const attention = project.health !== ProjectHealth.ON_TRACK || overdue || blockedMilestones > 0 || blockedDependencies > 0;
 
       if (project.owner) {
-        projectCommitments.push({ owner: this.userName(project.owner), attention, id: `project-${project.id}`, kind: "PROJECT", title: project.name, dueAt: project.targetDate, href: `/projects?project=${project.id}` });
+        projectCommitments.push({ ownerId: project.owner.id, owner: this.userName(project.owner), attention, id: `project-${project.id}`, kind: "PROJECT", title: project.name, dueAt: project.targetDate, href: `/projects?project=${project.id}` });
       } else {
         unassignedProjectCommitments += 1;
       }
@@ -285,7 +290,7 @@ export class OperationsService {
           unassignedProjectCommitments += 1;
           continue;
         }
-        projectCommitments.push({ owner: this.userName(milestone.assignedUser), attention: milestone.status === ProjectMilestoneStatus.BLOCKED || (milestone.dueAt !== null && milestone.dueAt < now), id: `milestone-${milestone.id}`, kind: "MILESTONE", title: `${project.name}: ${milestone.title}`, dueAt: milestone.dueAt, href: `/projects?project=${project.id}` });
+        projectCommitments.push({ ownerId: milestone.assignedUser.id, owner: this.userName(milestone.assignedUser), attention: milestone.status === ProjectMilestoneStatus.BLOCKED || (milestone.dueAt !== null && milestone.dueAt < now), id: `milestone-${milestone.id}`, kind: "MILESTONE", title: `${project.name}: ${milestone.title}`, dueAt: milestone.dueAt, href: `/projects?project=${project.id}` });
       }
 
       for (const decision of project.decisions) {
@@ -293,7 +298,7 @@ export class OperationsService {
           unassignedProjectCommitments += 1;
           continue;
         }
-        projectCommitments.push({ owner: this.userName(decision.owner), attention: decision.status === ProjectDecisionStatus.OPEN || (decision.dueAt !== null && decision.dueAt < now), id: `decision-${decision.id}`, kind: "DECISION", title: `${project.name}: ${decision.title}`, dueAt: decision.dueAt, href: `/projects?project=${project.id}` });
+        projectCommitments.push({ ownerId: decision.owner.id, owner: this.userName(decision.owner), attention: decision.status === ProjectDecisionStatus.OPEN || (decision.dueAt !== null && decision.dueAt < now), id: `decision-${decision.id}`, kind: "DECISION", title: `${project.name}: ${decision.title}`, dueAt: decision.dueAt, href: `/projects?project=${project.id}` });
       }
 
       return {
@@ -332,21 +337,34 @@ export class OperationsService {
           href: `/projects?project=${project.id}`
         };
       }))
-      .sort((left, right) => Number(right.attention) - Number(left.attention) || this.dateRank(left.dueAt, left.createdAt) - this.dateRank(right.dueAt, right.createdAt))
-      .slice(0, 80);
+      .sort((left, right) => Number(right.attention) - Number(left.attention) || this.dateRank(left.dueAt, left.createdAt) - this.dateRank(right.dueAt, right.createdAt));
 
     const allItems = [...ticketItems, ...requestItems, ...taskItems, ...projectItems];
     const items = allItems
-      .sort((left, right) => Number(right.attention) - Number(left.attention) || this.priorityRank(right.priority) - this.priorityRank(left.priority) || this.dateRank(left.dueAt, left.updatedAt) - this.dateRank(right.dueAt, right.updatedAt))
-      .slice(0, 160);
+      .sort((left, right) => Number(right.attention) - Number(left.attention) || this.priorityRank(right.priority) - this.priorityRank(left.priority) || this.dateRank(left.dueAt, left.updatedAt) - this.dateRank(right.dueAt, right.updatedAt));
     const workload = this.workload(allItems, settings.capacityBaseline, settings.capacityWarningPercent, projectCommitments);
     const forecast = this.forecast(allItems, projectCommitments, settings.capacityBaseline, now);
 
+    const agendaEnd = new Date(now.getTime() + 28 * 86400000);
+    const agenda = user.permissions.includes("tickets.view") && user.permissions.includes("ticket_meetings.view")
+      ? await this.prisma.ticketMeeting.findMany({
+          where: { organizationId: user.organizationId, status: "SCHEDULED", endAt: { gte: now }, startAt: { lt: agendaEnd }, ticket: { deletedAt: null, status: { not: TicketStatus.MERGED } } },
+          select: { id: true, title: true, startAt: true, endAt: true, timeZone: true, activityType: true, modality: true, location: true, syncStatus: true,
+            organizer: { select: { id: true, firstName: true, lastName: true } },
+            attendees: { where: { userId: { not: null } }, select: { userId: true } },
+            ticket: { select: { ticketNumber: true, status: true, client: { select: { name: true } } } } },
+          orderBy: [{ startAt: "asc" }, { id: "asc" }]
+        }) : [];
+
     return {
+      currentUserId: user.id,
+      sources: { tickets: user.permissions.includes("tickets.view"), events: user.permissions.includes("event_services.view"), projects: user.permissions.includes("projects.view") },
+      agenda,
+      agendaEnd,
       generatedAt: now,
       summary: {
         activeTickets: ticketItems.length,
-        unassignedTickets: ticketItems.filter((item) => !item.owner && !item.teamName).length,
+        unassignedTickets: ticketItems.filter((item) => !item.owner && !item.teamName && !item.groupName).length,
         activeEvents: requestItems.length,
         upcomingEvents: requestItems.filter((item) => item.dueAt && item.dueAt >= now && item.dueAt <= nextWeek).length,
         activeProjects: projectItems.length,
@@ -396,24 +414,26 @@ export class OperationsService {
   }
 
   private workload(items: OperationsWorkItem[], capacityBaseline: number, capacityWarningPercent: number, projectCommitments: ProjectCommitment[] = []) {
-    const work = new Map<string, { owner: string; operational: number; projectCommitments: number; total: number; attention: number; details: WorkloadDetail[] }>();
+    const work = new Map<string, { ownerId: string; owner: string; operational: number; projectCommitments: number; total: number; attention: number; details: WorkloadDetail[] }>();
     for (const item of items) {
-      for (const owner of item.internalOwners) {
-        const current = work.get(owner) ?? { owner, operational: 0, projectCommitments: 0, total: 0, attention: 0, details: [] };
+      for (const [index, owner] of item.internalOwners.entries()) {
+        const ownerId = item.internalOwnerIds?.[index] ?? owner;
+        const current = work.get(ownerId) ?? { ownerId, owner, operational: 0, projectCommitments: 0, total: 0, attention: 0, details: [] };
         current.operational += 1;
         current.total += 1;
         if (item.attention) current.attention += 1;
         current.details.push({ id: `${item.kind}-${item.id}`, kind: item.kind, reference: item.reference, title: item.title, dueAt: item.dueAt, clientName: item.clientName, status: item.status, statusDefinitionId: item.statusDefinitionId, statusDefinition: item.statusDefinition, priority: item.priority, updatedAt: item.updatedAt, href: item.href, attention: item.attention });
-        work.set(owner, current);
+        work.set(ownerId, current);
       }
     }
     for (const commitment of projectCommitments) {
-      const current = work.get(commitment.owner) ?? { owner: commitment.owner, operational: 0, projectCommitments: 0, total: 0, attention: 0, details: [] };
+      const ownerId = commitment.ownerId ?? commitment.owner;
+      const current = work.get(ownerId) ?? { ownerId, owner: commitment.owner, operational: 0, projectCommitments: 0, total: 0, attention: 0, details: [] };
       current.projectCommitments += 1;
       current.total += 1;
       if (commitment.attention) current.attention += 1;
       current.details.push({ id: commitment.id, kind: commitment.kind, reference: "Project", title: commitment.title, dueAt: commitment.dueAt, clientName: null, status: "OPEN", priority: null, updatedAt: new Date(0), href: commitment.href, attention: commitment.attention });
-      work.set(commitment.owner, current);
+      work.set(ownerId, current);
     }
     return [...work.values()]
       .map((entry) => {
@@ -421,8 +441,7 @@ export class OperationsService {
         const capacityStatus: CapacityStatus = entry.total >= capacityBaseline ? "OVER_CAPACITY" : entry.total >= warningThreshold ? "NEAR_CAPACITY" : "AVAILABLE";
         return { ...entry, details: entry.details.sort((left, right) => this.dateRank(left.dueAt, left.updatedAt) - this.dateRank(right.dueAt, right.updatedAt)), capacityPercent: Math.round((entry.total / capacityBaseline) * 100), capacityStatus };
       })
-      .sort((left, right) => this.capacityRank(right.capacityStatus) - this.capacityRank(left.capacityStatus) || right.attention - left.attention || right.total - left.total || left.owner.localeCompare(right.owner))
-      .slice(0, 12);
+      .sort((left, right) => this.capacityRank(right.capacityStatus) - this.capacityRank(left.capacityStatus) || right.attention - left.attention || right.total - left.total || left.owner.localeCompare(right.owner));
   }
 
   private forecast(items: OperationsWorkItem[], commitments: ProjectCommitment[], capacityBaseline: number, now: Date) {
@@ -436,18 +455,18 @@ export class OperationsService {
       endAt.setDate(startAt.getDate() + 7);
       return { startAt, endAt, label: startAt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) };
     });
-    const owners = new Map<string, { owner: string; weeks: number[]; unscheduled: number }>();
-    const add = (owner: string, dueAt: Date | null) => {
-      const row = owners.get(owner) ?? { owner, weeks: [0, 0, 0, 0], unscheduled: 0 };
+    const owners = new Map<string, { ownerId: string; owner: string; weeks: number[]; unscheduled: number }>();
+    const add = (ownerId: string, owner: string, dueAt: Date | null) => {
+      const row = owners.get(ownerId) ?? { ownerId, owner, weeks: [0, 0, 0, 0], unscheduled: 0 };
       if (!dueAt) row.unscheduled += 1;
       else {
         const index = weeks.findIndex((week) => dueAt >= week.startAt && dueAt < week.endAt);
         if (index >= 0) row.weeks[index] += 1;
       }
-      owners.set(owner, row);
+      owners.set(ownerId, row);
     };
-    for (const item of items) for (const owner of item.internalOwners) add(owner, item.dueAt);
-    for (const commitment of commitments) add(commitment.owner, commitment.dueAt);
+    for (const item of items) item.internalOwners.forEach((owner, index) => add(item.internalOwnerIds?.[index] ?? owner, owner, item.dueAt));
+    for (const commitment of commitments) add(commitment.ownerId ?? commitment.owner, commitment.owner, commitment.dueAt);
     return { weeks, owners: [...owners.values()].map((entry) => ({ ...entry, totalPlanned: entry.weeks.reduce((sum, value) => sum + value, 0), capacityBaseline })).sort((left, right) => right.totalPlanned - left.totalPlanned || left.owner.localeCompare(right.owner)) };
   }
 

@@ -321,8 +321,7 @@ export class EventServicesService {
           include: this.requestInclude()
         }
       },
-      orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
-      take: 150
+      orderBy: [{ status: "asc" }, { updatedAt: "desc" }, { id: "asc" }]
     });
   }
 

@@ -4312,7 +4312,7 @@ export function SettingsWorkspace() {
                   <strong>{assignmentReadyRows.length}</strong>
                   <small>Active users with Email and Assigned to me enabled.</small>
                 </div>
-                <div className="notification-coverage-card warning">
+                <div className={`notification-coverage-card${assignmentBlockedRows.length ? " warning" : ""}`}>
                   <span>Email channel off</span>
                   <strong>{assignmentBlockedRows.length}</strong>
                   <small>Assigned to me is enabled, but Email blocks delivery.</small>
@@ -4320,7 +4320,7 @@ export function SettingsWorkspace() {
                 <div className="notification-coverage-card muted">
                   <span>Assignment email off</span>
                   <strong>{assignmentOffRows.length}</strong>
-                  <small>Active users who will only receive in-app assignment alerts.</small>
+                  <small>Assignment email is disabled; other enabled channels follow each user’s preferences.</small>
                 </div>
               </div>
               {assignmentBlockedRows.length > 0 ? (
@@ -5264,11 +5264,11 @@ export function SettingsWorkspace() {
                   <div className="security-guidance-grid settings-section">
                     <article className="security-guidance-card">
                       <h3>Audit visibility</h3>
-                      <p className="muted">Use Event Logs for administrative activity review and CSV export. A future database migration should add hard organization scoping to every audit record.</p>
+                      <p className="muted">Use Audit Logs for organization-scoped administrative activity and CSV export. Historical records may use the originating user to establish organization scope.</p>
                     </article>
                     <article className="security-guidance-card">
                       <h3>Dependency audit</h3>
-                      <p className="muted">Dependency findings remain visible because some vulnerable packages are transitive. Handle them in a dedicated dependency phase, not with `audit fix --force` in production.</p>
+                      <p className="muted">This page does not run a dependency scan. Review the latest dated dependency audit before scheduling controlled updates.</p>
                     </article>
                     <article className="security-guidance-card">
                       <h3>Runtime data</h3>

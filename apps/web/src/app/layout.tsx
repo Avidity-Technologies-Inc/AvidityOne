@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { BrandingProvider } from "@/components/providers/BrandingProvider";
 import { ThemeProvider, ThemeScript } from "@/components/providers/ThemeProvider";
 import "./globals.css";
+import "./operational-ui.css";
 
 export const metadata: Metadata = {
   title: "Avidity IT Management Tool",

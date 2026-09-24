@@ -29,12 +29,14 @@ interface WorkItem {
   priority: string | null;
   owner: string | null;
   teamName: string | null;
+  groupName?: string | null;
   dueAt: string | null;
   updatedAt: string;
   href: string;
   attention: boolean;
   requestId?: string;
   internalOwners: string[];
+  internalOwnerIds?: string[];
 }
 
 interface OperationsDecision {
@@ -53,6 +55,10 @@ interface OperationsDecision {
 }
 
 interface OperationsOverview {
+  currentUserId?: string;
+  agendaEnd?: string;
+  agenda?: Array<{ id: string; title: string; startAt: string; endAt: string; timeZone: string; activityType: string; modality: string | null; location: string | null; syncStatus: string; organizer: { id: string; firstName: string; lastName: string } | null; attendees: Array<{ userId: string | null }>; ticket: { ticketNumber: string; status: string; client: { name: string } | null } }>;
+
   generatedAt: string;
   summary: {
     activeTickets: number;
@@ -73,6 +79,7 @@ interface OperationsOverview {
     capacityWarningPercent: number;
     dueSoonDays: number;
   };
+  sources?: { tickets: boolean; events: boolean; projects: boolean };
   capabilities: {
     updateTicketStatus: boolean;
     closeTickets: boolean;
@@ -83,8 +90,8 @@ interface OperationsOverview {
   };
   items: WorkItem[];
   decisions: OperationsDecision[];
-  workload: Array<{ owner: string; operational: number; projectCommitments: number; total: number; attention: number; capacityPercent: number; capacityStatus: "AVAILABLE" | "NEAR_CAPACITY" | "OVER_CAPACITY"; details: Array<{ id: string; kind: string; reference: string; title: string; dueAt: string | null; clientName: string | null; status: string; statusDefinitionId?: string | null; statusDefinition?: TicketStatusDefinition | null; priority: string | null; updatedAt: string; href: string; attention: boolean }> }>;
-  forecast: { weeks: Array<{ startAt: string; endAt: string; label: string }>; owners: Array<{ owner: string; weeks: number[]; unscheduled: number; totalPlanned: number; capacityBaseline: number }> };
+  workload: Array<{ ownerId?: string; owner: string; operational: number; projectCommitments: number; total: number; attention: number; capacityPercent: number; capacityStatus: "AVAILABLE" | "NEAR_CAPACITY" | "OVER_CAPACITY"; details: Array<{ id: string; kind: string; reference: string; title: string; dueAt: string | null; clientName: string | null; status: string; statusDefinitionId?: string | null; statusDefinition?: TicketStatusDefinition | null; priority: string | null; updatedAt: string; href: string; attention: boolean }> }>;
+  forecast: { weeks: Array<{ startAt: string; endAt: string; label: string }>; owners: Array<{ ownerId?: string; owner: string; weeks: number[]; unscheduled: number; totalPlanned: number; capacityBaseline: number }> };
 }
 
 interface ExecutiveProjectSummary {
@@ -132,6 +139,7 @@ function SortButton({ column, activeColumn, direction, children, onSort }: { col
 
 export function OperationsWorkspace() {
   const router = useRouter();
+  const [agendaMine, setAgendaMine] = useState(true);
   const [overview, setOverview] = useState<OperationsOverview | null>(null);
   const [period, setPeriod] = useState<Period>("7_DAYS");
   const [queueMode, setQueueMode] = useState<QueueMode>("ATTENTION");
@@ -201,18 +209,14 @@ export function OperationsWorkspace() {
     });
   }, [overview, period, queueMode, search]);
 
-  const queueOwners = useMemo(() => [...new Set((overview?.items ?? []).flatMap((item) => item.internalOwners.length ? item.internalOwners : item.owner ? [item.owner] : []))].sort((left, right) => left.localeCompare(right)), [overview?.items]);
-  const queueStatuses = useMemo(() => [...new Set((overview?.items ?? []).map((item) => item.kind === "TICKET" ? item.statusDefinitionId ?? item.status : item.status))].sort((left, right) => {
-    const leftTicket = ticketStatuses.find((status) => status.id === left);
-    const rightTicket = ticketStatuses.find((status) => status.id === right);
-    return (leftTicket?.name ?? label(left)).localeCompare(rightTicket?.name ?? label(right));
-  }), [overview?.items, ticketStatuses]);
+  const queueOwners = useMemo(() => [...new Map((overview?.items ?? []).flatMap(item => item.internalOwners.length ? item.internalOwners.map((name, index) => [item.internalOwnerIds?.[index] ?? name, name] as const) : item.owner ? [[item.owner, item.owner] as const] : [])).entries()].sort((a, b) => a[1].localeCompare(b[1])), [overview?.items]);
+  const queueStatuses = useMemo(() => [...new Map((overview?.items ?? []).map(item => [`${item.kind}:${item.kind === "TICKET" ? item.statusDefinitionId ?? item.status : item.status}`, `${kindLabel(item.kind)} · ${item.kind === "TICKET" ? ticketStatusName(item, ticketStatuses) : label(item.status)}`])).entries()].sort((a, b) => a[1].localeCompare(b[1])), [overview?.items, ticketStatuses]);
 
   const visibleItems = useMemo(() => {
     const filtered = queueCandidates.filter((item) => {
-      const ownerMatches = ownerFilter === "ALL" || (ownerFilter === "UNASSIGNED" ? !item.owner : item.owner === ownerFilter || item.internalOwners.includes(ownerFilter));
+      const ownerMatches = ownerFilter === "ALL" || (ownerFilter === "UNASSIGNED" ? !item.owner && !item.teamName && !item.groupName : (item.internalOwnerIds?.includes(ownerFilter) ?? item.internalOwners.includes(ownerFilter)) || (!item.internalOwners.length && item.owner === ownerFilter));
       const planningMatches = planningFilter === "ALL" || (planningFilter === "PLANNED" ? Boolean(item.dueAt) : !item.dueAt);
-      const itemStatusFilter = item.kind === "TICKET" ? item.statusDefinitionId ?? item.status : item.status;
+      const itemStatusFilter = `${item.kind}:${item.kind === "TICKET" ? item.statusDefinitionId ?? item.status : item.status}`;
       return (sourceFilter === "ALL" || item.kind === sourceFilter) && ownerMatches && (statusFilter === "ALL" || itemStatusFilter === statusFilter) && planningMatches;
     });
 
@@ -275,7 +279,7 @@ export function OperationsWorkspace() {
     setSearch("");
     setSourceFilter(next.source ?? "ALL");
     setOwnerFilter(next.owner ?? "ALL");
-    setStatusFilter(next.status ?? "ALL");
+    setStatusFilter(next.status && next.source ? `${next.source}:${next.status}` : "ALL");
     setPlanningFilter("ALL");
     setPage(1);
     scrollToSection("operations-queue");
@@ -290,14 +294,14 @@ export function OperationsWorkspace() {
 
   const focusCapacityAlert = () => {
     const alertedOwner = overview?.workload.find((entry) => entry.capacityStatus === "OVER_CAPACITY") ?? overview?.workload.find((entry) => entry.capacityStatus === "NEAR_CAPACITY");
-    if (alertedOwner) setSelectedWorkloadOwner(alertedOwner.owner);
+    if (alertedOwner) setSelectedWorkloadOwner(alertedOwner.ownerId ?? alertedOwner.owner);
     else scrollToSection("operations-capacity");
   };
 
   const canUpdateStatus = (item: WorkItem) => item.kind === "TICKET" ? Boolean(overview?.capabilities.updateTicketStatus) : item.kind === "PROJECT" ? false : Boolean(overview?.capabilities.updateEventStatus);
 
   const decisionOwners = useMemo(() => [...new Set((overview?.decisions ?? []).map((decision) => decision.owner).filter((owner): owner is string => Boolean(owner)))].sort((left, right) => left.localeCompare(right)), [overview?.decisions]);
-  const selectedWorkload = useMemo(() => overview?.workload.find((entry) => entry.owner === selectedWorkloadOwner) ?? null, [overview?.workload, selectedWorkloadOwner]);
+  const selectedWorkload = useMemo(() => overview?.workload.find((entry) => (entry.ownerId ?? entry.owner) === selectedWorkloadOwner) ?? null, [overview?.workload, selectedWorkloadOwner]);
   const visibleDecisions = useMemo(() => (overview?.decisions ?? []).filter((decision) => {
     const ownerMatches = decisionOwner === "ALL" || (decisionOwner === "UNASSIGNED" ? !decision.owner : decision.owner === decisionOwner);
     return ownerMatches && (decisionStatus === "ALL" || decision.status === decisionStatus) && (!decisionAttentionOnly || decision.attention);
@@ -388,13 +392,14 @@ export function OperationsWorkspace() {
 
       {error ? <div className="alert error">Unable to load Operations Center. {error}</div> : null}
 
+      {overview?.sources ? <p className="muted">Visible sources: {Object.entries(overview.sources).filter(([, allowed]) => allowed).map(([source]) => label(source)).join(", ") || "No source permissions"}. Counts follow your current access.</p> : null}
       <section className="operations-summary-grid" aria-label="Operations summary">
         <SummaryCard icon={CircleAlert} title="Needs attention" value={overview?.summary.attentionItems ?? 0} note={`${overview?.summary.overdueItems ?? 0} overdue work items`} tone="attention" onClick={() => focusQueue({ mode: "ATTENTION" })} active={queueMode === "ATTENTION" && period === "ALL" && sourceFilter === "ALL" && ownerFilter === "ALL" && statusFilter === "ALL" && planningFilter === "ALL" && !search} />
-        <SummaryCard icon={Ticket} title="Unassigned tickets" value={overview?.summary.unassignedTickets ?? 0} note={`${overview?.summary.activeTickets ?? 0} active tickets`} tone={(overview?.summary.unassignedTickets ?? 0) > 0 ? "attention" : "default"} onClick={() => focusQueue({ mode: "ALL", source: "TICKET", owner: "UNASSIGNED" })} active={queueMode === "ALL" && period === "ALL" && sourceFilter === "TICKET" && ownerFilter === "UNASSIGNED" && statusFilter === "ALL" && planningFilter === "ALL" && !search} />
-        <SummaryCard icon={FolderKanban} title="Project commitments" value={overview?.summary.projectCommitments ?? 0} note={`${overview?.summary.atRiskProjects ?? 0} at risk · ${overview?.summary.unassignedProjectCommitments ?? 0} unassigned`} tone={(overview?.summary.atRiskProjects ?? 0) > 0 || (overview?.summary.unassignedProjectCommitments ?? 0) > 0 ? "attention" : "default"} onClick={() => router.push("/projects")} />
-        <SummaryCard icon={ClipboardCheck} title="Open decisions" value={overview?.summary.openProjectDecisions ?? 0} note="Project actions needing ownership or closure" tone={(overview?.summary.openProjectDecisions ?? 0) > 0 ? "attention" : "default"} onClick={focusDecisions} />
+        {overview?.sources?.tickets !== false && <SummaryCard icon={Ticket} title="Unassigned tickets" value={overview?.summary.unassignedTickets ?? 0} note={`${overview?.summary.activeTickets ?? 0} active tickets`} tone={(overview?.summary.unassignedTickets ?? 0) > 0 ? "attention" : "default"} onClick={() => focusQueue({ mode: "ALL", source: "TICKET", owner: "UNASSIGNED" })} active={queueMode === "ALL" && period === "ALL" && sourceFilter === "TICKET" && ownerFilter === "UNASSIGNED" && statusFilter === "ALL" && planningFilter === "ALL" && !search} />}
+        {overview?.sources?.projects !== false && <SummaryCard icon={FolderKanban} title="Project commitments" value={overview?.summary.projectCommitments ?? 0} note={`${overview?.summary.atRiskProjects ?? 0} at risk · ${overview?.summary.unassignedProjectCommitments ?? 0} unassigned`} tone={(overview?.summary.atRiskProjects ?? 0) > 0 || (overview?.summary.unassignedProjectCommitments ?? 0) > 0 ? "attention" : "default"} onClick={() => router.push("/projects")} />}
+        {overview?.sources?.projects !== false && <SummaryCard icon={ClipboardCheck} title="Open decisions" value={overview?.summary.openProjectDecisions ?? 0} note="Project actions needing ownership or closure" tone={(overview?.summary.openProjectDecisions ?? 0) > 0 ? "attention" : "default"} onClick={focusDecisions} />}
         <SummaryCard icon={CalendarClock} title="Capacity alerts" value={overview?.summary.overCapacity ?? 0} note={`${overview?.summary.nearCapacity ?? 0} nearing ${overview?.summary.capacityWarningPercent ?? 75}% of capacity`} tone={(overview?.summary.overCapacity ?? 0) > 0 ? "attention" : "default"} onClick={focusCapacityAlert} />
-        <SummaryCard icon={AlertTriangle} title="Blocked tasks" value={overview?.summary.blockedTasks ?? 0} note="Event service tasks requiring follow-up" tone={(overview?.summary.blockedTasks ?? 0) > 0 ? "attention" : "default"} onClick={() => focusQueue({ mode: "ALL", source: "EVENT_TASK", status: "BLOCKED" })} active={queueMode === "ALL" && period === "ALL" && sourceFilter === "EVENT_TASK" && ownerFilter === "ALL" && statusFilter === "BLOCKED" && planningFilter === "ALL" && !search} />
+        {overview?.sources?.events !== false && <SummaryCard icon={AlertTriangle} title="Blocked tasks" value={overview?.summary.blockedTasks ?? 0} note="Event service tasks requiring follow-up" tone={(overview?.summary.blockedTasks ?? 0) > 0 ? "attention" : "default"} onClick={() => focusQueue({ mode: "ALL", source: "EVENT_TASK", status: "BLOCKED" })} active={queueMode === "ALL" && period === "ALL" && sourceFilter === "EVENT_TASK" && ownerFilter === "ALL" && statusFilter === "EVENT_TASK:BLOCKED" && planningFilter === "ALL" && !search} />}
       </section>
 
       {executive?.summary.activeProjects ? <section className="panel operations-executive-panel"><div className="section-heading operations-section-heading"><div><h2>Executive project review</h2><p>Delivery health, overdue commitments, and decision ownership.</p></div>{overview?.capabilities.exportProjectReports ? <div className="operations-executive-downloads"><a className="button secondary" href={`${apiBaseUrl}/reports/projects/executive-export?format=csv`}><Download size={15} aria-hidden="true" /> CSV</a><a className="button secondary" href={`${apiBaseUrl}/reports/projects/executive-export?format=xlsx`}><Download size={15} aria-hidden="true" /> Excel</a><a className="button secondary" href={`${apiBaseUrl}/reports/projects/executive-export?format=pdf`}><Download size={15} aria-hidden="true" /> PDF</a></div> : null}</div><div className="operations-executive-grid"><SummaryCard icon={FolderKanban} title="At risk" value={executive.summary.atRiskProjects} note={`${executive.summary.activeProjects} active projects`} tone={executive.summary.atRiskProjects ? "attention" : "default"} /><SummaryCard icon={ClipboardCheck} title="Overdue decisions" value={executive.summary.overdueDecisions} note={`${executive.summary.unassignedDecisions} unassigned`} tone={executive.summary.overdueDecisions ? "attention" : "default"} /><SummaryCard icon={AlertTriangle} title="Overdue milestones" value={executive.summary.overdueMilestones} note="Across active project plans" tone={executive.summary.overdueMilestones ? "attention" : "default"} /></div>{overview?.capabilities.scheduleProjectReports ? <div className="operations-executive-schedule"><Mail size={16} aria-hidden="true" /><input className="input" value={executiveRecipients} onChange={(event) => setExecutiveRecipients(event.target.value)} placeholder="Schedule recipient emails" aria-label="Executive report recipient emails" /><select className="input" value={executiveFrequency} onChange={(event) => setExecutiveFrequency(event.target.value as "weekly" | "monthly")} aria-label="Executive report frequency"><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select><button className="button secondary" type="button" onClick={() => void scheduleExecutiveReport()}>Schedule PDF</button></div> : null}</section> : executive ? <section className="operations-project-empty" aria-label="Project planning"><FolderKanban size={18} aria-hidden="true" /><span>No active project plans yet.</span><Link href="/projects">Create a project plan</Link></section> : null}
@@ -408,8 +413,8 @@ export function OperationsWorkspace() {
           <div className="operations-queue-filters" aria-label="Filter operational queue">
             <Filter size={15} aria-hidden="true" />
             <select className="input" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} aria-label="Filter by source"><option value="ALL">All sources</option>{(["TICKET", "EVENT", "EVENT_TASK", "PROJECT"] as WorkKind[]).map((kind) => <option value={kind} key={kind}>{kindLabel(kind)}</option>)}</select>
-            <select className="input" value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filter by owner"><option value="ALL">All owners</option><option value="UNASSIGNED">Unassigned</option>{queueOwners.map((owner) => <option value={owner} key={owner}>{owner}</option>)}</select>
-            <select className="input" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by status"><option value="ALL">All statuses</option>{queueStatuses.map((status) => <option value={status} key={status}>{ticketStatuses.find((definition) => definition.id === status)?.name ?? label(status)}</option>)}</select>
+            <select className="input" value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filter by owner"><option value="ALL">All owners</option><option value="UNASSIGNED">Unassigned</option>{queueOwners.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select>
+            <select className="input" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by status"><option value="ALL">All statuses</option>{queueStatuses.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select>
             <select className="input" value={planningFilter} onChange={(event) => setPlanningFilter(event.target.value as typeof planningFilter)} aria-label="Filter by planning"><option value="ALL">Any planning</option><option value="PLANNED">Planned</option><option value="UNSCHEDULED">Unscheduled</option></select>
             {filtersActive ? <button className="button secondary icon-button" type="button" onClick={clearQueueFilters} title="Clear queue filters" aria-label="Clear queue filters"><X size={14} aria-hidden="true" /></button> : null}
           </div>
@@ -430,7 +435,7 @@ export function OperationsWorkspace() {
                     </div>
                   </td>
                   <td><span className="operations-kind-pill">{kindLabel(item.kind)}</span></td>
-                  <td>{item.owner ?? <span className="operations-unassigned">Unassigned</span>}</td>
+                  <td>{item.owner ?? <span className="operations-unassigned">{item.groupName ? `Access group: ${item.groupName}` : item.teamName ? `Team: ${item.teamName}` : "Unassigned"}</span>}</td>
                   <td><div className="operations-context-cell"><strong>{item.clientName ?? "No client"}</strong><span>{item.teamName ?? "No team"}</span></div></td>
                   <td><div className="operations-status-cell"><span style={item.kind === "TICKET" ? ticketStatusStyle(item, ticketStatuses) : undefined}>{item.kind === "TICKET" ? ticketStatusName(item, ticketStatuses) : label(item.status)}</span>{item.health ? <small>{label(item.health)}</small> : item.priority ? <small>{label(item.priority)}</small> : null}</div></td>
                   <td>{formatDate(item.dueAt)}</td>
@@ -476,17 +481,19 @@ export function OperationsWorkspace() {
       </section>
 
       <section className="panel operations-workload-panel" id="operations-capacity">
-        <div className="section-heading operations-section-heading"><div><h2>Capacity and work distribution</h2><p>Projected load combines operational assignments with project commitments. Baseline: {overview?.summary.capacityBaseline ?? 12} items; warning at {overview?.summary.capacityWarningPercent ?? 75}%.</p></div><UsersRound size={19} aria-hidden="true" /></div>
+        <div className="section-heading operations-section-heading"><div><h2>Workload against item baseline</h2><p>Counts assignments and project commitments, not hours or staff availability. Baseline: {overview?.summary.capacityBaseline ?? 12} items; warning at {overview?.summary.capacityWarningPercent ?? 75}%.</p></div><UsersRound size={19} aria-hidden="true" /></div>
         <div className="operations-workload-list">
-          {(overview?.workload ?? []).map((entry) => <button className={`operations-workload-row ${entry.capacityStatus.toLowerCase().replace("_", "-")}`} type="button" key={entry.owner} onClick={() => setSelectedWorkloadOwner(entry.owner)} aria-label={`Open ${entry.owner} workload`}><strong>{entry.owner}</strong><span>{entry.total}/{overview?.summary.capacityBaseline ?? 12} projected · {entry.capacityPercent}%</span><small>{entry.operational} operational · {entry.projectCommitments} project · {entry.attention} attention</small><em>{label(entry.capacityStatus)}</em><div className="operations-capacity-meter" aria-label={`${entry.owner} projected capacity ${entry.capacityPercent}%`}><span style={{ width: `${Math.min(entry.capacityPercent, 100)}%` }} /></div></button>)}
+          {(overview?.workload ?? []).map((entry) => <button className={`operations-workload-row ${entry.capacityStatus.toLowerCase().replace("_", "-")}`} type="button" key={entry.ownerId ?? entry.owner} onClick={() => setSelectedWorkloadOwner(entry.ownerId ?? entry.owner)} aria-label={`Open ${entry.owner} workload`}><strong>{entry.owner}</strong><span>{entry.total}/{overview?.summary.capacityBaseline ?? 12} projected · {entry.capacityPercent}%</span><small>{entry.operational} operational · {entry.projectCommitments} project · {entry.attention} attention</small><em>{label(entry.capacityStatus)}</em><div className="operations-capacity-meter" aria-label={`${entry.owner} projected capacity ${entry.capacityPercent}%`}><span style={{ width: `${Math.min(entry.capacityPercent, 100)}%` }} /></div></button>)}
           {!loading && !overview?.workload.length ? <div className="dashboard-empty">No assigned active work.</div> : null}
         </div>
       </section>
 
+      {overview?.agenda && <section className="panel"><div className="section-heading"><div><h2>Scheduled ticket activities</h2><p className="muted">Work sessions, visits and meetings through {overview.agendaEnd ? formatDate(overview.agendaEnd) : "the next four weeks"}. Dates below use each activity's timezone.</p></div><label className="audit-toggle"><input type="checkbox" checked={agendaMine} onChange={event => setAgendaMine(event.target.checked)} /> My activities</label></div><div className="audit-agenda">{overview.agenda.filter(item => !agendaMine || item.organizer?.id === overview.currentUserId || item.attendees.some(attendee => attendee.userId === overview.currentUserId)).map(item => <article key={item.id}><div><Link href={`/tickets/${item.ticket.ticketNumber}?activity=${item.id}`}>{item.ticket.ticketNumber} · {item.title}</Link><small>{label(item.activityType)} · {item.modality ? label(item.modality) : "Modality not set"} · {item.ticket.client?.name ?? "No client"}</small><small>{item.organizer ? `${item.organizer.firstName} ${item.organizer.lastName}` : "No organizer"}{item.location ? ` · ${item.location}` : ""}</small></div><div><time>{new Date(item.startAt).toLocaleString(undefined, { timeZone: item.timeZone })} – {new Date(item.endAt).toLocaleTimeString(undefined, { timeZone: item.timeZone, hour: "numeric", minute: "2-digit" })}</time><small>{item.timeZone} · Calendar: {label(item.syncStatus)}</small>{["CLOSED", "RESOLVED", "CANCELLED"].includes(item.ticket.status) && <small>Ticket {label(item.ticket.status)} · activity retained</small>}</div></article>)}{!overview.agenda.some(item => !agendaMine || item.organizer?.id === overview.currentUserId || item.attendees.some(attendee => attendee.userId === overview.currentUserId)) && <p className="muted">No scheduled activities in this scope. Schedule work from a ticket's Activities tool.</p>}</div></section>}
+
       <section className="panel operations-forecast-panel">
-        <div className="section-heading operations-section-heading"><div><h2>Four-week capacity forecast</h2><p>Planned due dates by specialist; unscheduled work remains visible.</p></div><CalendarClock size={19} aria-hidden="true" /></div>
+        <div className="section-heading operations-section-heading"><div><h2>Four-week deadline forecast</h2><p>Deadlines by specialist. Scheduled activities appear separately above; a reservation does not change a deadline.</p></div><CalendarClock size={19} aria-hidden="true" /></div>
         {unscheduledCount ? <div className="operations-planning-callout"><CalendarClock size={16} aria-hidden="true" /><span>{unscheduledCount} assigned items have no target date and are excluded from the weekly plan.</span><Link href="/tickets">Plan tickets</Link></div> : null}
-        <div className="operations-forecast-scroll"><table className="table operations-forecast-table"><thead><tr><th>Specialist</th>{(overview?.forecast.weeks ?? []).map((week) => <th key={week.startAt}>Week of {week.label}</th>)}<th>Unscheduled</th></tr></thead><tbody>{(overview?.forecast.owners ?? []).map((entry) => <tr key={entry.owner}><td><button className="operations-owner-link" type="button" onClick={() => setSelectedWorkloadOwner(entry.owner)}>{entry.owner}</button></td>{entry.weeks.map((count, index) => <td key={`${entry.owner}-${index}`}><span className={count >= entry.capacityBaseline ? "operations-forecast-alert" : ""}>{count}</span></td>)}<td>{entry.unscheduled || "-"}</td></tr>)}{!loading && !overview?.forecast.owners.length ? <tr><td colSpan={6}><div className="dashboard-empty">No assigned capacity to forecast.</div></td></tr> : null}</tbody></table></div>
+        <div className="operations-forecast-scroll"><table className="table operations-forecast-table"><thead><tr><th>Specialist</th>{(overview?.forecast.weeks ?? []).map((week) => <th key={week.startAt}>Week of {week.label}</th>)}<th>Unscheduled</th></tr></thead><tbody>{(overview?.forecast.owners ?? []).map((entry) => <tr key={entry.ownerId ?? entry.owner}><td><button className="operations-owner-link" type="button" onClick={() => setSelectedWorkloadOwner(entry.ownerId ?? entry.owner)}>{entry.owner}</button></td>{entry.weeks.map((count, index) => <td key={`${entry.owner}-${index}`}><span className={count >= entry.capacityBaseline ? "operations-forecast-alert" : ""}>{count}</span></td>)}<td>{entry.unscheduled || "-"}</td></tr>)}{!loading && !overview?.forecast.owners.length ? <tr><td colSpan={6}><div className="dashboard-empty">No assigned capacity to forecast.</div></td></tr> : null}</tbody></table></div>
       </section>
 
       {selectedWorkload ? <div className="operations-workload-drawer-backdrop" role="presentation" onClick={() => setSelectedWorkloadOwner(null)}><aside className="operations-workload-drawer" role="dialog" aria-modal="true" aria-label={`${selectedWorkload.owner} workload`} onClick={(event) => event.stopPropagation()}><div className="section-heading operations-section-heading"><div><h2>{selectedWorkload.owner}</h2><p>{selectedWorkload.total} projected items · {selectedWorkload.capacityPercent}% of baseline.</p></div><button className="button secondary icon-button" type="button" onClick={() => setSelectedWorkloadOwner(null)} title="Close workload" aria-label="Close workload"><X size={16} aria-hidden="true" /></button></div><div className="operations-drawer-summary"><span>{selectedWorkload.operational} operational</span><span>{selectedWorkload.projectCommitments} project commitments</span><span>{selectedWorkload.attention} need attention</span></div><div className="operations-drawer-list">{selectedWorkload.details.map((item) => <article className={`operations-drawer-item${item.attention ? " attention" : ""}`} key={item.id}><div><Link href={item.href}>{item.reference}</Link><strong>{item.title}</strong><span>{item.clientName ?? label(item.kind)} · {item.kind === "TICKET" ? ticketStatusName(item, ticketStatuses) : label(item.status)}{item.priority ? ` · ${label(item.priority)}` : ""}</span></div><div><time className={item.attention ? "operations-unassigned" : ""}>{item.dueAt ? `Target ${formatDate(item.dueAt)}` : "Unscheduled"}</time><small>Updated {formatDate(item.updatedAt)}</small></div></article>)}</div></aside></div> : null}
