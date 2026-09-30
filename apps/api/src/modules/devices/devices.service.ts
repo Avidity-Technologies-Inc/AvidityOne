@@ -5,6 +5,7 @@ import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { validateIntegrationUrl } from "../../common/integration-url-policy";
 import { PrismaService } from "../prisma/prisma.service";
+import { inventoryNetwork, selectInventory } from "./device-inventory";
 import { DeviceQueryDto } from "./dto/device-query.dto";
 import { UpdateRmmSettingsDto } from "./dto/update-rmm-settings.dto";
 import { UpsertDeviceViewDto } from "./dto/upsert-device-view.dto";
@@ -149,17 +150,6 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       deletedAt: null,
       client: { organizationId: user.organizationId }
     };
-    const search = query.search?.trim();
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { hostname: { contains: search, mode: "insensitive" } },
-        { operatingSystem: { contains: search, mode: "insensitive" } },
-        { primaryUser: { contains: search, mode: "insensitive" } },
-        { remoteAccessId: { contains: search, mode: "insensitive" } },
-        { client: { name: { contains: search, mode: "insensitive" } } }
-      ];
-    }
     if (query.clientId) {
       where.clientId = query.clientId;
     }
@@ -170,21 +160,26 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       where.type = query.type;
     }
 
+    if (query.site) where.deviceGroupId = query.site;
+    if (query.favoritesOnly === "true") where.favorites = { some: { userId: user.id } };
     const totalDevicesWhere: Prisma.DeviceWhereInput = {
       deletedAt: null,
       client: { organizationId: user.organizationId }
     };
 
-    const [devices, totalDevices, clients, settings] = await Promise.all([
+    // Read searchable summaries without the old 500-record cutoff. Sort the complete
+    // candidate set naturally, then hydrate only the requested page with action URLs.
+    const [candidates, totalDevices, clients, sites, settings] = await Promise.all([
       this.prisma.device.findMany({
         where,
-        include: {
-          client: { select: { id: true, name: true, shortName: true } },
-          remoteAccessProfile: true,
+        select: {
+          id: true, name: true, hostname: true, deviceGroupId: true, type: true,
+          operatingSystem: true, osVersion: true, primaryUser: true, remoteAccessId: true,
+          serialNumber: true, assetTag: true, status: true,
+          client: { select: { name: true, shortName: true } },
+          remoteAccessProfile: { select: { detailSnapshot: true } },
           favorites: { where: { userId: user.id }, select: { userId: true } }
-        },
-        orderBy: [{ client: { name: "asc" } }, { name: "asc" }],
-        take: 500
+        }
       }),
       this.prisma.device.count({ where: totalDevicesWhere }),
       this.prisma.client.findMany({
@@ -192,17 +187,37 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         select: { id: true, name: true },
         orderBy: { name: "asc" }
       }),
+      this.prisma.device.findMany({
+        where: { ...totalDevicesWhere, ...(query.clientId ? { clientId: query.clientId } : {}), deviceGroupId: { not: null } },
+        select: { deviceGroupId: true }, distinct: ["deviceGroupId"], orderBy: { deviceGroupId: "asc" }
+      }),
       this.getSettingsRecord(user.organizationId)
     ]);
-
-    const mappedDevices = devices
-      .map((device) => this.toDeviceResponse(device, settings))
-      .sort((left, right) => Number(right.isFavorite) - Number(left.isFavorite));
-
+    const { selected, counts } = selectInventory(candidates, query);
+    const pageSize = query.pageSize ?? 50;
+    const totalPages = Math.max(1, Math.ceil(selected.length / pageSize));
+    const page = Math.min(query.page ?? 1, totalPages);
+    // Calls without pagination retain the existing full-list response shape.
+    const paged = query.page !== undefined || query.pageSize !== undefined;
+    const pageCandidates = paged ? selected.slice((page - 1) * pageSize, page * pageSize) : selected;
+    const records = pageCandidates.length ? await this.prisma.device.findMany({
+      where: { ...totalDevicesWhere, id: { in: pageCandidates.map(device => device.id) } },
+      include: {
+        client: { select: { id: true, name: true, shortName: true } },
+        remoteAccessProfile: true,
+        favorites: { where: { userId: user.id }, select: { userId: true } }
+      }
+    }) : [];
+    const byId = new Map(records.map(device => [device.id, device]));
+    const devices = pageCandidates.flatMap(candidate => {
+      const device = byId.get(candidate.id);
+      if (!device) return [];
+      return [{ ...this.toDeviceResponse(device, settings), matchedNetwork: query.search?.trim()
+        ? inventoryNetwork(candidate).filter(value => value.toLowerCase().includes(query.search!.trim().toLowerCase())) : [] }];
+    });
     return {
-      devices: mappedDevices,
-      totalDevices,
-      clients,
+      devices, totalDevices, filteredTotal: selected.length, page, pageSize, totalPages,
+      categoryCounts: counts, clients, sites: sites.flatMap(site => site.deviceGroupId ? [site.deviceGroupId] : []),
       remoteAccess: this.toRmmSettingsResponse(settings)
     };
   }

@@ -1,5 +1,11 @@
 # Project Handoff
 
+## Device Inventory Search and Ordering — 2026-09-30
+
+- Approved on clean canonical `main` at `8806736`. Devices now searches all stored IPs/MACs and sites, supports natural column ordering and explicit favorite priority, and preserves ordering in saved views. Server pagination removes the 500-record cutoff; counts and tree grouping are explicit. Network details, copy controls, OS/agent labels and observation timestamps are clearer.
+- No schema, dependencies, environment, permissions or RMM sync changes. API/web checks and full build passed; 231 backend tests passed (58 existing isolated-database cases skipped), plus browser and deployment-recovery checks. See [behavior, limits, validation and deployment](docs/DEVICES_INVENTORY_2026-09-30.md).
+- Publication authorized; user will deploy with `scripts/deploy-devices-inventory.sh <full-release-sha>`. This change has not been deployed by the agent.
+
 ## Operational Accuracy and Interface Refinement — 2026-09-24
 
 - Authorized consolidation from local/GitHub and independently inspected production `f0a6ca1`. ISFA was already corrected by the user; no client merging or historical repair.

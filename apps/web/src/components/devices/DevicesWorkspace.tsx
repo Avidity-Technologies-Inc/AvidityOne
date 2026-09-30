@@ -1,6 +1,10 @@
 "use client";
 
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Copy,
   ChevronDown,
   ExternalLink,
   Grid3X3,
@@ -22,13 +26,16 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
 type DeviceView = "table" | "cards" | "tree";
+type DeviceSort = "name" | "client" | "site" | "os" | "status";
 type DeviceTab = "all" | "servers" | "workstations";
 
 interface RemoteAccessDetails {
+  syncedAt?: string;
+  agent?: { version?: string | null };
   network?: {
     publicIp?: string | null;
     localIps?: string[];
@@ -49,6 +56,7 @@ interface DeviceRecord {
   remoteAccessProvider: string | null;
   remoteAccessId: string | null;
   isFavorite: boolean;
+  matchedNetwork?: string[];
   lastSeenAt: string | null;
   client: { id: string; name: string; shortName: string | null };
   actionUrls: {
@@ -69,6 +77,11 @@ interface DeviceRecord {
 interface DevicesResponse {
   devices: DeviceRecord[];
   totalDevices: number;
+  filteredTotal: number;
+  page: number;
+  totalPages: number;
+  categoryCounts: Record<DeviceTab, number>;
+  sites: string[];
   clients: Array<{ id: string; name: string }>;
   remoteAccess: {
     enabled: boolean;
@@ -80,6 +93,11 @@ interface DevicesResponse {
 }
 
 interface DeviceSavedViewState {
+  site?: string;
+  favoritesOnly?: boolean;
+  favoritesFirst?: boolean;
+  sortBy?: DeviceSort;
+  sortDirection?: "asc" | "desc";
   search?: string;
   clientId?: string;
   status?: string;
@@ -98,10 +116,21 @@ interface DeviceSavedViewRecord {
   isDefault: boolean;
 }
 
+const SORT_OPTIONS: Array<{ value: DeviceSort; label: string }> = [{ value: "name", label: "Device" }, { value: "client", label: "Client / Site" }, { value: "site", label: "Site / Client" }, { value: "os", label: "OS" }, { value: "status", label: "Status" }];
+const URL_FILTERS = ["search", "clientId", "status", "type", "deviceTab", "site", "favoritesOnly", "favoritesFirst", "sortBy", "sortDirection"];
+
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 const CARD_COLUMN_OPTIONS = [2, 3, 4, 5, 6];
 
 export function DevicesWorkspace() {
+  const [initialized, setInitialized] = useState(false);
+  const [site, setSite] = useState("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [favoritesFirst, setFavoritesFirst] = useState(true);
+  const [sortBy, setSortBy] = useState<DeviceSort>("client");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const requestId = useRef(0);
+  const abortRequest = useRef<AbortController | null>(null);
   const [data, setData] = useState<DevicesResponse | null>(null);
   const [search, setSearch] = useState("");
   const [clientId, setClientId] = useState("");
@@ -130,39 +159,57 @@ export function DevicesWorkspace() {
     if (clientId) params.set("clientId", clientId);
     if (status) params.set("status", status);
     if (type) params.set("type", type);
+    if (site) params.set("site", site);
+    params.set("favoritesOnly", String(favoritesOnly));
+    params.set("favoritesFirst", String(favoritesFirst));
+    params.set("sortBy", sortBy);
+    params.set("sortDirection", sortDirection);
+    params.set("deviceTab", deviceTab);
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
     const value = params.toString();
     return value ? `?${value}` : "";
-  }, [clientId, search, status, type]);
+  }, [clientId, search, status, type, site, favoritesOnly, favoritesFirst, sortBy, sortDirection, deviceTab, page, pageSize]);
+  const currentQuery = useRef(query);
+  currentQuery.current = query;
 
   const devices = data?.devices ?? [];
-  const activeDevices = useMemo(() => filterDevicesByTab(devices, deviceTab), [deviceTab, devices]);
-  const deviceTabCounts = useMemo(() => getDeviceTabCounts(devices), [devices]);
-  const totalPages = Math.max(1, Math.ceil(activeDevices.length / pageSize));
-  const pageDevices = useMemo(() => activeDevices.slice((page - 1) * pageSize, page * pageSize), [activeDevices, page, pageSize]);
-  const deviceGroups = useMemo(() => groupDevices(activeDevices), [activeDevices]);
-  const totalDeviceCount = data?.totalDevices ?? devices.length;
+  const activeDevices = devices;
+  const deviceTabCounts = data?.categoryCounts ?? { all: 0, servers: 0, workstations: 0 };
+  const totalPages = data?.totalPages ?? 1;
+  const filteredTotal = data?.filteredTotal ?? 0;
+  const pageDevices = devices;
+  const deviceGroups = useMemo(() => groupDevices(devices), [devices]);
+  const totalDeviceCount = data?.totalDevices ?? 0;
   const lastSyncMessage = data?.remoteAccess.lastSyncMessage ?? "Never";
 
   async function loadDevices() {
+    const id = ++requestId.current;
+    const requestedQuery = currentQuery.current;
+    abortRequest.current?.abort();
+    const controller = new AbortController();
+    abortRequest.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const response = await apiFetch<DevicesResponse>(`/devices${query}`);
+      const response = await apiFetch<DevicesResponse>(`/devices${requestedQuery}`, { signal: controller.signal });
+      if (id !== requestId.current || requestedQuery !== currentQuery.current) return;
       setData(response);
-      setPage(1);
+      setPage(response.page);
     } catch (err) {
+      if (id !== requestId.current || controller.signal.aborted || requestedQuery !== currentQuery.current) return;
       setError(err instanceof Error ? err.message : "Unable to load devices.");
     } finally {
-      setLoading(false);
+      if (id === requestId.current && requestedQuery === currentQuery.current) setLoading(false);
     }
   }
 
-  async function loadSavedViews() {
+  async function loadSavedViews(applyDefault = false) {
     try {
       const response = await apiFetch<DeviceSavedViewRecord[]>("/devices/views");
       setSavedViews(response);
       const defaultView = response.find((item) => item.isDefault);
-      if (defaultView && !selectedViewId && !["search", "clientId", "status", "type", "deviceTab"].some((key) => new URLSearchParams(window.location.search).has(key))) {
+      if (applyDefault && defaultView && !selectedViewId && !URL_FILTERS.some((key) => new URLSearchParams(window.location.search).has(key))) {
         applySavedView(defaultView);
       }
     } catch {
@@ -196,7 +243,7 @@ export function DevicesWorkspace() {
     setNotice(null);
     const body = {
       name,
-      state: { search, clientId, status, type, view, deviceTab, pageSize, cardColumns },
+      state: { search, clientId, status, type, site, favoritesOnly, favoritesFirst, sortBy, sortDirection, view, deviceTab, pageSize, cardColumns },
       scope: viewScope,
       isDefault: viewIsDefault
     };
@@ -247,13 +294,7 @@ export function DevicesWorkspace() {
     setError(null);
     try {
       await apiFetch(`/devices/${device.id}/favorite`, { method: nextValue ? "PUT" : "DELETE" });
-      setData((current) => {
-        if (!current) return current;
-        const nextDevices = current.devices
-          .map((item) => (item.id === device.id ? { ...item, isFavorite: nextValue } : item))
-          .sort((left, right) => Number(right.isFavorite) - Number(left.isFavorite));
-        return { ...current, devices: nextDevices };
-      });
+      await loadDevices();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update device favorite.");
     } finally {
@@ -313,6 +354,11 @@ export function DevicesWorkspace() {
 
   function applySavedView(savedView: DeviceSavedViewRecord) {
     const state = savedView.state ?? {};
+    setSite(typeof state.site === "string" ? state.site : "");
+    setFavoritesOnly(state.favoritesOnly === true);
+    setFavoritesFirst(state.favoritesFirst !== false);
+    setSortBy(SORT_OPTIONS.some(option => option.value === state.sortBy) ? state.sortBy! : "client");
+    setSortDirection(state.sortDirection === "desc" ? "desc" : "asc");
     setSearch(state.search ?? "");
     setClientId(state.clientId ?? "");
     setStatus(state.status ?? "");
@@ -341,9 +387,23 @@ export function DevicesWorkspace() {
     setPage(1);
   }
 
+  function changeSort(next: DeviceSort) {
+    setSortDirection(sortBy === next && sortDirection === "asc" ? "desc" : "asc");
+    setSortBy(next);
+    setPage(1);
+  }
+
+  function clearFilters() {
+    setSearch(""); setClientId(""); setSite(""); setStatus(""); setType("");
+    setDeviceTab("all"); setFavoritesOnly(false); setPage(1);
+  }
+
   useEffect(() => {
-    void loadDevices();
-  }, [query]);
+    if (!initialized) return;
+    setLoading(true);
+    const timer = window.setTimeout(() => { void loadDevices(); }, 180);
+    return () => { window.clearTimeout(timer); ++requestId.current; abortRequest.current?.abort(); };
+  }, [query, initialized]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -353,7 +413,15 @@ export function DevicesWorkspace() {
     if (["ACTIVE", "INACTIVE", "RETIRED"].includes(initialStatus ?? "")) setStatus(initialStatus!);
     const initialTab = params.get("deviceTab");
     if (initialTab === "servers" || initialTab === "workstations") setDeviceTab(initialTab);
-    void loadSavedViews();
+    const initialType = params.get("type");
+    if (["SERVER", "DESKTOP", "LAPTOP", "PHONE", "TABLET", "OTHER"].includes(initialType ?? "")) setType(initialType!);
+    setSite(params.get("site") ?? "");
+    setFavoritesOnly(params.get("favoritesOnly") === "true");
+    setFavoritesFirst(params.get("favoritesFirst") !== "false");
+    const initialSort = params.get("sortBy") as DeviceSort;
+    if (SORT_OPTIONS.some(option => option.value === initialSort)) setSortBy(initialSort);
+    setSortDirection(params.get("sortDirection") === "desc" ? "desc" : "asc");
+    void loadSavedViews(true).finally(() => setInitialized(true));
   }, []);
 
   return (
@@ -366,7 +434,7 @@ export function DevicesWorkspace() {
           </div>
           <div className="device-header-summary" aria-label="Device inventory summary">
             <span><strong>Devices:</strong> {totalDeviceCount}</span>
-            <span><strong>Devices in this view:</strong> {loading ? "Loading..." : activeDevices.length}</span>
+            <span><strong>Devices in this view:</strong> {loading ? "Loading..." : filteredTotal}</span>
             <span><strong>Inventory status:</strong> {data?.remoteAccess.lastSyncStatus ?? "Not checked"} · Last sync attempt: {data?.remoteAccess.lastSyncAt ? new Date(data.remoteAccess.lastSyncAt).toLocaleString() : "No recorded sync"}</span><span className="muted">{lastSyncMessage} Device status reflects the last observation, not a live availability check.</span>
           </div>
         </div>
@@ -392,21 +460,21 @@ export function DevicesWorkspace() {
       <section className={`panel device-toolbar-panel ${view === "cards" ? "has-card-columns" : ""}`}>
         <div className="device-search-field">
           <Search size={16} aria-hidden="true" />
-          <input className="input" placeholder="Search device, hostname, client, OS, or user" value={search} onChange={(event) => setSearch(event.target.value)} />
+          <input className="input" aria-label="Search devices" maxLength={256} disabled={!initialized} placeholder="Search device, IP, MAC, site, OS, or user" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} />
         </div>
-        <select className="input" value={clientId} onChange={(event) => setClientId(event.target.value)}>
+        <select className="input" aria-label="Client" value={clientId} onChange={(event) => { setClientId(event.target.value); setSite(""); setPage(1); }}>
           <option value="">All clients</option>
           {data?.clients.map((client) => (
             <option key={client.id} value={client.id}>{client.name}</option>
           ))}
         </select>
-        <select className="input" value={status} onChange={(event) => setStatus(event.target.value)}>
+        <select className="input" aria-label="Status" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}>
           <option value="">All statuses</option>
           <option value="ACTIVE">Active</option>
           <option value="INACTIVE">Inactive</option>
           <option value="RETIRED">Retired</option>
         </select>
-        <select className="input" value={type} onChange={(event) => { setType(event.target.value); setDeviceTab("all"); setPage(1); }}>
+        <select className="input" aria-label="Device type" value={type} onChange={(event) => { setType(event.target.value); setDeviceTab("all"); setPage(1); }}>
           <option value="">All types</option>
           <option value="SERVER">Servers</option>
           <option value="DESKTOP">Desktops</option>
@@ -446,6 +514,23 @@ export function DevicesWorkspace() {
         >
           <MoreVertical size={18} aria-hidden="true" />
         </button>
+      </section>
+
+      <section className="panel device-inventory-controls" aria-label="Inventory filters and order">
+        <label>Site<select aria-label="Site" className="input" value={site} onChange={event => { setSite(event.target.value); setPage(1); }}>
+          <option value="">All sites</option>
+          {site && !data?.sites?.includes(site) ? <option value={site}>{site}</option> : null}
+          {data?.sites?.map(value => <option key={value} value={value}>{value}</option>)}
+        </select></label>
+        <label>Sort by<select aria-label="Sort by" className="input" value={sortBy} onChange={event => { setSortBy(event.target.value as DeviceSort); setPage(1); }}>
+          {SORT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select></label>
+        <label>Direction<select aria-label="Direction" className="input" value={sortDirection} onChange={event => { setSortDirection(event.target.value as "asc" | "desc"); setPage(1); }}>
+          <option value="asc">A–Z</option><option value="desc">Z–A</option>
+        </select></label>
+        <label className="device-check-filter"><input type="checkbox" checked={favoritesOnly} onChange={event => { setFavoritesOnly(event.target.checked); setPage(1); }} />Only favorites</label>
+        <label className="device-check-filter"><input type="checkbox" checked={favoritesFirst} onChange={event => { setFavoritesFirst(event.target.checked); setPage(1); }} />Favorites first</label>
+        <button className="button secondary compact" type="button" onClick={clearFilters}>Clear filters</button>
       </section>
 
       {savedViewPanelOpen ? (
@@ -489,7 +574,8 @@ export function DevicesWorkspace() {
         </section>
       ) : null}
 
-      <section className="panel device-results-panel">
+      <section className="panel device-results-panel" aria-busy={loading}>
+        {loading && devices.length > 0 ? <p className="muted device-results-status" role="status">Updating results…</p> : null}
         {loading && activeDevices.length === 0 ? (
           <div className="empty-state device-empty-state">
             <h3>Loading devices...</h3>
@@ -501,38 +587,38 @@ export function DevicesWorkspace() {
           <div className="empty-state device-empty-state">
             <h3>No devices found</h3>
             <p className="muted">
-              {devices.length === 0
+              {totalDeviceCount === 0
                 ? "Configure RMM Integration in Settings, then run a manual sync to populate the inventory."
                 : "No devices match this category. Try another tab or adjust the filters."}
             </p>
           </div>
         ) : null}
 
-        {activeDevices.length > 0 && view !== "tree" ? (
-          <DevicePagination
-            page={page}
-            totalPages={totalPages}
-            pageSize={pageSize}
-            total={activeDevices.length}
-            tabs={<DeviceCategoryTabs activeTab={deviceTab} counts={deviceTabCounts} onChange={selectDeviceTab} />}
-            onPageChange={setPage}
-            onPageSizeChange={(nextSize) => { setPageSize(nextSize); setPage(1); }}
-          />
-        ) : activeDevices.length > 0 ? (
-          <div className="device-tree-tab-row">
-            <DeviceCategoryTabs activeTab={deviceTab} counts={deviceTabCounts} onChange={selectDeviceTab} />
-          </div>
-        ) : null}
+        <DevicePagination
+          page={data?.page ?? page}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          total={filteredTotal}
+          loading={loading}
+          tabs={<DeviceCategoryTabs activeTab={deviceTab} counts={deviceTabCounts} onChange={selectDeviceTab} />}
+          onPageChange={setPage}
+          onPageSizeChange={(nextSize) => { setPageSize(nextSize); setPage(1); }}
+        />
+        {view === "tree" ? <p className="muted device-results-status">Grouped by client and site on this page. Sorting applies before pagination.</p> : null}
 
         {view === "table" && pageDevices.length > 0 ? (
           <div className="device-table-wrapper device-table-shell">
             <table className="device-table">
               <thead>
                 <tr>
-                  <th>Device</th>
-                  <th>Client / Site</th>
-                  <th>OS</th>
-                  <th>Status</th>
+                  {SORT_OPTIONS.filter(option => option.value !== "site").map(option => (
+                    <th key={option.value} aria-sort={sortBy === option.value ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
+                      <button type="button" className="device-sort-button" onClick={() => changeSort(option.value)}>
+                        {option.label}{sortBy === option.value ? (sortDirection === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />) : <ArrowUpDown size={14} />}
+                      </button>
+                    </th>
+                  ))}
+                  <th>Network</th>
                   <th>Action</th>
                 </tr>
               </thead>
@@ -588,6 +674,31 @@ export function DevicesWorkspace() {
   );
 }
 
+function DeviceNetwork({ device }: { device: DeviceRecord }) {
+  const [copyNotice, setCopyNotice] = useState("");
+  const network = device.remoteAccessDetails?.network;
+  const values = [...new Set(network?.localIps ?? [])].map(value => ({ label: "LAN", value }));
+  if (network?.publicIp) values.push({ label: "WAN", value: network.publicIp });
+  for (const value of network?.macAddresses ?? []) values.push({ label: "MAC", value });
+  const matches = new Set(device.matchedNetwork ?? []);
+  const primary = values.find(value => matches.has(value.value)) ?? values.find(value => value.label === "LAN") ?? values[0];
+  async function copy(value: string) {
+    try { await navigator.clipboard.writeText(value); setCopyNotice("Copied"); }
+    catch { setCopyNotice("Copy unavailable. Select the address to copy it."); }
+  }
+  const address = (entry: {label: string; value: string}) => <div className="device-network-address" key={`${entry.label}:${entry.value}`}>
+    <small>{entry.label}</small><code>{entry.value}</code>
+    <button type="button" className="button icon-button compact" aria-label={`Copy ${entry.value}`} onClick={() => void copy(entry.value)}><Copy size={12} /></button>
+    {matches.has(entry.value) ? <small className="device-network-match">Match</small> : null}
+  </div>;
+  return <div className="device-network">
+    {primary ? address(primary) : <span>No network data</span>}
+    {values.length > 1 ? <details><summary>All addresses ({values.length})</summary>{values.map(address)}</details> : null}
+    <small className="device-observation">Inventory: {formatDate(device.remoteAccessDetails?.syncedAt ?? null)}</small>
+    {copyNotice ? <small role="status">{copyNotice}</small> : null}
+  </div>;
+}
+
 function DeviceTableRow({
   device,
   busy,
@@ -602,7 +713,6 @@ function DeviceTableRow({
   const DeviceIcon = getDeviceIcon(device);
   const OsIcon = getOsIcon(device.operatingSystem);
   const statusClass = getDeviceStatusClass(device);
-  const network = getDeviceNetworkInfo(device);
   return (
     <tr>
       <td className="device-table-device-cell">
@@ -627,15 +737,17 @@ function DeviceTableRow({
           <div>
             <strong>{device.operatingSystem ?? "Unknown"}</strong>
             <span className="device-os-meta">
-              {device.osVersion ? <span>Agent {device.osVersion}</span> : null}
-              {network.localIp ? <span>IP {network.localIp}</span> : null}
-              {network.macAddress ? <span>MAC {network.macAddress}</span> : null}
-              {!device.osVersion && !network.localIp && !network.macAddress ? <span>{device.primaryUser ?? "-"}</span> : null}
+              {device.osVersion ? <span>OS version {device.osVersion}</span> : null}
+              {device.remoteAccessDetails?.agent?.version ? <span>Agent {device.remoteAccessDetails.agent.version}</span> : null}
+              {!device.osVersion ? <span>{device.primaryUser ?? "-"}</span> : null}
             </span>
           </div>
         </div>
       </td>
-      <td><span className={`status-pill ${device.status === "ACTIVE" ? "success" : "muted"}`}>{device.status}</span></td>
+      <td><span className={`status-pill ${device.status === "ACTIVE" ? "success" : "muted"}`}>{device.status}</span>
+        <small className="device-observation" title="Last reported by RMM; not a live connectivity check">Last seen<br />{formatDate(device.lastSeenAt)}</small>
+      </td>
+      <td><DeviceNetwork device={device} /></td>
       <td className="device-table-action-cell">
         <DeviceActions device={device} busy={busy} onOpenRemote={onOpenRemote} />
       </td>
@@ -657,7 +769,6 @@ function DeviceCard({
   const DeviceIcon = getDeviceIcon(device);
   const OsIcon = getOsIcon(device.operatingSystem);
   const statusClass = getDeviceStatusClass(device);
-  const network = getDeviceNetworkInfo(device);
   return (
     <article className={`device-card ${statusClass}`}>
       <div className="device-card-header">
@@ -683,7 +794,7 @@ function DeviceCard({
         </div>
         <div>
           <span>IP / MAC</span>
-          <strong className="device-card-network-value">{formatNetworkSummary(network)}</strong>
+          <DeviceNetwork device={device} />
         </div>
       </div>
       <DeviceActions device={device} busy={busy} onOpenRemote={onOpenRemote} />
@@ -704,7 +815,6 @@ function DeviceTreeRow({
 }) {
   const DeviceIcon = getDeviceIcon(device);
   const statusClass = getDeviceStatusClass(device);
-  const network = getDeviceNetworkInfo(device);
   return (
     <div className="device-tree-row">
       <span className={`device-type-icon ${statusClass}`}><DeviceIcon size={17} aria-hidden="true" /></span>
@@ -715,10 +825,7 @@ function DeviceTreeRow({
         </div>
         <FavoriteButton device={device} busy={busy} onFavorite={onFavorite} />
       </div>
-      <div className="device-tree-network">
-        <strong>{network.localIp ?? "-"}</strong>
-        <span>{network.macAddress ?? "-"}</span>
-      </div>
+      <div className="device-tree-network"><DeviceNetwork device={device} /></div>
       <span>{device.operatingSystem ?? "Unknown OS"}</span>
       <span className={`status-pill ${device.status === "ACTIVE" ? "success" : "muted"}`}>{device.status}</span>
       <DeviceActions device={device} busy={busy} onOpenRemote={onOpenRemote} />
@@ -765,6 +872,7 @@ function DevicePagination({
   totalPages,
   pageSize,
   total,
+  loading,
   tabs,
   onPageChange,
   onPageSizeChange
@@ -773,6 +881,7 @@ function DevicePagination({
   totalPages: number;
   pageSize: number;
   total: number;
+  loading: boolean;
   tabs?: ReactNode;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
@@ -784,14 +893,14 @@ function DevicePagination({
       </div>
       <div className="button-row">
         <span className="muted device-pagination-count">Showing {Math.min(total, (page - 1) * pageSize + 1)}-{Math.min(total, page * pageSize)} of {total}</span>
-        <select className="input compact-select" value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
+        <select className="input compact-select" aria-label="Rows per page" value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
           {PAGE_SIZE_OPTIONS.map((size) => (
             <option key={size} value={size}>{size} rows</option>
           ))}
         </select>
-        <button className="button secondary compact" type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>Previous</button>
+        <button className="button secondary compact" type="button" disabled={loading || page <= 1} onClick={() => onPageChange(page - 1)}>Previous</button>
         <span className="muted">Page {page} of {totalPages}</span>
-        <button className="button secondary compact" type="button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>Next</button>
+        <button className="button secondary compact" type="button" disabled={loading || page >= totalPages} onClick={() => onPageChange(page + 1)}>Next</button>
       </div>
     </div>
   );
@@ -847,28 +956,6 @@ function groupDevices(devices: DeviceRecord[]) {
   }));
 }
 
-function filterDevicesByTab(devices: DeviceRecord[], tab: DeviceTab) {
-  if (tab === "servers") return devices.filter((device) => isServerDevice(device));
-  if (tab === "workstations") return devices.filter((device) => isWorkstationDevice(device));
-  return devices;
-}
-
-function getDeviceTabCounts(devices: DeviceRecord[]): Record<DeviceTab, number> {
-  return {
-    all: devices.length,
-    servers: devices.filter((device) => isServerDevice(device)).length,
-    workstations: devices.filter((device) => isWorkstationDevice(device)).length
-  };
-}
-
-function isServerDevice(device: DeviceRecord) {
-  return device.type === "SERVER" || getDeviceIcon(device) === Server;
-}
-
-function isWorkstationDevice(device: DeviceRecord) {
-  return device.type === "DESKTOP" || device.type === "LAPTOP";
-}
-
 function getDeviceStatusClass(device: DeviceRecord) {
   if (device.status === "ACTIVE") return "active";
   if (device.status === "INACTIVE") return "inactive";
@@ -888,19 +975,6 @@ function looksLikeLinuxServer(source: string) {
   const linuxServerSignals = ["linux", "ubuntu", "debian", "centos", "red hat", "rhel", "rocky", "alma", "fedora", "suse", "pve", "proxmox", "esxi"];
   const workstationSignals = ["desktop", "workstation", "laptop", "notebook", "tablet", "phone"];
   return linuxServerSignals.some((signal) => source.includes(signal)) && !workstationSignals.some((signal) => source.includes(signal));
-}
-
-function getDeviceNetworkInfo(device: DeviceRecord) {
-  const network = device.remoteAccessDetails?.network;
-  return {
-    localIp: network?.localIps?.find(Boolean) ?? null,
-    macAddress: network?.macAddresses?.find(Boolean) ?? null
-  };
-}
-
-function formatNetworkSummary(network: { localIp: string | null; macAddress: string | null }) {
-  if (!network.localIp && !network.macAddress) return "-";
-  return [network.localIp ? `IP: ${network.localIp}` : null, network.macAddress ? `MAC: ${network.macAddress}` : null].filter(Boolean).join(" / ");
 }
 
 function getOsIcon(os?: string | null) {
