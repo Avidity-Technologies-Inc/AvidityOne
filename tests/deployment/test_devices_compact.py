@@ -35,6 +35,9 @@ class DevicesCompactDeploymentTests(unittest.TestCase):
     def test_retry_same_release(self):
         result = self.deploy(previous='a' * 40)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    def test_upgrade_from_compact_release(self):
+        result = self.deploy(previous='dd49b6db3d05bf671513f8d591593e5ac0ddb6fc')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     def test_recovery(self):
         for failure in ['build', 'health']:
             with self.subTest(failure=failure): self.assertNotEqual(self.deploy(failure).returncode, 0)

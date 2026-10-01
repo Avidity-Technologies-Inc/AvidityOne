@@ -4,6 +4,7 @@ set -Eeuo pipefail
 umask 077
 app=/opt/avidity/app
 base=1d94fbff0b7cafbdba899083887fc941990edbe8
+compact_release=dd49b6db3d05bf671513f8d591593e5ac0ddb6fc
 release=${1:-}
 [[ $EUID -eq 0 ]] || { echo 'Run as root (sudo).'; exit 1; }
 [[ $release =~ ^[0-9a-f]{40}$ ]] || { echo 'Supply the full published release SHA.'; exit 1; }
@@ -15,7 +16,7 @@ as_app() { runuser -u avidity -- "$@"; }
 [[ $(as_app git branch --show-current) == main ]] || { echo 'Expected main; stop and inspect.'; exit 1; }
 [[ -z $(as_app git status --porcelain) ]] || { echo 'Preserve and review local server changes before deploying.'; exit 1; }
 previous=$(as_app git rev-parse HEAD)
-[[ $previous == "$base" || $previous == "$release" ]] || { echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1; }
+[[ $previous == "$base" || $previous == "$compact_release" || $previous == "$release" ]] || { echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1; }
 as_app git cat-file -e "$release^{commit}"
 as_app git merge-base --is-ancestor "$base" "$release"
 as_app git merge-base --is-ancestor "$release" origin/main
@@ -97,4 +98,4 @@ systemctl is-active --quiet avidity-web
 [[ -z $(as_app git status --porcelain) ]]
 trap - ERR INT TERM
 printf 'Deployment complete: %s\nRecovery directory: %s\n' "$release" "$backup"
-echo 'Next: verify compact Devices rows and the options menu. In Settings > RMM Integration, enable automatic sync and save a 30-minute interval; verify the next run and its result. This script preserves existing activation settings.'
+echo 'Next: verify Connect, Remote BG and SysInfo labels remain on one line. Existing RMM settings and activation are preserved.'

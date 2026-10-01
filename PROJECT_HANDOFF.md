@@ -1,5 +1,10 @@
 # Project Handoff
 
+## Device Action Labels — 2026-10-01
+
+- Follow-up to `dd49b6d`: restored small Connect, Remote BG and SysInfo labels beside their icons, with room in the Action column and the same 30-pixel button height. Existing action handlers, permissions and RMM scheduling are unchanged.
+- Web TypeScript and focused browser checks passed in Chromium, Firefox and WebKit. Publication authorized; production execution remains with the user. The existing `deploy-devices-compact.sh` helper also accepts the installed `dd49b6d` release for this update and preserves backup/recovery checks.
+
 ## Compact Devices and RMM Scheduling — 2026-10-01
 
 - Follow-up from clean local/GitHub `main` at `1d94fbf`. Compact header/rows, one-line accessible action icons, hidden advanced filters through the options menu, and expandable real synchronization status preserve existing inventory controls.
