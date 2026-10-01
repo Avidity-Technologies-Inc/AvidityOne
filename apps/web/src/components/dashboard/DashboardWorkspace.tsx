@@ -318,7 +318,7 @@ function ActivityChart({ items }: { items: DashboardStats["activityByDay"] }) {
       <div className="section-heading compact-heading">
         <div>
           <h2>Ticket Activity</h2>
-          <p className="muted">Created and closed tickets over the last 30 days.</p>
+          <p className="muted">Created / closed · Last 30 days</p>
         </div>
       </div>
       <div className="dashboard-activity-chart" role="img" aria-label="Tickets created and closed by day">
@@ -1002,7 +1002,7 @@ export function DashboardWorkspace() {
         return (
           <>
             <div className="dashboard-section-heading">
-              <h2>Tickets</h2><small className="muted">Calendar charts: {stats.timeZone ?? "UTC"}</small>
+              <h2>Tickets</h2>
             </div>
             <section className="dashboard-kpi-grid dashboard-ticket-kpi-grid">
               {summaryCards.map((card) => (
@@ -1031,7 +1031,7 @@ export function DashboardWorkspace() {
       case "ticketActivity":
         return <ActivityChart items={stats.activityByDay} />;
       case "ticketsByStatus":
-        return <DonutChart title="Tickets by Status" subtitle="Click a segment label to filter tickets." items={statusItems} />;
+        return <DonutChart title="Tickets by Status" subtitle="All tickets · Select a status to filter" items={statusItems} />;
       case "ticketsByPriority":
         return <DonutChart title="Tickets by Priority" subtitle="Workload distribution by urgency." items={priorityItems} />;
       case "specialistTrend":
@@ -1047,7 +1047,7 @@ export function DashboardWorkspace() {
       case "specialistPerformance":
         return <SpecialistPerformanceCard items={specialistPerformance} />;
       case "ticketsByClient":
-        return <HorizontalBarList title="Tickets by Client" subtitle="Top client workload across all active tickets." items={clientItems} />;
+        return <HorizontalBarList title="Tickets by Client" subtitle="Top clients · Active tickets" items={clientItems} />;
       case "ticketsBySource":
         return <DonutChart title="Tickets by Source" subtitle="Where tickets are entering the helpdesk." items={sourceItems} />;
       case "criticalTickets":
@@ -1090,6 +1090,7 @@ export function DashboardWorkspace() {
   return (
     <div className="dashboard-page">
       <div className="dashboard-toolbar">
+        <small className="muted">Calendar timezone: {stats.timeZone ?? "UTC"}</small>
         <button className={`button ${customizing ? "primary" : "secondary"}`} type="button" onClick={() => setCustomizing((current) => !current)}>
           <Settings2 size={16} /> {customizing ? "Done" : "Customize"}
         </button>

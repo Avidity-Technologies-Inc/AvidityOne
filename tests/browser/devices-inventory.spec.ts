@@ -5,7 +5,7 @@ import { test, expect, Page } from "@playwright/test";
 import { inventoryNetwork, selectInventory } from "../../apps/api/src/modules/devices/device-inventory";
 import type { DeviceQueryDto } from "../../apps/api/src/modules/devices/dto/device-query.dto";
 const root = path.resolve(".");
-const bundle = buildSync({ stdin: { contents: 'import React from "react"; import {createRoot} from "react-dom/client"; import {DevicesWorkspace} from "./apps/web/src/components/devices/DevicesWorkspace"; createRoot(document.getElementById("root")).render(<DevicesWorkspace/>);', resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", alias: { "@": path.join(root, "apps/web/src"), "next/link": "./tests/browser/fixtures/qc-link.tsx" }, define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' } }).outputFiles[0].text;
+const bundle = buildSync({ stdin: { contents: 'import React from "react"; import {createRoot} from "react-dom/client"; import {DevicesWorkspace} from "./apps/web/src/components/devices/DevicesWorkspace"; import {ModuleHeader,ModuleHeaderProvider} from "./apps/web/src/components/layout/ModuleHeader"; createRoot(document.getElementById("root")).render(<ModuleHeaderProvider><ModuleHeader/><DevicesWorkspace/></ModuleHeaderProvider>);', resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", alias: { "@": path.join(root, "apps/web/src"), "next/navigation": "./tests/browser/fixtures/access-navigation.ts", "next/link": "./tests/browser/fixtures/qc-link.tsx" }, define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' } }).outputFiles[0].text;
 
 async function mount(page: Page, initial = "", savedState?: object, compact = false) {
   await page.addInitScript(() => {
@@ -42,6 +42,7 @@ async function mount(page: Page, initial = "", savedState?: object, compact = fa
   });
   await page.goto(`https://inventory.test/devices${initial}`);
   await page.addStyleTag({content:["globals.css","operational-ui.css"].map(file => readFileSync(path.join(root,"apps/web/src/app",file),"utf8")).join("\n")});
+  await page.addStyleTag({ content: readFileSync(path.join(root, "apps/web/src/app/operational-ui.css"), "utf8") });
   await expect(page.locator(".device-results-panel")).toHaveAttribute("aria-busy","false");
   if (!compact) {
     await page.getByLabel("Device options",{exact:true}).click();

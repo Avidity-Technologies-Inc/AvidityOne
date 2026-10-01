@@ -434,10 +434,6 @@ export function DevicesWorkspace() {
     <>
       <div className="compact-page-header device-page-header">
         <div className="device-page-heading">
-          <div className="device-page-title-block">
-            <span className="device-page-eyebrow">RMM Inventory</span>
-            <h1>Devices</h1>
-          </div>
           <div className="device-header-summary" aria-label="Device inventory summary">
             <span><strong>{totalDeviceCount}</strong> devices</span>
             <span><strong>{loading ? "…" : filteredTotal}</strong> in this view</span>

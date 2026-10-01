@@ -400,11 +400,6 @@ export function EventServicesCalendarView() {
   return (
     <div className="event-calendar-page">
       <div className="compact-page-header event-calendar-header">
-        <div className="event-page-title-block">
-          <span className="event-page-eyebrow">Calendar Operations</span>
-          <h1>Event Calendar</h1>
-          <p className="muted">Plan event requests, specialists, service tasks, and Microsoft Calendar work.</p>
-        </div>
         <div className="button-row event-header-actions">
           <button className="button secondary" type="button" onClick={() => { window.location.href = "/event-services"; }}>Back to Requests</button>
           <button className="button secondary" type="button" onClick={() => void loadCalendar()} disabled={loading}>

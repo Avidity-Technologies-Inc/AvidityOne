@@ -1,5 +1,11 @@
 # Project Handoff
 
+## Shared Module Headers — 2026-10-01
+
+- Approved from clean local/GitHub `9396908`: authenticated topbar now carries module titles and section context; repeated generic headings are removed while record headings and operational controls remain. Dashboard spacing and chart headings are compact; saved widget behavior is preserved.
+- Frontend-only change; branding configuration, public portals, APIs, permissions and schema remain unchanged. Web typecheck/build and 120 distinct browser cases passed; guarded web-only deployment/recovery tests passed. Production execution remains with the user.
+- See [behavior, validation and deployment](docs/MODULE_HEADERS_2026-10-01.md). Use `scripts/deploy-module-headers.sh <full-release-sha>` from the target revision after fetching origin; it preserves the API service and backs up/restores the web runtime.
+
 ## System Health and RMM Tracking — 2026-10-01
 
 - Approved from clean local/GitHub `d5cca7e`: added Devices synchronization evidence and per-run outcomes, separate last-success timestamp, organization-scoped snapshots, full filtered/paged history, honest timeline coverage, Settings Refresh and minute polling. Current diagnostics distinguish configuration from verified availability; disabled integrations are neutral.

@@ -1,7 +1,8 @@
 "use client";
+import { ModuleSection } from "@/components/layout/ModuleHeader";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ClipboardCheck, RefreshCw, Settings, Download } from "lucide-react";
+import { RefreshCw, Settings, Download } from "lucide-react";
 import { QC_REVIEW_STATES } from "@avidity/shared";
 import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { apiFetch } from "@/lib/api";
@@ -65,7 +66,8 @@ export function QcWorkspace({ section, initialFilters = {} }: { section: string[
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Export failed."); } finally { setBusy(false); }
   }
   return <section className="qc-workspace" aria-busy={busy}>
-    <header className="qc-heading"><div><span className="qc-eyebrow">Service assurance</span><h1><ClipboardCheck size={25} /> Quality Control</h1><p>Inspect work, resolve exceptions and track service quality.</p></div><div className="qc-inline"><button onClick={() => { setRefreshVersion(value => value + 1); void reload(); }} disabled={busy}><RefreshCw size={16} /> Refresh</button>{can("qc.settings_manage") && <Link className="qc-button" href="/qc/settings"><Settings size={16} /> Settings</Link>}</div></header>
+    <ModuleSection label={({ overview: "Overview", reviews: "Review queue", actions: "Coaching & actions", creative: "Creative work", scorecards: "Scorecards", deliveries: "Delivery audit", work: "Work records", settings: "Settings", clients: "Clients" } as Record<string, string>)[view] ?? ""} />
+    <header className="qc-heading"><div className="qc-inline"><button onClick={() => { setRefreshVersion(value => value + 1); void reload(); }} disabled={busy}><RefreshCw size={16} /> Refresh</button>{can("qc.settings_manage") && <Link className="qc-button" href="/qc/settings"><Settings size={16} /> Settings</Link>}</div></header>
     <nav className="qc-tabs" aria-label="Quality Control"><Link aria-current={view === "overview" ? "page" : undefined} href="/qc">Overview</Link><Link aria-current={view === "reviews" ? "page" : undefined} href="/qc/reviews">Review queue</Link><Link aria-current={view === "actions" ? "page" : undefined} href="/qc/actions">Coaching & actions</Link><Link aria-current={view === "creative" ? "page" : undefined} href="/qc/creative">Creative work</Link><Link aria-current={view === "scorecards" ? "page" : undefined} href="/qc/scorecards">Scorecards</Link><Link aria-current={view === "deliveries" ? "page" : undefined} href="/qc/deliveries">Delivery audit</Link><Link aria-current={view === "work" ? "page" : undefined} href="/qc/work">Work records</Link></nav>
     {error && <div className="qc-notice qc-error" role="alert">{error}</div>}
     {!lookups && !error && <p role="status">Loading QC access and configuration…</p>}

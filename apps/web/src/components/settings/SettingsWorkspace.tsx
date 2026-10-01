@@ -1,4 +1,6 @@
 "use client";
+
+import { ModuleSection } from "@/components/layout/ModuleHeader";
 import { SystemHealthPanel, HealthSummary as SystemHealthSummary } from "./SystemHealthPanel";
 import { ComposerPreferencesPanel } from "@/components/composer/ComposerPreferencesPanel";
 import { TicketEmailPanel } from "@/components/notifications/TicketEmailPanel";
@@ -2823,9 +2825,8 @@ export function SettingsWorkspace() {
     <div className="settings-page">
       <div className="settings-command-header">
         <div>
-          <span className="page-eyebrow">Administration</span>
-          <h1>Settings</h1><QcContextLink href="/qc/settings" label="QC configuration" permission="qc.settings_manage" />
-          <span className="muted">{activeSettingsLabel}</span>
+          <ModuleSection label={activeSettingsLabel} />
+          <QcContextLink href="/qc/settings" label="QC configuration" permission="qc.settings_manage" />
         </div>
         <button className="button secondary settings-refresh-button" type="button" onClick={() => { void loadSettingsData(); setHealthRefreshToken(value => value + 1); }} disabled={loading}>
           <RefreshCcw size={16} aria-hidden="true" />

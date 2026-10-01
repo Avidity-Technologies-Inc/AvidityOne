@@ -19,13 +19,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useBranding } from "@/components/providers/BrandingProvider";
 import { subscribeAccessRefresh } from "@/lib/access-refresh";
 import { ApiError, apiFetch } from "@/lib/api";
 import { NotificationBell } from "./NotificationBell";
 import { SystemStatusClock } from "./SystemStatusClock";
 import { ThemeToggle } from "./ThemeToggle";
+import { ModuleHeader, ModuleHeaderProvider } from "./ModuleHeader";
 import { UserMenu } from "./UserMenu";
 
 const iconMap = {
@@ -66,6 +67,7 @@ interface CurrentUser {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const topbarRef = useRef<HTMLElement>(null);
   const branding = useBranding();
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -130,12 +132,22 @@ export function AppShell({ children }: { children: ReactNode }) {
     window.location.replace(fallbackHref);
   }, [navigation, pathname, user, userPermissions]);
 
+  useEffect(() => {
+    const topbar = topbarRef.current;
+    if (!topbar) return;
+    const updateHeight = () => topbar.closest<HTMLElement>(".shell")?.style.setProperty("--app-topbar-height", `${topbar.getBoundingClientRect().height}px`);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(topbar);
+    return () => observer.disconnect();
+  }, []);
+
   const logoBackgroundStyle = {
     background: branding.brandLogoTransparentBackground ? "transparent" : (branding.brandLogoBackgroundColor ?? "#ffffff")
   };
 
   return (
-    <div className="shell">
+    <ModuleHeaderProvider><div className="shell">
       {mobileNavOpen ? <button className="mobile-nav-backdrop" type="button" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} /> : null}
       <aside className={`sidebar${mobileNavOpen ? " mobile-open" : ""}`} aria-label="Application navigation">
         <Link className="brand" href="/dashboard">
@@ -203,18 +215,15 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
       </aside>
       <div className="main">
-        <header className="topbar">
+        <header className="topbar" ref={topbarRef}>
           <div className="topbar-brand">
             <button className="mobile-menu-button" type="button" aria-label="Open navigation" onClick={() => setMobileNavOpen(true)}>
               <Menu size={20} aria-hidden="true" />
             </button>
-            <div className="topbar-company">
-              <strong>{branding.companyName}</strong>
-              <div className="muted">{branding.supportEmail}</div>
-            </div>
+            <ModuleHeader />
           </div>
           <div className="topbar-actions">
-            {branding.supportButtonEnabled !== false ? <button className="button secondary" type="button" onClick={() => branding.supportButtonUrl ? window.open(branding.supportButtonUrl, "_blank", "noopener,noreferrer") : undefined}>
+            {branding.supportButtonEnabled !== false ? <button className="button secondary" type="button" aria-label={branding.supportButtonLabel ?? "Support"} onClick={() => branding.supportButtonUrl ? window.open(branding.supportButtonUrl, "_blank", "noopener,noreferrer") : undefined}>
               <LifeBuoy size={16} aria-hidden="true" />
               <span>{branding.supportButtonLabel ?? "Support"}</span>
             </button> : null}
@@ -242,6 +251,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           })}
         </nav>
       </div>
-    </div>
+    </div></ModuleHeaderProvider>
   );
 }

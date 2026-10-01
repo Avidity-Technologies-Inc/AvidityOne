@@ -11,13 +11,6 @@ export default async function KnowledgeArticlePage({ params }: KnowledgeArticleP
 
   return (
     <AppShell>
-      <div className="compact-page-header knowledge-page-header">
-        <div>
-          <span className="page-eyebrow">Knowledge Base</span>
-          <h1>Knowledge Base</h1>
-          <p className="muted">Review article pages, attachments, and publishing status.</p>
-        </div>
-      </div>
       <Suspense fallback={<section className="panel">Loading article...</section>}>
         <KnowledgeBaseWorkspace articleId={articleId} />
       </Suspense>

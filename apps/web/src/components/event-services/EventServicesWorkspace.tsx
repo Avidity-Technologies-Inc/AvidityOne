@@ -685,11 +685,10 @@ export function EventServicesWorkspace({ detailTrackingNumber }: EventServicesWo
   return (
     <div className={detailPage ? "event-services-page event-detail-page" : "event-services-page"}>
       <div className="compact-page-header event-page-header">
-        <div className="event-page-title-block">
-          <span className="event-page-eyebrow">Service Operations</span>
-          <h1>{detailPage ? selected?.trackingNumber ?? detailTrackingNumber : "Event & Services"}</h1>
-          <p className="muted">{detailPage ? selected?.eventName ?? "Event request detail" : "Coordinate requests, specialists, tasks, calendar work, and requester updates."}</p>
-        </div>
+        {detailPage ? <div className="event-page-title-block">
+          <h1>{selected?.trackingNumber ?? detailTrackingNumber}</h1>
+          <p className="muted">{selected?.eventName ?? "Event request detail"}</p>
+        </div> : null}
         <div className="button-row event-header-actions">
           {detailPage ? (
             <button className="button secondary" type="button" onClick={closeRequest}>

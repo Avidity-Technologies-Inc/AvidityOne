@@ -437,11 +437,6 @@ export function ClientsWorkspace() {
   return (
     <>
       <div className="compact-page-header clients-page-header">
-        <div className="clients-page-title">
-          <span className="page-eyebrow">Client Directory</span>
-          <h1>Clients</h1>
-          <p className="muted">Manage institution profiles, routing domains, and authorized requesters.</p>
-        </div>
         <div className="form-actions clients-header-actions">
           <button className="button secondary" type="button" onClick={loadClients} disabled={loading || saving}>
             <RefreshCcw size={16} aria-hidden="true" />

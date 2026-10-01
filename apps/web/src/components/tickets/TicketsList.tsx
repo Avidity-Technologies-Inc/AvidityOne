@@ -1392,9 +1392,6 @@ export function TicketsList() {
     <>
       <div className="tickets-compact-header">
         <div className="tickets-compact-title">
-          <div className="tickets-title-copy">
-            <h1>Tickets</h1>
-          </div>
           <span className="count-pill">{totalTickets} total</span>
         </div>
         <div className="tickets-toolbar-row">
