@@ -16711,6 +16711,40 @@ button.ticket-workflow-toggle { border: 0; cursor: pointer; }
   .device-inventory-controls > label:not(.device-check-filter) { flex: 1 1 120px; }
   .device-inventory-controls .input { width: 100%; max-width: none; }
 }
-.device-table:has(.device-sort-button) .device-action-row { flex-wrap: wrap; }
+.device-table:has(.device-sort-button) .device-action-row { flex-wrap: nowrap; }
 .device-table:has(.device-sort-button) .device-action-row .button span { white-space: nowrap; }
 .device-network-address .button.icon-button { min-height: 24px; height: 24px; width: 24px; min-width: 24px; padding: 3px; }
+
+/* Compact Devices workspace; actions retain full accessible names and tooltips. */
+.device-page-header { padding: 10px 14px; align-items: center; gap: 10px; margin-bottom: 10px; }
+.device-page-header .device-page-heading { display: flex; gap: 8px 14px; align-items: center; }
+.device-page-header h1 { font-size: 21px; line-height: 1.2; margin: 0; }
+.device-page-header .device-header-summary { font-size: 12px; }
+.device-sync-status { border: 0; background: transparent; color: var(--text-muted); font: inherit; padding: 3px 8px; cursor: pointer; text-align: left; }
+.device-sync-status:hover { color: var(--brand-primary); text-decoration: underline; }
+.device-header-actions .button { min-height: 32px; padding: 5px 9px; font-size: 12px; }
+.device-sync-details { padding: 10px 14px; font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.device-sync-details p { margin: 0; flex-basis: 100%; color: var(--text-muted); }
+.device-toolbar-panel { padding: 10px 14px; }
+.device-options { position: relative; }
+.device-options summary { list-style: none; }
+.device-options summary::-webkit-details-marker { display: none; }
+.device-options-popover { position: absolute; z-index: 20; right: 0; top: calc(100% + 5px); width: 220px; padding: 5px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-md); }
+.device-options-popover button { display: block; width: 100%; padding: 9px 10px; text-align: left; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.device-options-popover button:hover { background: var(--surface-hover); }
+.device-active-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0; }
+.device-results-panel .device-pagination { padding-block: 10px; margin-block: 0; }
+.device-table:has(.device-sort-button) td { padding: 8px 10px; vertical-align: middle; }
+.device-table:has(.device-sort-button) .device-action-row .button { min-width: 30px; width: 30px; height: 30px; min-height: 30px; padding: 0; flex: 0 0 30px; box-shadow: none; }
+.device-table:has(.device-sort-button) .device-action-row .button span { display: none; }
+.device-table:has(.device-sort-button) .device-action-row .button svg { width: 15px; height: 15px; flex-shrink: 0; }
+.device-table:has(.device-sort-button) .device-observation { margin-top: 3px; }
+@media (max-width: 600px) {
+  .device-page-header .device-page-heading { align-items: flex-start; }
+  .device-page-header .device-header-summary { display: flex; gap: 4px 10px; }
+  .device-page-header .device-header-actions { display: flex; flex-direction: row; flex-wrap: wrap; }
+  .device-page-header .device-header-actions .button { flex: 0 1 auto; }
+  .device-options { justify-self: end; }
+  .device-category-tabs { max-width: 100%; overflow-x: auto; }
+  .device-category-tabs button { flex: 1 0 auto; min-width: max-content; padding-inline: 7px; gap: 4px; font-size: 12px; }
+}

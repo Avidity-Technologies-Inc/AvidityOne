@@ -118,13 +118,13 @@ type RemoteAccessSyncContext = {
 const RMM_AUTO_SYNC_SCAN_INTERVAL_MS = 60_000;
 const RMM_AUTO_SYNC_DEFER_MINUTES = 5;
 const RMM_AUTO_SYNC_LOCK_STALE_MINUTES = 30;
-const RMM_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 60;
-const RMM_SYNC_PRIORITY_WINDOW_MS = 2 * 60 * 1000;
+const RMM_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 30;
 
 @Injectable()
 export class DevicesService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DevicesService.name);
   private readonly runningAutoSyncs = new Set<string>();
+  private autoSyncScanRunning = false;
   private autoSyncTimer?: NodeJS.Timeout;
 
   constructor(
@@ -936,6 +936,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async runDueRemoteAccessAutoSyncs() {
+    if (this.autoSyncScanRunning) return;
+    this.autoSyncScanRunning = true;
     try {
       const now = new Date();
       const staleLockCutoff = new Date(now.getTime() - RMM_AUTO_SYNC_LOCK_STALE_MINUTES * 60_000);
@@ -960,17 +962,25 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
           continue;
         }
 
-        if (await this.shouldDeferRemoteAccessAutoSync(settings.organizationId, now, settings.remoteAccessLastSyncAt, settings.remoteAccessAutoSyncIntervalMinutes ?? RMM_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES)) {
-          await this.deferRemoteAccessAutoSync(settings.organizationId, "Automatic RMM sync deferred to avoid overlapping priority sync work.");
-          continue;
-        }
-
         this.runningAutoSyncs.add(settings.organizationId);
+        let claimed = false;
         try {
-          await this.prisma.systemSetting.update({
-            where: { organizationId: settings.organizationId },
-            data: { remoteAccessAutoSyncLockedAt: new Date() }
+          const claim = await this.prisma.systemSetting.updateMany({
+            where: {
+              organizationId: settings.organizationId,
+              remoteAccessProviderEnabled: true,
+              remoteAccessAutoSyncEnabled: true,
+              remoteAccessNextAutoSyncAt: settings.remoteAccessNextAutoSyncAt,
+              OR: [{ remoteAccessAutoSyncLockedAt: null }, { remoteAccessAutoSyncLockedAt: { lt: staleLockCutoff } }]
+            },
+            data: { remoteAccessAutoSyncLockedAt: now }
           });
+          if (claim.count !== 1) continue;
+          claimed = true;
+          if (await this.shouldDeferRemoteAccessAutoSync(settings.organizationId, now)) {
+            await this.deferRemoteAccessAutoSync(settings.organizationId, "Automatic RMM sync postponed briefly while mailbox synchronization is running.");
+            continue;
+          }
           await this.syncRemoteAccessForOrganization({
             organizationId: settings.organizationId,
             userId: null,
@@ -978,6 +988,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
             trigger: "auto"
           });
         } catch (error) {
+          if (!claimed) throw error;
           const message = error instanceof Error ? error.message : "Unknown RMM auto sync failure.";
           await this.prisma.systemSetting.update({
             where: { organizationId: settings.organizationId },
@@ -998,38 +1009,19 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       this.logger.warn(`RMM auto sync scan failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      this.autoSyncScanRunning = false;
     }
   }
 
-  private async shouldDeferRemoteAccessAutoSync(organizationId: string, now: Date, lastAttemptAt: Date | null = null, intervalMinutes = RMM_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES) {
-    // Yield to observed mailbox locks; future due times must not starve inventory.
-    const activeMailboxes = await this.prisma.mailbox.count({ where: { organizationId, isActive: true, autoSyncEnabled: true, autoSyncLockedAt: { gte: new Date(now.getTime() - 10 * 60_000) } } });
-    if (activeMailboxes > 0) return true;
-    if (!lastAttemptAt || now.getTime() - lastAttemptAt.getTime() >= Math.max(intervalMinutes, RMM_AUTO_SYNC_DEFER_MINUTES) * 2 * 60_000) return false;
-    const priorityWindowEnd = new Date(now.getTime() + RMM_SYNC_PRIORITY_WINDOW_MS);
-    const recentMailboxLockCutoff = new Date(now.getTime() - 10 * 60_000);
-    const [priorityMailboxes, dueReports] = await Promise.all([
-      this.prisma.mailbox.count({
-        where: {
-          organizationId,
-          isActive: true,
-          autoSyncEnabled: true,
-          OR: [
-            { autoSyncLockedAt: { gte: recentMailboxLockCutoff } },
-            { nextAutoSyncAt: null },
-            { nextAutoSyncAt: { lte: priorityWindowEnd } }
-          ]
-        }
-      }),
-      this.prisma.reportSchedule.count({
-        where: {
-          organizationId,
-          isActive: true,
-          nextRunAt: { lte: priorityWindowEnd }
-        }
-      })
-    ]);
-    return priorityMailboxes > 0 || dueReports > 0;
+  private async shouldDeferRemoteAccessAutoSync(organizationId: string, now: Date) {
+    // Only actual mailbox work can postpone a due inventory run. Frequent future
+    // mail/report schedules previously stretched a configured interval to twice its length.
+    const activeMailboxes = await this.prisma.mailbox.count({
+      where: { organizationId, isActive: true, autoSyncEnabled: true,
+        autoSyncLockedAt: { gte: new Date(now.getTime() - 10 * 60_000) } }
+    });
+    return activeMailboxes > 0;
   }
 
   private async deferRemoteAccessAutoSync(organizationId: string, reason: string) {
@@ -1123,7 +1115,21 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     existing?: Prisma.JsonValue | null
   ): RemoteAccessDetailSnapshot | Prisma.JsonValue {
     if (this.hasRichRemoteAccessDetails(incoming)) return incoming;
-    return existing !== undefined && existing !== null && this.hasRichRemoteAccessDetails(existing) ? existing : incoming;
+    if (!this.isRecord(existing) || !this.hasRichRemoteAccessDetails(existing)) return incoming;
+    // A list sync must not freeze addresses/agent state just because the older
+    // detail endpoint supplied richer hardware. Preserve omitted detail fields.
+    const network = this.pickRecord(existing, ["network"]) ?? {};
+    const agent = this.pickRecord(existing, ["agent"]) ?? {};
+    return {
+      ...existing,
+      network: {
+        ...network,
+        ...(incoming.network.publicIp ? { publicIp: incoming.network.publicIp } : {}),
+        ...(incoming.network.localIps.length ? { localIps: incoming.network.localIps } : {}),
+        ...(incoming.network.macAddresses.length ? { macAddresses: incoming.network.macAddresses } : {})
+      },
+      agent: { ...agent, ...Object.fromEntries(Object.entries(incoming.agent).filter(([, value]) => value !== null && value !== "")) }
+    } as Prisma.JsonObject;
   }
 
   private hasRichRemoteAccessDetails(snapshot: unknown) {

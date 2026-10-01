@@ -34,7 +34,7 @@ const defaultDraft = {
   controlUrlTemplate: "https://rmm.aviditytechnologies.com/takecontrol/{agentId}",
   backgroundUrlTemplate: "https://rmm.aviditytechnologies.com/remotebackground/{agentId}?agentPlatform={agentPlatform}",
   autoSyncEnabled: false,
-  autoSyncIntervalMinutes: 60
+  autoSyncIntervalMinutes: 30
 };
 
 export function RmmConfigPanel() {
@@ -206,13 +206,14 @@ export function RmmConfigPanel() {
         </label>
       </div>
 
+      <p className="muted">For a 30-minute schedule, enable automatic RMM sync, set the interval to 30 and save. The summary below shows the saved schedule.</p>
       <div className="rmm-help-panel">
         <Monitor size={18} aria-hidden="true" />
         <div>
           <strong>Supported URL tokens</strong>
           <p className="muted">Use {"{agentId}"}, {"{hostname}"}, {"{clientName}"}, {"{siteName}"}, {"{meshNodeId}"}, or {"{agentPlatform}"} in URL templates. Secrets must stay in environment variables, not in the database.</p>
           <p className="muted">API key resolved: {settings?.hasResolvedApiKey ? "Yes" : "No"}</p>
-          <p className="muted">Automatic sync is intentionally deferred when email sync or scheduled reports are due, so ticket ingestion keeps priority.</p>
+          <p className="muted">The scheduler checks every minute. A running mailbox sync can postpone inventory by five minutes; future mail or report schedules do not block it. The interval is measured after each completed attempt.</p>
         </div>
       </div>
 

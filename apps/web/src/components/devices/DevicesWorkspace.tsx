@@ -89,6 +89,9 @@ interface DevicesResponse {
     lastSyncAt: string | null;
     lastSyncStatus: string | null;
     lastSyncMessage: string | null;
+    autoSyncEnabled?: boolean;
+    autoSyncIntervalMinutes?: number | null;
+    nextAutoSyncAt?: string | null;
   };
 }
 
@@ -146,6 +149,9 @@ export function DevicesWorkspace() {
   const [viewName, setViewName] = useState("");
   const [viewScope, setViewScope] = useState<"PRIVATE" | "ADMINISTRATORS">("PRIVATE");
   const [viewIsDefault, setViewIsDefault] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [syncDetailsOpen, setSyncDetailsOpen] = useState(false);
+  const optionsMenu = useRef<HTMLDetailsElement>(null);
   const [savedViewPanelOpen, setSavedViewPanelOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -433,9 +439,11 @@ export function DevicesWorkspace() {
             <h1>Devices</h1>
           </div>
           <div className="device-header-summary" aria-label="Device inventory summary">
-            <span><strong>Devices:</strong> {totalDeviceCount}</span>
-            <span><strong>Devices in this view:</strong> {loading ? "Loading..." : filteredTotal}</span>
-            <span><strong>Inventory status:</strong> {data?.remoteAccess.lastSyncStatus ?? "Not checked"} · Last sync attempt: {data?.remoteAccess.lastSyncAt ? new Date(data.remoteAccess.lastSyncAt).toLocaleString() : "No recorded sync"}</span><span className="muted">{lastSyncMessage} Device status reflects the last observation, not a live availability check.</span>
+            <span><strong>{totalDeviceCount}</strong> devices</span>
+            <span><strong>{loading ? "…" : filteredTotal}</strong> in this view</span>
+            <button type="button" className="device-sync-status" onClick={() => setSyncDetailsOpen(value => !value)} aria-expanded={syncDetailsOpen} aria-controls="device-sync-details">
+              Sync: {data?.remoteAccess.lastSyncStatus ?? "Not checked"} · {data?.remoteAccess.autoSyncEnabled ? `Every ${data.remoteAccess.autoSyncIntervalMinutes ?? "—"} min` : "Auto sync off"}
+            </button>
           </div>
         </div>
         <div className="button-row device-header-actions">
@@ -454,6 +462,12 @@ export function DevicesWorkspace() {
         </div>
       </div>
 
+      {syncDetailsOpen ? <section className="panel device-sync-details" id="device-sync-details" aria-label="Synchronization details">
+        <span><strong>Last attempt:</strong> {formatDate(data?.remoteAccess.lastSyncAt ?? null)}</span>
+        <span><strong>Next automatic sync:</strong> {formatDate(data?.remoteAccess.nextAutoSyncAt ?? null)}</span>
+        <p>{lastSyncMessage} Device status reflects the last RMM observation, not a live availability check.</p>
+        <p>Manage the interval in Settings → RMM Integration. Active mailbox work may briefly postpone a scheduled run.</p>
+      </section> : null}
       {error ? <div className="error-banner">{error}</div> : null}
       {notice ? <div className="success-banner">{notice}</div> : null}
 
@@ -504,19 +518,17 @@ export function DevicesWorkspace() {
             ))}
           </select>
         ) : null}
-        <button
-          className={`button icon-button device-view-menu-button ${savedViewPanelOpen ? "active" : ""}`}
-          type="button"
-          onClick={() => setSavedViewPanelOpen((current) => !current)}
-          title="Saved views"
-          aria-label="Saved views"
-          aria-expanded={savedViewPanelOpen}
-        >
-          <MoreVertical size={18} aria-hidden="true" />
-        </button>
+        <details className="device-options" ref={optionsMenu} onKeyDown={event => { if (event.key === "Escape" && optionsMenu.current) optionsMenu.current.open = false; }}>
+          <summary className="button icon-button device-view-menu-button" aria-label="Device options" title="Filters, saved views and sync details"><MoreVertical size={18} aria-hidden="true" /></summary>
+          <div className="device-options-popover">
+            <button type="button" onClick={() => { setFiltersOpen(value => !value); if (optionsMenu.current) optionsMenu.current.open = false; }} aria-expanded={filtersOpen}>{filtersOpen ? "Hide" : "Show"} filters and order</button>
+            <button type="button" onClick={() => { setSavedViewPanelOpen(value => !value); if (optionsMenu.current) optionsMenu.current.open = false; }} aria-expanded={savedViewPanelOpen}>Saved views</button>
+            <button type="button" onClick={() => { setSyncDetailsOpen(value => !value); if (optionsMenu.current) optionsMenu.current.open = false; }} aria-expanded={syncDetailsOpen}>Synchronization details</button>
+          </div>
+        </details>
       </section>
 
-      <section className="panel device-inventory-controls" aria-label="Inventory filters and order">
+      {filtersOpen ? <section className="panel device-inventory-controls" aria-label="Inventory filters and order">
         <label>Site<select aria-label="Site" className="input" value={site} onChange={event => { setSite(event.target.value); setPage(1); }}>
           <option value="">All sites</option>
           {site && !data?.sites?.includes(site) ? <option value={site}>{site}</option> : null}
@@ -531,7 +543,11 @@ export function DevicesWorkspace() {
         <label className="device-check-filter"><input type="checkbox" checked={favoritesOnly} onChange={event => { setFavoritesOnly(event.target.checked); setPage(1); }} />Only favorites</label>
         <label className="device-check-filter"><input type="checkbox" checked={favoritesFirst} onChange={event => { setFavoritesFirst(event.target.checked); setPage(1); }} />Favorites first</label>
         <button className="button secondary compact" type="button" onClick={clearFilters}>Clear filters</button>
-      </section>
+      </section> : null}
+      {!filtersOpen && (site || favoritesOnly) ? <div className="device-active-filters">
+        <button className="button secondary compact" type="button" onClick={() => setFiltersOpen(true)}>Filters: {[site, favoritesOnly ? "Only favorites" : ""].filter(Boolean).join(" · ")}</button>
+        <button className="button secondary compact" type="button" onClick={clearFilters}>Clear filters</button>
+      </div> : null}
 
       {savedViewPanelOpen ? (
         <section className="panel device-saved-view-panel">
@@ -681,7 +697,7 @@ function DeviceNetwork({ device }: { device: DeviceRecord }) {
   if (network?.publicIp) values.push({ label: "WAN", value: network.publicIp });
   for (const value of network?.macAddresses ?? []) values.push({ label: "MAC", value });
   const matches = new Set(device.matchedNetwork ?? []);
-  const primary = values.find(value => matches.has(value.value)) ?? values.find(value => value.label === "LAN") ?? values[0];
+  const primary = values.find(value => matches.has(value.value)) ?? values.find(value => value.label === "LAN" && /^\d+\./.test(value.value) && !/^(127\.|169\.254\.)/.test(value.value)) ?? values.find(value => value.label === "LAN") ?? values[0];
   async function copy(value: string) {
     try { await navigator.clipboard.writeText(value); setCopyNotice("Copied"); }
     catch { setCopyNotice("Copy unavailable. Select the address to copy it."); }
@@ -694,7 +710,6 @@ function DeviceNetwork({ device }: { device: DeviceRecord }) {
   return <div className="device-network">
     {primary ? address(primary) : <span>No network data</span>}
     {values.length > 1 ? <details><summary>All addresses ({values.length})</summary>{values.map(address)}</details> : null}
-    <small className="device-observation">Inventory: {formatDate(device.remoteAccessDetails?.syncedAt ?? null)}</small>
     {copyNotice ? <small role="status">{copyNotice}</small> : null}
   </div>;
 }
@@ -723,13 +738,13 @@ function DeviceTableRow({
             <div className="device-title-row">
               <Link href={`/devices/${device.id}`}><strong>{device.name}</strong></Link>
             </div>
-            <span>{device.hostname ?? device.remoteAccessId ?? device.type}</span>
+            {device.hostname && device.hostname.toLowerCase() !== device.name.toLowerCase() ? <span>{device.hostname}</span> : null}
           </div>
         </div>
       </td>
       <td>
         <strong>{device.client.name}</strong>
-        <span>{device.deviceGroupId ?? "No site"}</span>
+        {device.deviceGroupId !== device.client.name ? <span>{device.deviceGroupId ?? "No site"}</span> : null}
       </td>
       <td className="device-table-os-cell">
         <div className="device-os-cell">
@@ -739,13 +754,13 @@ function DeviceTableRow({
             <span className="device-os-meta">
               {device.osVersion ? <span>OS version {device.osVersion}</span> : null}
               {device.remoteAccessDetails?.agent?.version ? <span>Agent {device.remoteAccessDetails.agent.version}</span> : null}
-              {!device.osVersion ? <span>{device.primaryUser ?? "-"}</span> : null}
+              {!device.osVersion && !device.remoteAccessDetails?.agent?.version && device.primaryUser ? <span>{device.primaryUser}</span> : null}
             </span>
           </div>
         </div>
       </td>
       <td><span className={`status-pill ${device.status === "ACTIVE" ? "success" : "muted"}`}>{device.status}</span>
-        <small className="device-observation" title="Last reported by RMM; not a live connectivity check">Last seen<br />{formatDate(device.lastSeenAt)}</small>
+        <small className="device-observation" title="Last reported by RMM; not a live connectivity check">{formatDate(device.lastSeenAt)}</small>
       </td>
       <td><DeviceNetwork device={device} /></td>
       <td className="device-table-action-cell">

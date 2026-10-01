@@ -7,7 +7,7 @@ import type { DeviceQueryDto } from "../../apps/api/src/modules/devices/dto/devi
 const root = path.resolve(".");
 const bundle = buildSync({ stdin: { contents: 'import React from "react"; import {createRoot} from "react-dom/client"; import {DevicesWorkspace} from "./apps/web/src/components/devices/DevicesWorkspace"; createRoot(document.getElementById("root")).render(<DevicesWorkspace/>);', resolveDir: root, loader: "tsx" }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", alias: { "@": path.join(root, "apps/web/src"), "next/link": "./tests/browser/fixtures/qc-link.tsx" }, define: { "process.env.NODE_ENV": '"test"', "process.env.NEXT_PUBLIC_API_URL": '"/api"' } }).outputFiles[0].text;
 
-async function mount(page: Page, initial = "", savedState?: object) {
+async function mount(page: Page, initial = "", savedState?: object, compact = false) {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {value:{writeText:async (value: string) => { (window as any).__copiedAddress = value; }}, configurable:true});
   });
@@ -32,7 +32,7 @@ async function mount(page: Page, initial = "", savedState?: object) {
         const candidates = rows.filter(row => (!query.clientId || query.clientId === row.client.id) && (!query.site || row.deviceGroupId === query.site) && (!query.type || row.type === query.type) && (!query.status || row.status === query.status) && (query.favoritesOnly !== "true" || row.favorites.length));
         const {selected, counts} = selectInventory(candidates, query);
         const pageSize = Number(query.pageSize ?? 50); const totalPages = Math.max(1, Math.ceil(selected.length / pageSize)); const currentPage = Math.min(Number(query.page ?? 1), totalPages);
-        const response = {devices:selected.slice((currentPage-1)*pageSize,currentPage*pageSize).map(row => ({...row, isFavorite:row.favorites.length>0, remoteAccessDetails:row.remoteAccessProfile.detailSnapshot, matchedNetwork:query.search ? inventoryNetwork(row).filter(value => value.toLowerCase().includes(query.search!.toLowerCase())) : []})), totalDevices:rows.length, filteredTotal:selected.length, page:currentPage, totalPages, categoryCounts:counts, sites:["East","West"], clients:[{id:"client-a", name:"Synthetic client"}], remoteAccess:{enabled:true, providerName:"RMM",lastSyncAt:"2026-09-30T14:05:00Z",lastSyncStatus:"success",lastSyncMessage:"Inventory updated"}};
+        const response = {devices:selected.slice((currentPage-1)*pageSize,currentPage*pageSize).map(row => ({...row, isFavorite:row.favorites.length>0, remoteAccessDetails:row.remoteAccessProfile.detailSnapshot, matchedNetwork:query.search ? inventoryNetwork(row).filter(value => value.toLowerCase().includes(query.search!.toLowerCase())) : []})), totalDevices:rows.length, filteredTotal:selected.length, page:currentPage, totalPages, categoryCounts:counts, sites:["East","West"], clients:[{id:"client-a", name:"Synthetic client"}], remoteAccess:{enabled:true, providerName:"RMM",lastSyncAt:"2026-09-30T14:05:00Z",lastSyncStatus:"success",lastSyncMessage:"Inventory updated",autoSyncEnabled:true,autoSyncIntervalMinutes:30,nextAutoSyncAt:"2026-09-30T14:35:00Z"}};
         if (query.search === "slow") await new Promise(resolve => setTimeout(resolve, 650));
         return route.fulfill({json:response}).catch(() => {});
       }
@@ -43,6 +43,10 @@ async function mount(page: Page, initial = "", savedState?: object) {
   await page.goto(`https://inventory.test/devices${initial}`);
   await page.addStyleTag({content:["globals.css","operational-ui.css"].map(file => readFileSync(path.join(root,"apps/web/src/app",file),"utf8")).join("\n")});
   await expect(page.locator(".device-results-panel")).toHaveAttribute("aria-busy","false");
+  if (!compact) {
+    await page.getByLabel("Device options",{exact:true}).click();
+    await page.getByRole("button",{name:"Show filters and order",exact:true}).click();
+  }
   return {requests,writes};
 }
 
@@ -68,7 +72,8 @@ test("sorts complete inventory, navigates pages, and restores saved ordering", a
   }
   await page.getByLabel("Sort by",{exact:true}).selectOption("site");
   await page.getByLabel("Direction",{exact:true}).selectOption("desc");
-  await page.getByLabel("Saved views",{exact:true}).click();
+  await page.getByLabel("Device options",{exact:true}).click();
+  await page.getByRole("button",{name:"Saved views",exact:true}).click();
   await page.getByRole("button",{name:"Update View",exact:true}).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0].body.state).toMatchObject({sortBy:"site",sortDirection:"desc",favoritesFirst:false,pageSize:25});
@@ -123,9 +128,12 @@ test("keeps URL type filters, category counts, site and favorite controls across
   await page.setViewportSize({width:1440,height:1000});
   const actionsFit = await page.locator(".device-table-action-cell").first().evaluate(cell => {
     const bounds = cell.getBoundingClientRect();
-    return [...cell.querySelectorAll("button")].every(button => button.getBoundingClientRect().right <= bounds.right);
+    const buttons = [...cell.querySelectorAll("button")].map(button => button.getBoundingClientRect());
+    return buttons.every(button => button.right <= bounds.right && Math.abs(button.top - buttons[0].top) < 1);
   });
   expect(actionsFit).toBe(true);
+  await page.getByLabel("Device options",{exact:true}).click();
+  await page.getByRole("button",{name:"Hide filters and order",exact:true}).click();
   await page.screenshot({path:info.outputPath("devices-table.png"),fullPage:false,animations:"disabled"});
   for (const view of ["Cards","Tree"]) {
     await page.getByRole("button",{name:view,exact:true}).click();
@@ -151,4 +159,18 @@ test("ignores a delayed response after the search has changed", async ({page}) =
   await page.waitForTimeout(800);
   await expect(names(page).first()).toHaveText("PC501");
   await expect(page.getByRole("heading",{name:"No devices found"})).toHaveCount(0);
+});
+
+test("compact default preserves hidden criteria and exposes synchronization details", async ({page}) => {
+  await mount(page,"?site=East",undefined,true);
+  await expect(page.getByRole("region",{name:"Inventory filters and order"})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"Filters: East",exact:true})).toBeVisible();
+  await expect(page.locator(".device-network").first()).not.toContainText("Inventory:");
+  await expect(page.getByRole("heading",{name:"Devices",exact:true})).toBeVisible();
+  await page.getByLabel("Device options",{exact:true}).click();
+  await page.getByRole("button",{name:"Synchronization details",exact:true}).click();
+  await expect(page.getByRole("region",{name:"Synchronization details"})).toContainText("Next automatic sync");
+  await expect(page.getByRole("button",{name:/Sync: success · Every 30 min/})).toBeVisible();
+  await page.getByRole("button",{name:"Filters: East",exact:true}).click();
+  await expect(page.getByLabel("Site",{exact:true})).toHaveValue("East");
 });

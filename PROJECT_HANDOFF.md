@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Compact Devices and RMM Scheduling — 2026-10-01
+
+- Follow-up from clean local/GitHub `main` at `1d94fbf`. Compact header/rows, one-line accessible action icons, hidden advanced filters through the options menu, and expandable real synchronization status preserve existing inventory controls.
+- Automatic inventory no longer waits for future mailbox/report jobs; active mailbox locks retain a brief deferral. Atomic claims prevent duplicate scheduler runs. List synchronization refreshes network/agent fields while preserving rich hardware snapshots. Default interval is 30 minutes; explicit saved settings are preserved.
+- API/web checks and full build passed; 236 backend tests passed (58 existing database-dependent cases skipped), 15 browser cases passed, and deployment/recovery checks passed. No schema/dependency/environment/permission changes.
+- Publication authorized; user will deploy with `scripts/deploy-devices-compact.sh <full-release-sha>`. Production interval could not be confirmed because Chrome automation was blocked by another extension UI. After deploying, enable/save 30 minutes in Settings > RMM Integration and verify the next result. See [details and deployment](docs/DEVICES_COMPACT_SYNC_2026-10-01.md).
+
 ## Device Inventory Search and Ordering — 2026-09-30
 
 - Approved on clean canonical `main` at `8806736`. Devices now searches all stored IPs/MACs and sites, supports natural column ordering and explicit favorite priority, and preserves ordering in saved views. Server pagination removes the 500-record cutoff; counts and tree grouping are explicit. Network details, copy controls, OS/agent labels and observation timestamps are clearer.
