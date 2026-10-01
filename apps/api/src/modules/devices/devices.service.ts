@@ -463,6 +463,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async syncRemoteAccessForOrganization(context: RemoteAccessSyncContext) {
+    const startedAt = new Date();
     const settings = await this.getSettingsRecord(context.organizationId);
     if (!settings.remoteAccessProviderEnabled) {
       throw new BadRequestException("RMM integration is disabled.");
@@ -582,6 +583,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         where: { organizationId: context.organizationId },
         data: {
           remoteAccessLastSyncAt: new Date(),
+          remoteAccessLastSuccessAt: new Date(),
           remoteAccessLastSyncStatus: detailFailures > 0 ? "warning" : "success",
           remoteAccessLastSyncMessage: message,
           ...(context.trigger === "auto"
@@ -604,6 +606,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         metadata: { provider: "TACTICAL_RMM", trigger: context.trigger, total: agents.length, created, updated, detailsRefreshed, detailFailures }
       });
 
+      await this.recordSyncHealth(context.organizationId, `rmm_${context.trigger}`, detailFailures > 0 ? "warning" : "ok", message, {total: agents.length, created, updated, detailsRefreshed, detailFailures, durationMs: Date.now() - startedAt.getTime()});
+
       return { created, updated, total: agents.length, settings: this.toRmmSettingsResponse(updatedSettings) };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown RMM sync failure.";
@@ -624,6 +628,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
             : {})
         }
       });
+      await this.recordSyncHealth(context.organizationId, `rmm_${context.trigger}`, "error", "RMM synchronization failed. Review RMM settings and service logs.", {durationMs: Date.now() - startedAt.getTime()});
       throw new BadRequestException(`RMM sync failed: ${message}`);
     }
   }
@@ -1024,6 +1029,14 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     return activeMailboxes > 0;
   }
 
+  private async recordSyncHealth(organizationId: string, source: string, status: "ok" | "warning" | "error", message: string, metadata: Prisma.InputJsonObject = {}) {
+    // Monitoring persistence must never turn a completed inventory update into a failed sync.
+    try {
+      await this.prisma.systemHealthSnapshot.create({data: {organizationId, source, component: "devices", status,
+        severity: status === "ok" ? "green" : status === "warning" ? "orange" : "red", message, metadata}});
+    } catch { this.logger.warn(`Unable to record RMM health outcome for organization ${organizationId}.`); }
+  }
+
   private async deferRemoteAccessAutoSync(organizationId: string, reason: string) {
     await this.prisma.systemSetting.update({
       where: { organizationId },
@@ -1034,6 +1047,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         remoteAccessLastSyncMessage: reason
       }
     });
+    await this.recordSyncHealth(organizationId, "rmm_deferred", "warning", reason);
   }
 
   private async getSettingsRecord(organizationId: string) {

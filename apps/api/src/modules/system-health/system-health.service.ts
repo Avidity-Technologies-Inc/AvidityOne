@@ -1,12 +1,13 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { AttachmentScanResult, AttachmentScanStatus, Prisma } from "@prisma/client";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { rmmHealth } from "./rmm-health";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { FileScanService } from "../file-storage/file-scan.service";
 import { PrismaService } from "../prisma/prisma.service";
 
-export type SystemHealthStatus = "ok" | "warning" | "error";
+export type SystemHealthStatus = "ok" | "warning" | "error" | "disabled" | "unknown";
 export type SystemHealthRange = "daily" | "weekly" | "monthly" | "yearly";
 export type SystemHealthTimelineStatus = SystemHealthStatus | "unknown";
 
@@ -14,7 +15,7 @@ export interface SystemHealthComponent {
   key: string;
   name: string;
   status: SystemHealthStatus;
-  severity: "green" | "orange" | "red";
+  severity: "green" | "orange" | "red" | "gray";
   message: string;
   checkedAt: string;
   metadata?: Record<string, unknown>;
@@ -35,6 +36,7 @@ const timelineRanges: Record<SystemHealthRange, { bucketCount: number; bucketHou
 };
 
 const componentNames: Record<string, string> = {
+  devices: "Devices / RMM Sync",
   database: "Database",
   storage: "Local storage",
   mail: "Mail flow",
@@ -46,21 +48,10 @@ const componentNames: Record<string, string> = {
 };
 
 function componentStatus(status: SystemHealthStatus) {
+  if (status === "disabled" || status === "unknown") return "gray" as const;
   if (status === "error") return "red" as const;
   if (status === "warning") return "orange" as const;
   return "green" as const;
-}
-
-function timelineSeverity(status: SystemHealthTimelineStatus) {
-  if (status === "error") return "red" as const;
-  if (status === "warning") return "orange" as const;
-  if (status === "unknown") return "gray" as const;
-  return "green" as const;
-}
-
-function normalizeStatus(status: string): SystemHealthStatus {
-  if (status === "error" || status === "warning") return status;
-  return "ok";
 }
 
 function buildComponent(
@@ -86,6 +77,8 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SystemHealthService.name);
   private automaticCheckTimer?: NodeJS.Timeout;
   private automaticCheckRunning = false;
+  private readonly summaries = new Map<string, {expires: number; value: Awaited<ReturnType<SystemHealthService["getSummaryForOrganization"]>>}>();
+  private readonly pendingSummaries = new Map<string, Promise<Awaited<ReturnType<SystemHealthService["getSummaryForOrganization"]>>>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -106,156 +99,131 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getSummary(user: AuthenticatedUser, record = false) {
-    return this.getSummaryForOrganization(user.organizationId, record);
+    const organizationId = user.organizationId;
+    let summary;
+    if (record) {
+      summary = await this.getSummaryForOrganization(organizationId, true);
+      this.summaries.delete(organizationId);
+    } else {
+      const cached = this.summaries.get(organizationId);
+      if (cached && cached.expires > Date.now()) summary = cached.value;
+      else {
+        let pending = this.pendingSummaries.get(organizationId);
+        if (!pending) {
+          pending = this.getSummaryForOrganization(organizationId, false).then(value => {
+            if (this.summaries.size >= 100) this.summaries.clear();
+            this.summaries.set(organizationId, {expires: Date.now() + 15_000, value});
+            return value;
+          }).finally(() => this.pendingSummaries.delete(organizationId));
+          this.pendingSummaries.set(organizationId, pending);
+        }
+        summary = await pending;
+      }
+    }
+    // The header clock is available to all authenticated users; diagnostic details are administrative.
+    if (user.permissions.includes("system_settings.view")) return {...summary, links: {devices: user.permissions.includes("devices.view"), rmm: user.permissions.includes("remote_access.configure")}};
+    return {...summary, components: summary.components.map(({key, name, status}) => ({key, name, status}))};
   }
 
-  private async getSummaryForOrganization(organizationId: string, record = false) {
+  private async getSummaryForOrganization(organizationId: string, record = false, source = "manual") {
     const database = await this.checkDatabase();
     if (database.status === "error") {
-      return this.aggregate(organizationId, [database], null, record);
+      return this.aggregate(organizationId, [database], null, record, source);
     }
 
     const settings = await this.prisma.systemSetting.findUnique({
       where: { organizationId },
-      select: {
-        supportPortalEnabled: true,
-        aiAssistantEnabled: true,
-        defaultTimezone: true,
-        dateFormat: true,
-        timeFormat: true
-      }
+      select: {supportPortalEnabled: true, aiAssistantEnabled: true, defaultTimezone: true, dateFormat: true, timeFormat: true,
+        remoteAccessProviderEnabled: true, remoteAccessAutoSyncEnabled: true, remoteAccessAutoSyncIntervalMinutes: true,
+        remoteAccessLastSyncAt: true, remoteAccessLastSuccessAt: true, remoteAccessLastSyncStatus: true,
+        remoteAccessNextAutoSyncAt: true, remoteAccessAutoSyncLockedAt: true}
     });
 
-    const components = await Promise.all([
-      this.checkStorage(),
-      this.checkMail(organizationId),
-      this.checkSupportPortal(organizationId, settings?.supportPortalEnabled ?? false),
-      this.checkEventServices(organizationId),
-      this.checkAi(organizationId, settings?.aiAssistantEnabled ?? false),
-      this.checkAntivirus(organizationId),
-      this.checkAuditLogs()
-    ]);
-
-    return this.aggregate(organizationId, [database, ...components], settings, record);
+    const checks: Array<[string, () => Promise<SystemHealthComponent>]> = [
+      ["storage", () => this.checkStorage()], ["mail", () => this.checkMail(organizationId)],
+      ["support_portal", () => this.checkSupportPortal(organizationId, settings?.supportPortalEnabled ?? false)],
+      ["event_services", () => this.checkEventServices(organizationId)],
+      ["ai", () => this.checkAi(organizationId, settings?.aiAssistantEnabled ?? false)],
+      ["antivirus", () => this.checkAntivirus(organizationId)], ["audit_logs", () => this.checkAuditLogs(organizationId)],
+      ["devices", async () => {
+        if (!settings) return buildComponent("devices", componentNames.devices, "unknown", "RMM settings are unavailable.");
+        const health = rmmHealth(settings);
+        const latest = await this.prisma.systemHealthSnapshot.findFirst({where: {organizationId, component: "devices", source: {in: ["rmm_auto", "rmm_manual"]}}, orderBy: {checkedAt: "desc"}, select: {checkedAt: true, metadata: true, source: true}});
+        return buildComponent("devices", componentNames.devices, health.status, health.message, {...health.metadata, latestOutcome: latest ? {...latest, checkedAt: latest.checkedAt.toISOString()} : null});
+      }]
+    ];
+    const components = await Promise.all(checks.map(async ([key, check]) => {
+      try { return await check(); }
+      catch { return buildComponent(key, componentNames[key], "unknown", "This check could not complete. Review service logs."); }
+    }));
+    return this.aggregate(organizationId, [database, ...components], settings, record, source);
   }
 
-  async getHistory(range: SystemHealthRange = "daily") {
-    const selectedRange = range in rangeHours ? range : "daily";
+  private range(range: string) {
+    if (!Object.hasOwn(rangeHours, range)) throw new BadRequestException("Invalid health range.");
+    const selected = range as SystemHealthRange;
     const to = new Date();
-    const from = new Date(to.getTime() - rangeHours[selectedRange] * 60 * 60 * 1000);
-    const snapshots = await this.prisma.systemHealthSnapshot.findMany({
-      where: { checkedAt: { gte: from } },
-      orderBy: { checkedAt: "desc" },
-      take: 300
-    });
-
-    const totals = snapshots.reduce(
-      (current, item) => ({
-        ok: current.ok + (item.status === "ok" ? 1 : 0),
-        warning: current.warning + (item.status === "warning" ? 1 : 0),
-        error: current.error + (item.status === "error" ? 1 : 0)
-      }),
-      { ok: 0, warning: 0, error: 0 }
-    );
-
-    return {
-      range: selectedRange,
-      from: from.toISOString(),
-      to: to.toISOString(),
-      totals,
-      snapshots: snapshots.map((item) => ({
-        id: item.id,
-        component: item.component,
-        status: item.status,
-        severity: item.severity,
-        message: item.message,
-        metadata: item.metadata,
-        checkedAt: item.checkedAt.toISOString()
-      }))
-    };
+    return {selected, to, from: new Date(to.getTime() - rangeHours[selected] * 3_600_000)};
   }
 
-  async getTimeline(range: SystemHealthRange = "daily") {
-    const selectedRange = range in timelineRanges ? range : "daily";
-    const { bucketCount, bucketHours } = timelineRanges[selectedRange];
-    const to = new Date();
-    const bucketMs = bucketHours * 60 * 60 * 1000;
-    const from = new Date(to.getTime() - bucketCount * bucketMs);
-    const snapshots = await this.prisma.systemHealthSnapshot.findMany({
-      where: { checkedAt: { gte: from } },
-      orderBy: { checkedAt: "asc" }
-    });
+  async getHistory(organizationId: string, range = "daily", pageValue = "1", component?: string, status?: string) {
+    const {selected, from, to} = this.range(range);
+    if (!/^\d+$/.test(pageValue) || !Number.isSafeInteger(Number(pageValue)) || Number(pageValue) < 1) throw new BadRequestException("Invalid history page.");
+    if (component && !Object.hasOwn(componentNames, component)) throw new BadRequestException("Invalid health component.");
+    if (status && !["ok", "warning", "error", "unknown", "disabled"].includes(status)) throw new BadRequestException("Invalid health status.");
+    const where: Prisma.SystemHealthSnapshotWhereInput = {organizationId, checkedAt: {gte: from, lte: to}, ...(component ? {component} : {}), ...(status ? {status} : {})};
+    const grouped = await this.prisma.systemHealthSnapshot.groupBy({by: ["status"], where, _count: {_all: true}});
+    const totals = {ok: 0, warning: 0, error: 0, unknown: 0, disabled: 0};
+    for (const group of grouped) if (Object.hasOwn(totals, group.status)) totals[group.status as keyof typeof totals] = group._count._all;
+    const total = grouped.reduce((sum, group) => sum + group._count._all, 0);
+    const pageSize = 25;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Number(pageValue), totalPages);
+    const snapshots = await this.prisma.systemHealthSnapshot.findMany({where, orderBy: [{checkedAt: "desc"}, {id: "desc"}], skip: (page - 1) * pageSize, take: pageSize});
+    return {range: selected, from: from.toISOString(), to: to.toISOString(), totals, total, page, pageSize, totalPages,
+      snapshots: snapshots.map(item => ({...item, name: componentNames[item.component] ?? item.component, checkedAt: item.checkedAt.toISOString()}))};
+  }
 
-    const componentKeys = Array.from(new Set([...Object.keys(componentNames), ...snapshots.map((snapshot) => snapshot.component)]));
-
-    return {
-      range: selectedRange,
-      from: from.toISOString(),
-      to: to.toISOString(),
-      bucketHours,
-      components: componentKeys.map((componentKey) => {
-        const componentSnapshots = snapshots.filter((snapshot) => snapshot.component === componentKey);
-        const buckets = Array.from({ length: bucketCount }, (_, index) => {
-          const start = new Date(from.getTime() + index * bucketMs);
-          const end = new Date(start.getTime() + bucketMs);
-          const bucketSnapshots = componentSnapshots.filter((snapshot) => snapshot.checkedAt >= start && snapshot.checkedAt < end);
-
-          if (bucketSnapshots.length === 0) {
-            return {
-              id: `${componentKey}-${index}`,
-              start: start.toISOString(),
-              end: end.toISOString(),
-              status: "unknown" as const,
-              severity: "gray" as const,
-              message: "No snapshot recorded.",
-              snapshotCount: 0
-            };
-          }
-
-          const status: SystemHealthTimelineStatus = bucketSnapshots.some((snapshot) => snapshot.status === "error")
-            ? "error"
-            : bucketSnapshots.some((snapshot) => snapshot.status === "warning")
-              ? "warning"
-              : "ok";
-          const message = [...bucketSnapshots].reverse().find((snapshot) => normalizeStatus(snapshot.status) === status)?.message ?? bucketSnapshots[bucketSnapshots.length - 1]?.message ?? "Snapshot recorded.";
-
-          return {
-            id: `${componentKey}-${index}`,
-            start: start.toISOString(),
-            end: end.toISOString(),
-            status,
-            severity: timelineSeverity(status),
-            message,
-            snapshotCount: bucketSnapshots.length
-          };
+  async getTimeline(organizationId: string, range = "daily") {
+    const {selected, from, to} = this.range(range);
+    const {bucketCount} = timelineRanges[selected];
+    const bucketSeconds = (to.getTime() - from.getTime()) / 1000 / bucketCount;
+    // Aggregate in PostgreSQL rather than loading a year's individual snapshots into the API.
+    const rows = await this.prisma.$queryRaw<Array<{component: string; bucket: number; status: string; count: bigint}>>(Prisma.sql`
+      SELECT component, FLOOR(EXTRACT(EPOCH FROM ("checkedAt" - ${from}::timestamp)) / ${bucketSeconds})::int AS bucket,
+        status, COUNT(*) AS count FROM system_health_snapshots
+      WHERE "organizationId" = ${organizationId}::uuid AND "checkedAt" >= ${from} AND "checkedAt" < ${to}
+      GROUP BY component, bucket, status`);
+    return {range: selected, from: from.toISOString(), to: to.toISOString(), bucketHours: bucketSeconds / 3600,
+      components: Object.entries(componentNames).map(([key, name]) => {
+        const buckets = Array.from({length: bucketCount}, (_, index) => {
+          const samples = rows.filter(row => row.component === key && row.bucket === index);
+          const snapshotCount = samples.reduce((sum, row) => sum + Number(row.count), 0);
+          const states = new Set(samples.map(row => row.status));
+          const status: SystemHealthTimelineStatus = states.has("error") ? "error" : states.has("warning") ? "warning" : states.has("unknown") ? "unknown" : states.has("ok") ? "ok" : states.has("disabled") ? "disabled" : "unknown";
+          return {id: `${key}-${index}`, start: new Date(from.getTime() + index * bucketSeconds * 1000).toISOString(), end: new Date(from.getTime() + (index + 1) * bucketSeconds * 1000).toISOString(), status, severity: componentStatus(status), snapshotCount, message: snapshotCount ? `${snapshotCount} observations; worst recorded state: ${status}.` : "No observations recorded."};
         });
-
-        const knownBuckets = buckets.filter((bucket) => bucket.status !== "unknown").length;
-        const okBuckets = buckets.filter((bucket) => bucket.status === "ok").length;
-
-        return {
-          key: componentKey,
-          name: componentNames[componentKey] ?? componentKey,
-          healthyPercent: knownBuckets === 0 ? 0 : Math.round((okBuckets / knownBuckets) * 1000) / 10,
-          warningCount: buckets.filter((bucket) => bucket.status === "warning").length,
-          errorCount: buckets.filter((bucket) => bucket.status === "error").length,
-          unknownCount: buckets.filter((bucket) => bucket.status === "unknown").length,
-          buckets
-        };
-      })
-    };
+        const observed = buckets.filter(bucket => bucket.snapshotCount > 0).length;
+        const assessed = buckets.filter(bucket => ["ok", "warning", "error"].includes(bucket.status)).length;
+        return {key, name, healthyPercent: assessed ? Math.round(buckets.filter(bucket => bucket.status === "ok").length / assessed * 1000) / 10 : null,
+          coveragePercent: Math.round(observed / bucketCount * 1000) / 10, warningCount: buckets.filter(b => b.status === "warning").length,
+          errorCount: buckets.filter(b => b.status === "error").length, unknownCount: buckets.filter(b => b.status === "unknown").length, buckets};
+      })};
   }
 
-  private async aggregate(organizationId: string, components: SystemHealthComponent[], settings: { defaultTimezone: string; dateFormat: string; timeFormat: string } | null, record: boolean) {
+  private async aggregate(organizationId: string, components: SystemHealthComponent[], settings: { defaultTimezone: string; dateFormat: string; timeFormat: string } | null, record: boolean, source = "manual") {
     const aggregateStatus: SystemHealthStatus = components.some((component) => component.status === "error")
       ? "error"
-      : components.some((component) => component.status === "warning")
+      : components.some((component) => component.status === "warning" || component.status === "unknown")
         ? "warning"
         : "ok";
 
+    let recorded = false;
     if (record) {
+      try {
       await this.prisma.systemHealthSnapshot.createMany({
         data: components.map((component) => ({
+          organizationId, source,
           component: component.key,
           status: component.status,
           severity: component.severity,
@@ -263,6 +231,8 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
           metadata: component.metadata ? (component.metadata as Prisma.InputJsonValue) : Prisma.JsonNull
         }))
       });
+      recorded = true;
+      } catch { this.logger.warn("System health snapshot could not be recorded."); }
     }
 
     return {
@@ -274,7 +244,9 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
       dateFormat: settings?.dateFormat ?? "MMM dd, yyyy",
       timeFormat: settings?.timeFormat ?? "12h",
       components,
-      recorded: record,
+      recorded,
+      recordingError: record && !recorded ? "The check completed but its snapshot could not be saved." : null,
+      automaticCheckIntervalMinutes: this.automaticCheckIntervalMs() / 60_000,
       organizationId
     };
   }
@@ -293,14 +265,11 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
     }
     this.automaticCheckRunning = true;
     try {
-      const organization = await this.prisma.organization.findFirst({
-        orderBy: { createdAt: "asc" },
-        select: { id: true }
-      });
-      if (!organization) {
-        return;
+      const organizations = await this.prisma.organization.findMany({select: {id: true}, orderBy: {createdAt: "asc"}});
+      for (const organization of organizations) {
+        try { await this.getSummaryForOrganization(organization.id, true, "automatic"); }
+        catch { this.logger.warn(`Health check failed for organization ${organization.id}.`); }
       }
-      await this.getSummaryForOrganization(organization.id, true);
     } catch (error) {
       this.logger.warn(`Automatic system health check failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
@@ -318,7 +287,7 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async checkStorage() {
-    const storagePath = path.resolve(process.cwd(), process.env.LOCAL_STORAGE_PATH ?? "storage/local");
+    const storagePath = path.resolve(process.env.INIT_CWD ?? process.cwd(), process.env.LOCAL_STORAGE_PATH ?? "storage/local");
     try {
       await fs.access(storagePath);
       return buildComponent("storage", "Local storage", "ok", "Local storage path is reachable.", { path: storagePath });
@@ -346,28 +315,28 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
     if (overdue.length > 0) {
       return buildComponent("mail", "Mail flow", "warning", `${overdue.length} mailbox sync schedule${overdue.length === 1 ? " is" : "s are"} overdue.`);
     }
-    return buildComponent("mail", "Mail flow", "ok", `${mailboxes.length} active mailbox${mailboxes.length === 1 ? "" : "es"} configured.`);
+    return buildComponent("mail", "Mail flow", "ok", `${mailboxes.length} active mailbox${mailboxes.length === 1 ? "" : "es"} configured; no recorded sync errors or overdue schedules. Outbound delivery is not verified.`);
   }
 
   private async checkSupportPortal(organizationId: string, enabled: boolean) {
     if (!enabled) {
-      return buildComponent("support_portal", "Support portal", "warning", "Support portal is disabled in Settings.");
+      return buildComponent("support_portal", "Support portal", "disabled", "Support portal is disabled in Settings.");
     }
     const activeForms = await this.prisma.supportPortalForm.count({ where: { organizationId, isActive: true } });
-    return buildComponent("support_portal", "Support portal", activeForms > 0 ? "ok" : "warning", activeForms > 0 ? `${activeForms} active support form${activeForms === 1 ? "" : "s"} available.` : "No active support portal form is available.");
+    return buildComponent("support_portal", "Support portal", activeForms > 0 ? "ok" : "warning", activeForms > 0 ? `${activeForms} active support form${activeForms === 1 ? "" : "s"} configured; public availability is not verified.` : "No active support portal form is available.");
   }
 
   private async checkEventServices(organizationId: string) {
     const activeServices = await this.prisma.eventServiceService.count({ where: { organizationId, isActive: true } });
-    return buildComponent("event_services", "Event services", activeServices > 0 ? "ok" : "warning", activeServices > 0 ? `${activeServices} active event service${activeServices === 1 ? "" : "s"} available.` : "No active event service is configured.");
+    return buildComponent("event_services", "Event services", activeServices > 0 ? "ok" : "warning", activeServices > 0 ? `${activeServices} active event service${activeServices === 1 ? "" : "s"} configured; public availability is not verified.` : "No active event service is configured.");
   }
 
   private async checkAi(organizationId: string, enabled: boolean) {
     if (!enabled) {
-      return buildComponent("ai", "AI providers", "warning", "AI assistant is disabled in Settings.");
+      return buildComponent("ai", "AI providers", "disabled", "AI assistant is disabled in Settings.");
     }
     const enabledProviders = await this.prisma.aiProviderConfig.count({ where: { organizationId, isEnabled: true } });
-    return buildComponent("ai", "AI providers", enabledProviders > 0 ? "ok" : "warning", enabledProviders > 0 ? `${enabledProviders} enabled AI provider${enabledProviders === 1 ? "" : "s"} configured.` : "No enabled AI provider is configured.");
+    return buildComponent("ai", "AI providers", enabledProviders > 0 ? "ok" : "warning", enabledProviders > 0 ? `${enabledProviders} enabled AI provider${enabledProviders === 1 ? "" : "s"} configured; provider connectivity is not verified.` : "No enabled AI provider is configured.");
   }
 
   private async checkAntivirus(organizationId: string) {
@@ -433,9 +402,9 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
     return { total, clean, quarantined, pending, skipped, restored };
   }
 
-  private async checkAuditLogs() {
+  private async checkAuditLogs(organizationId: string) {
     const recent = await this.prisma.auditLog.count({
-      where: { createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
+      where: { organizationId, createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
     });
     return buildComponent("audit_logs", "Audit logs", "ok", `${recent} audit event${recent === 1 ? "" : "s"} recorded in the last 24 hours.`);
   }

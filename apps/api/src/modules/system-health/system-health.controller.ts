@@ -26,14 +26,14 @@ export class SystemHealthController {
   @Get("history")
   @UseGuards(SessionAuthGuard, PermissionsGuard)
   @RequirePermissions("system_settings.view")
-  history(@Query("range") range?: SystemHealthRange) {
-    return this.systemHealth.getHistory(range);
+  history(@CurrentUser() user: AuthenticatedUser, @Query("range") range?: SystemHealthRange, @Query("page") page?: string, @Query("component") component?: string, @Query("status") status?: string) {
+    return this.systemHealth.getHistory(user.organizationId, range, page, component, status);
   }
 
   @Get("timeline")
   @UseGuards(SessionAuthGuard, PermissionsGuard)
   @RequirePermissions("system_settings.view")
-  timeline(@Query("range") range?: SystemHealthRange) {
-    return this.systemHealth.getTimeline(range);
+  timeline(@CurrentUser() user: AuthenticatedUser, @Query("range") range?: SystemHealthRange) {
+    return this.systemHealth.getTimeline(user.organizationId, range);
   }
 }

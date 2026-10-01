@@ -1,4 +1,5 @@
 "use client";
+import { SystemHealthPanel, HealthSummary as SystemHealthSummary } from "./SystemHealthPanel";
 import { ComposerPreferencesPanel } from "@/components/composer/ComposerPreferencesPanel";
 import { TicketEmailPanel } from "@/components/notifications/TicketEmailPanel";
 import { QcContextLink } from "@/components/qc/QcContextLink";
@@ -477,69 +478,6 @@ interface AuditLogResult {
   actions: string[];
   entityTypes: string[];
 }
-
-interface SystemHealthComponent {
-  key: string;
-  name: string;
-  status: "ok" | "warning" | "error";
-  severity: "green" | "orange" | "red";
-  message: string;
-  checkedAt: string;
-  metadata?: unknown;
-}
-
-interface SystemHealthSummary {
-  status: "ok" | "warning" | "error";
-  severity: "green" | "orange" | "red";
-  checkedAt: string;
-  serverTime: string;
-  timezone: string;
-  dateFormat: string;
-  timeFormat: "12h" | "24h";
-  components: SystemHealthComponent[];
-  recorded: boolean;
-}
-
-interface SystemHealthHistory {
-  range: "daily" | "weekly" | "monthly" | "yearly";
-  from: string;
-  to: string;
-  totals: { ok: number; warning: number; error: number };
-  snapshots: Array<{
-    id: string;
-    component: string;
-    status: "ok" | "warning" | "error";
-    severity: "green" | "orange" | "red";
-    message: string;
-    checkedAt: string;
-  }>;
-}
-
-interface SystemHealthTimeline {
-  range: "daily" | "weekly" | "monthly" | "yearly";
-  from: string;
-  to: string;
-  bucketHours: number;
-  components: Array<{
-    key: string;
-    name: string;
-    healthyPercent: number;
-    warningCount: number;
-    errorCount: number;
-    unknownCount: number;
-    buckets: Array<{
-      id: string;
-      start: string;
-      end: string;
-      status: "ok" | "warning" | "error" | "unknown";
-      severity: "green" | "orange" | "red" | "gray";
-      message: string;
-      snapshotCount: number;
-    }>;
-  }>;
-}
-
-const SYSTEM_HEALTH_HISTORY_PAGE_SIZE = 10;
 
 type ActiveSection =
   | "general"
@@ -1124,11 +1062,7 @@ export function SettingsWorkspace() {
   const [auditLogs, setAuditLogs] = useState<AuditLogResult | null>(null);
   const [expandedAuditLogId, setExpandedAuditLogId] = useState<string | null>(null);
   const [systemHealth, setSystemHealth] = useState<SystemHealthSummary | null>(null);
-  const [systemHealthHistory, setSystemHealthHistory] = useState<SystemHealthHistory | null>(null);
-  const [systemHealthTimeline, setSystemHealthTimeline] = useState<SystemHealthTimeline | null>(null);
-  const [systemHealthRange, setSystemHealthRange] = useState<"daily" | "weekly" | "monthly" | "yearly">("daily");
-  const [systemHealthHistoryOpen, setSystemHealthHistoryOpen] = useState(false);
-  const [systemHealthHistoryPage, setSystemHealthHistoryPage] = useState(1);
+  const [healthRefreshToken, setHealthRefreshToken] = useState(0);
   const [auditFilters, setAuditFilters] = useState({
     startDate: "",
     endDate: "",
@@ -1301,9 +1235,6 @@ export function SettingsWorkspace() {
   const spamQuarantinePageSize = Number(spamQuarantine?.pageSize ?? spamQuarantineFilters.pageSize);
   const spamQuarantineTotal = spamQuarantine?.total ?? 0;
   const spamQuarantinePageCount = Math.max(1, Math.ceil(spamQuarantineTotal / spamQuarantinePageSize));
-  const systemHealthSnapshots = systemHealthHistory?.snapshots ?? [];
-  const systemHealthHistoryPageCount = Math.max(1, Math.ceil(systemHealthSnapshots.length / SYSTEM_HEALTH_HISTORY_PAGE_SIZE));
-  const visibleSystemHealthSnapshots = systemHealthSnapshots.slice((systemHealthHistoryPage - 1) * SYSTEM_HEALTH_HISTORY_PAGE_SIZE, systemHealthHistoryPage * SYSTEM_HEALTH_HISTORY_PAGE_SIZE);
   const activeSecurityPostureGroup = securityPosture?.groups.find((group) => group.key === securityTab);
   const bulkProvider = useMemo(() => aiProviders.find((provider) => provider.id === aiBulkDraft.providerConfigId), [aiBulkDraft.providerConfigId, aiProviders]);
   const filteredSpamEntries = useMemo(() => {
@@ -1502,37 +1433,6 @@ export function SettingsWorkspace() {
     const query = params.toString();
     const result = await apiFetch<QuarantinedEmailResult>(`/spam-blocklist/quarantine${query ? `?${query}` : ""}`);
     setSpamQuarantine(result);
-  }
-
-  async function loadSystemHealth(range = systemHealthRange) {
-    const [summary, history, timeline] = await Promise.all([
-      apiFetch<SystemHealthSummary>("/system-health/summary"),
-      apiFetch<SystemHealthHistory>(`/system-health/history?range=${range}`),
-      apiFetch<SystemHealthTimeline>(`/system-health/timeline?range=${range}`)
-    ]);
-    setSystemHealth(summary);
-    setSystemHealthHistory(history);
-    setSystemHealthTimeline(timeline);
-  }
-
-  async function runSystemHealthCheck() {
-    setBusy("system-health");
-    setError(null);
-    try {
-      const summary = await apiFetch<SystemHealthSummary>("/system-health/check", { method: "POST" });
-      const [history, timeline] = await Promise.all([
-        apiFetch<SystemHealthHistory>(`/system-health/history?range=${systemHealthRange}`),
-        apiFetch<SystemHealthTimeline>(`/system-health/timeline?range=${systemHealthRange}`)
-      ]);
-      setSystemHealth(summary);
-      setSystemHealthHistory(history);
-      setSystemHealthTimeline(timeline);
-      setNotice("System health check completed.");
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to run system health check.");
-    } finally {
-      setBusy(null);
-    }
   }
 
   async function loadSettingsData() {
@@ -1773,18 +1673,6 @@ export function SettingsWorkspace() {
     const units = ["B", "KB", "MB", "GB"];
     const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
     return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
-  }
-
-  function antivirusHealthMetadata(component: SystemHealthComponent) {
-    if (component.key !== "antivirus" || !component.metadata || typeof component.metadata !== "object") {
-      return null;
-    }
-    const metadata = component.metadata as {
-      endpoint?: string;
-      version?: string | null;
-      counts?: { clean?: number; quarantined?: number; pending?: number; skipped?: number; restored?: number };
-    };
-    return metadata;
   }
 
   function shortAuditId(value: string | null) {
@@ -2899,11 +2787,6 @@ export function SettingsWorkspace() {
   }, [activeSection]);
 
   useEffect(() => {
-    if (activeSection !== "systemHealth") return;
-    loadSystemHealth(systemHealthRange).catch(() => setError("Unable to load system health information."));
-  }, [activeSection, systemHealthRange]);
-
-  useEffect(() => {
     if (activeSection !== "maintenance" || maintenanceTab !== "quarantine") return;
     loadAttachmentQuarantine(quarantineFilters).catch(() => setError("Unable to load attachment quarantine."));
   }, [activeSection, maintenanceTab, quarantineFilters]);
@@ -2914,10 +2797,6 @@ export function SettingsWorkspace() {
   }, [activeSection, spamTab]);
 
   useEffect(() => {
-    setSystemHealthHistoryPage(1);
-  }, [systemHealthRange]);
-
-  useEffect(() => {
     setDomainPage(1);
   }, [domainPageSize, domainSearch, domainSort]);
 
@@ -2925,11 +2804,6 @@ export function SettingsWorkspace() {
     if (domainPage > domainPageCount) setDomainPage(domainPageCount);
   }, [domainPage, domainPageCount]);
 
-  useEffect(() => {
-    if (systemHealthHistoryPage > systemHealthHistoryPageCount) {
-      setSystemHealthHistoryPage(systemHealthHistoryPageCount);
-    }
-  }, [systemHealthHistoryPage, systemHealthHistoryPageCount]);
 
   const activeNotificationRows = notificationPreferenceRows.filter((row) => row.isActive);
   const assignmentReadyRows = activeNotificationRows.filter((row) => assignmentEmailReady(row.notificationPreference));
@@ -2953,7 +2827,7 @@ export function SettingsWorkspace() {
           <h1>Settings</h1><QcContextLink href="/qc/settings" label="QC configuration" permission="qc.settings_manage" />
           <span className="muted">{activeSettingsLabel}</span>
         </div>
-        <button className="button secondary settings-refresh-button" type="button" onClick={loadSettingsData} disabled={loading}>
+        <button className="button secondary settings-refresh-button" type="button" onClick={() => { void loadSettingsData(); setHealthRefreshToken(value => value + 1); }} disabled={loading}>
           <RefreshCcw size={16} aria-hidden="true" />
           <span>Refresh</span>
         </button>
@@ -5563,198 +5437,7 @@ export function SettingsWorkspace() {
             </section>
           ) : null}
 
-          {activeSection === "systemHealth" ? (
-            <section className="grid">
-              <div className="panel">
-                <div className="section-heading">
-                  <div>
-                    <h2>System Health</h2>
-                    <p className="muted">Monitor application services, portals, integrations, and automatic health snapshots.</p>
-                  </div>
-                  <div className="settings-actions compact-actions">
-                    <span className={`system-health-badge ${systemHealth?.status ?? "warning"}`}>
-                      <span aria-hidden="true" />
-                      {systemHealth?.status ? systemHealth.status.toUpperCase() : "LOADING"}
-                    </span>
-                    <button className="button secondary" type="button" onClick={runSystemHealthCheck} disabled={busy === "system-health"}>
-                      <RefreshCcw size={16} aria-hidden="true" />
-                      <span>Run Check</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="system-health-summary settings-section">
-                  <div className="panel subtle-panel metric system-health-time-metric">
-                    <span className="muted">Server time</span>
-                    <strong>{systemHealth?.serverTime ? new Date(systemHealth.serverTime).toLocaleString() : "Loading"}</strong>
-                    <span className="muted">{systemHealth?.timezone ?? "Timezone unavailable"}</span>
-                  </div>
-                  <div className="panel subtle-panel metric system-health-time-metric">
-                    <span className="muted">Last check</span>
-                    <strong>{systemHealth?.checkedAt ? new Date(systemHealth.checkedAt).toLocaleString() : "Never"}</strong>
-                    <span className="muted">{systemHealth?.recorded ? "Recorded snapshot" : "Live summary"}</span>
-                  </div>
-                  <div className="panel subtle-panel metric">
-                    <span className="muted">Warnings</span>
-                    <strong>{systemHealth?.components.filter((component) => component.status === "warning").length ?? 0}</strong>
-                    <span className="muted">Needs review</span>
-                  </div>
-                  <div className="panel subtle-panel metric">
-                    <span className="muted">Errors</span>
-                    <strong>{systemHealth?.components.filter((component) => component.status === "error").length ?? 0}</strong>
-                    <span className="muted">Needs action</span>
-                  </div>
-                </div>
-
-                <div className="panel subtle-panel system-health-timeline-panel settings-section">
-                  <div className="section-heading compact-heading">
-                    <div>
-                      <h3>System Status Timeline</h3>
-                      <p className="muted">Component availability from automatic and manual snapshots in the selected range.</p>
-                    </div>
-                    <span className="muted">
-                      {systemHealthTimeline ? `${new Date(systemHealthTimeline.from).toLocaleDateString()} - ${new Date(systemHealthTimeline.to).toLocaleDateString()}` : "Loading"}
-                    </span>
-                  </div>
-                  <div className="system-health-timeline">
-                    {(systemHealthTimeline?.components ?? []).map((component) => (
-                      <div className="system-health-timeline-row" key={component.key}>
-                        <div className="system-health-timeline-meta">
-                          <span className="system-health-timeline-title">
-                            <span className={`system-health-led ${component.errorCount > 0 ? "error" : component.warningCount > 0 ? "warning" : component.unknownCount === component.buckets.length ? "unknown" : "ok"}`} aria-hidden="true" />
-                            <strong>{component.name}</strong>
-                          </span>
-                          <span className="muted">
-                            {component.unknownCount === component.buckets.length ? "No snapshots yet" : `${component.healthyPercent}% healthy`}
-                          </span>
-                        </div>
-                        <div className="system-health-timeline-bars" role="img" aria-label={`${component.name} health timeline`}>
-                          {component.buckets.map((bucket) => (
-                            <span
-                              className={`system-health-timeline-bar ${bucket.status}`}
-                              key={bucket.id}
-                              title={`${component.name}: ${bucket.status} from ${new Date(bucket.start).toLocaleString()} to ${new Date(bucket.end).toLocaleString()}. ${bucket.message}`}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                    {systemHealthTimeline?.components.length === 0 ? <p className="muted">Run a check to start building the status timeline.</p> : null}
-                  </div>
-                </div>
-
-                <div className="system-health-component-grid settings-section">
-                  {(systemHealth?.components ?? []).map((component) => {
-                    const antivirusMetadata = antivirusHealthMetadata(component);
-                    return (
-                      <article className={`system-health-card ${component.status}`} key={component.key}>
-                        <div>
-                          <span className="system-health-led" aria-hidden="true" />
-                          <strong>{component.name}</strong>
-                        </div>
-                        <p>{component.message}</p>
-                        {antivirusMetadata ? (
-                          <div className="system-health-card-metadata">
-                            <span>Clean {antivirusMetadata.counts?.clean ?? 0}</span>
-                            <span>Quarantined {antivirusMetadata.counts?.quarantined ?? 0}</span>
-                            <span>Pending {(antivirusMetadata.counts?.pending ?? 0) + (antivirusMetadata.counts?.skipped ?? 0)}</span>
-                            <span>Restored {antivirusMetadata.counts?.restored ?? 0}</span>
-                            <small>{antivirusMetadata.version ?? antivirusMetadata.endpoint ?? "Scanner metadata unavailable"}</small>
-                          </div>
-                        ) : null}
-                        <span className="muted">Checked {new Date(component.checkedAt).toLocaleString()}</span>
-                      </article>
-                    );
-                  })}
-                  {!systemHealth ? <p className="muted">Loading system health components...</p> : null}
-                </div>
-              </div>
-
-              <div className="panel">
-                <div className="section-heading">
-                  <div>
-                    <h2>Health History</h2>
-                    <p className="muted">Automatic and manual checks are stored as snapshots for operational review.</p>
-                  </div>
-                  <div className="settings-actions compact-actions">
-                    <button className="button secondary" type="button" onClick={() => setSystemHealthHistoryOpen((current) => !current)}>
-                      <span>{systemHealthHistoryOpen ? "Hide Health History" : "View Health History"}</span>
-                    </button>
-                    <div className="segmented-control">
-                      {(["daily", "weekly", "monthly", "yearly"] as const).map((range) => (
-                        <button className={systemHealthRange === range ? "active" : ""} type="button" key={range} onClick={() => setSystemHealthRange(range)}>
-                          {range[0].toUpperCase() + range.slice(1)}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="system-health-history-summary settings-section">
-                  <div className="system-health-history-counts">
-                    <span className="status-pill success">OK {systemHealthHistory?.totals.ok ?? 0}</span>
-                    <span className="status-pill warning-pill">Warnings {systemHealthHistory?.totals.warning ?? 0}</span>
-                    <span className="status-pill danger-pill">Errors {systemHealthHistory?.totals.error ?? 0}</span>
-                  </div>
-                  <span className="muted">
-                    {systemHealthHistory ? `${systemHealthSnapshots.length} snapshots in ${systemHealthRange} range` : "Loading health history"}
-                  </span>
-                </div>
-
-                {systemHealthHistoryOpen ? (
-                  <>
-                    <div className="table-scroll settings-section">
-                      <table className="tickets-table system-health-table">
-                        <thead>
-                          <tr>
-                            <th>Time</th>
-                            <th>Component</th>
-                            <th>Status</th>
-                            <th>Message</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {systemHealthSnapshots.length === 0 ? (
-                            <tr>
-                              <td colSpan={4}>
-                                <span className="muted">No health snapshots in this range. Run a check to record the current state.</span>
-                              </td>
-                            </tr>
-                          ) : null}
-                          {visibleSystemHealthSnapshots.map((snapshot) => (
-                            <tr key={snapshot.id}>
-                              <td>{new Date(snapshot.checkedAt).toLocaleString()}</td>
-                              <td>{snapshot.component}</td>
-                              <td>
-                                <span className={`system-health-inline-status ${snapshot.status}`}>
-                                  <span aria-hidden="true" />
-                                  {snapshot.status}
-                                </span>
-                              </td>
-                              <td>{snapshot.message}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div className="system-health-history-pagination settings-section">
-                      <span className="muted">
-                        Page {systemHealthHistoryPage} of {systemHealthHistoryPageCount}
-                      </span>
-                      <div className="settings-actions compact-actions">
-                        <button className="button secondary" type="button" onClick={() => setSystemHealthHistoryPage((page) => Math.max(1, page - 1))} disabled={systemHealthHistoryPage <= 1}>
-                          Previous
-                        </button>
-                        <button className="button secondary" type="button" onClick={() => setSystemHealthHistoryPage((page) => Math.min(systemHealthHistoryPageCount, page + 1))} disabled={systemHealthHistoryPage >= systemHealthHistoryPageCount}>
-                          Next
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : null}
-              </div>
-            </section>
-          ) : null}
+          {activeSection === "systemHealth" ? <SystemHealthPanel refreshToken={healthRefreshToken} onSummary={setSystemHealth} /> : null}
         </div>
       </section>
     </div>

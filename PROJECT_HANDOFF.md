@@ -1,5 +1,12 @@
 # Project Handoff
 
+## System Health and RMM Tracking — 2026-10-01
+
+- Approved from clean local/GitHub `d5cca7e`: added Devices synchronization evidence and per-run outcomes, separate last-success timestamp, organization-scoped snapshots, full filtered/paged history, honest timeline coverage, Settings Refresh and minute polling. Current diagnostics distinguish configuration from verified availability; disabled integrations are neutral.
+- One additive migration preserves legacy unscoped records without guessing ownership. Existing RMM schedules, credentials and permissions remain unchanged. New history starts with scoped checks after deployment.
+- API/web checks, full build, 256 backend tests and 24 browser cases passed; 58 existing database-dependent tests skipped. Migration SQL matched Prisma schema diff but could not be applied locally because no PostgreSQL server is available. The guarded deployment adds a read-only schema/query check before restarting services.
+- Publication authorized; production execution is left to the user. `scripts/deploy-system-health.sh <full-release-sha>` backs up database/source/runtime, migrates, builds and verifies both services, with runtime recovery. See [behavior, validation limits and acceptance](docs/SYSTEM_HEALTH_TRACKING_2026-10-01.md).
+
 ## Device Action Labels — 2026-10-01
 
 - Follow-up to `dd49b6d`: restored small Connect, Remote BG and SysInfo labels beside their icons, with room in the Action column and the same 30-pixel button height. Existing action handlers, permissions and RMM scheduling are unchanged.
