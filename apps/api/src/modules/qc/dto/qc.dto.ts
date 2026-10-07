@@ -5,6 +5,15 @@ export class QcVersionDto {
   @IsInt() @Min(0) version!: number;
 }
 export class QcQueryDto {
+  @IsOptional() @IsString() @MaxLength(200) search?: string;
+  @IsOptional() @IsUUID() reviewerId?: string;
+  @IsOptional() @IsUUID() recipientId?: string;
+  @IsOptional() @IsString() @MaxLength(50) reason?: string;
+  @IsOptional() @IsIn(["LOW", "MEDIUM", "HIGH"]) severity?: string;
+  @IsOptional() @IsIn(["oldest", "newest"]) order?: string;
+  @IsOptional() @IsIn(["true", "false"]) overdue?: string;
+  @IsOptional() @IsIn(["IN_APP", "OUTLOOK", "TEAMS_DIRECT", "TEAMS"]) channel?: string;
+  @IsOptional() @IsIn(["COACHING", "CORRECTIVE", "RECOGNITION"]) kind?: string;
   @IsOptional() @IsInt() @Type(() => Number) @Min(1) page?: number;
   @IsOptional() @IsInt() @Type(() => Number) @Min(1) @Max(100) pageSize?: number;
   @IsOptional() @IsString() @MaxLength(100) status?: string;
@@ -53,13 +62,16 @@ export class QcScoreDto extends QcVersionDto {
   @IsArray() @ArrayMaxSize(50) results!: QcCriterionResult[];
 }
 export class QcTransitionDto extends QcVersionDto {
-  @IsIn(["START", "CLOSE", "ACKNOWLEDGE"]) action!: string;
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
+  @IsIn(["START", "CLOSE", "ACKNOWLEDGE", "EXCLUDE"]) action!: string;
 }
 export class QcBulkDto {
   @IsArray() @ArrayMaxSize(100) items!: Array<{ id: string; version: number }>;
   @IsString() @MaxLength(1000) reason!: string;
 }
 export class QcActionDto {
+  @IsOptional() @IsString() @MaxLength(200) criterionId?: string;
+  @IsOptional() @IsUUID() findingId?: string;
   @IsUUID() reviewId!: string;
   @IsUUID() ownerId!: string;
   @IsIn(["COACHING", "CORRECTIVE", "RECOGNITION"]) kind!: string;
@@ -68,7 +80,7 @@ export class QcActionDto {
   @IsOptional() @IsDateString() dueAt?: string;
 }
 export class QcActionUpdateDto extends QcVersionDto {
-  @IsIn(["ACKNOWLEDGE", "COMPLETE", "VERIFY"]) action!: string;
+  @IsIn(["ACKNOWLEDGE", "COMPLETE", "VERIFY", "RETURN"]) action!: string;
   @IsOptional() @IsString() @MaxLength(5000) evidence?: string;
 }
 export class QcOverrideDto { @IsString() @MaxLength(1000) reason!: string; }
@@ -93,8 +105,31 @@ export class QcDeliverableDto {
   @IsDateString() dueAt!: string;
 }
 export class QcDeliverableUpdateDto extends QcVersionDto {
-  @IsIn(["PROOF_SENT", "APPROVED", "REVISION", "DELIVER", "RESCHEDULE"]) action!: string;
+  @IsIn(["PROOF_SENT", "APPROVED", "REVISION", "DELIVER", "RESCHEDULE", "CANCEL"]) action!: string;
   @IsString() @MaxLength(5000) note!: string;
   @IsOptional() @IsDateString() dueAt?: string;
   @IsOptional() @IsUUID() knowledgeArticleId?: string;
+}
+
+export class QcActionEditDto extends QcVersionDto {
+  @IsUUID() ownerId!: string;
+  @IsString() @MaxLength(200) title!: string;
+  @IsString() @MaxLength(5000) note!: string;
+  @IsOptional() @IsDateString() dueAt?: string | null;
+  @IsString() @MaxLength(1000) reason!: string;
+}
+export class QcBulkAssignDto extends QcBulkDto { @IsUUID() reviewerId!: string; }
+export class QcRubricEditDto extends QcRubricDto { @IsDateString() expectedUpdatedAt!: string; }
+export class QcPolicyEditDto extends QcPolicyDto { @IsDateString() expectedUpdatedAt!: string; }
+
+export class QcDeliverableEditDto extends QcVersionDto {
+  @IsString() @MaxLength(200) name!: string;
+  @IsString() @MaxLength(100) kind!: string;
+  @IsUUID() ownerId!: string;
+  @IsString() @MaxLength(1000) reason!: string;
+}
+
+export class QcExportDto extends QcQueryDto {
+  @IsIn(["csv", "xlsx", "pdf"]) format!: "csv" | "xlsx" | "pdf";
+  @IsOptional() @IsString() @MaxLength(200) sections?: string;
 }

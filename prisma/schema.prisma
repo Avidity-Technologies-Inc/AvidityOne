@@ -2923,6 +2923,8 @@ model QcEventReceipt {
 }
 
 model QcReview {
+  draftSavedAt DateTime?
+  failureConsequence String?
   billingState String @default("NOT_HELD")
   billingReleasedAt DateTime?
   billingReleaseReason String?
@@ -2963,6 +2965,7 @@ model QcReview {
 }
 
 model QcFinding {
+  actions QcAction[]
   id String @id @default(uuid()) @db.Uuid
   organizationId String @db.Uuid
   reviewId String @db.Uuid
@@ -2983,6 +2986,9 @@ model QcFinding {
 }
 
 model QcAction {
+  criterionId String?
+  findingId String? @db.Uuid
+  finding QcFinding? @relation(fields: [findingId], references: [id], onDelete: Restrict)
   id String @id @default(uuid()) @db.Uuid
   organizationId String @db.Uuid
   reviewId String @db.Uuid

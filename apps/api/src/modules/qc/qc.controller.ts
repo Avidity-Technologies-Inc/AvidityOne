@@ -48,18 +48,34 @@ export class QcController {
   @Get("overview") @RequirePermissions("qc.view") overview(@Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.reports.overview(query, user); }
   @Get("exports/client") @RequirePermissions("qc.view", "qc.view_all", "qc.export_client") clientExport(@Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.reports.clientExport(query, user); }
   @Get("exports/internal") @RequirePermissions("qc.view", "qc.export_internal") internalExport(@Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.reports.overview(query, user); }
+  @Get("exports/:audience/file") @RequirePermissions("qc.view")
+  async exportFile(@Param("audience") audience: string, @Query() query: D.QcExportDto, @CurrentUser() user: AuthenticatedUser, @Res({ passthrough: true }) response: Response) {
+    if (!["client", "internal"].includes(audience)) throw new NotFoundException();
+    this.qc.requirePermission(user, audience === "client" ? "qc.export_client" : "qc.export_internal");
+    if (audience === "client") this.qc.requirePermission(user, "qc.view_all");
+    const bytes = await this.reports.exportFile(query, user, audience === "client");
+    response.set({ "Content-Type": query.format === "pdf" ? "application/pdf" : query.format === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv;charset=utf-8", "Content-Disposition": `attachment; filename="qc-${audience}.${query.format}"`, "Cache-Control": "private, no-store" });
+    return new StreamableFile(bytes);
+  }
   @Get("settings") @RequirePermissions("qc.view", "qc.settings_manage") settings(@CurrentUser() user: AuthenticatedUser) { return this.qc.configurationResources(user); }
   @Patch("settings") @RequirePermissions("qc.view", "qc.settings_manage") saveSettings(@Body() body: D.QcProgramDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.saveProgram(body, user); }
   @Get("lookups") @RequirePermissions("qc.view") lookups(@CurrentUser() user: AuthenticatedUser) { return this.qc.lookups(user); }
   @Post("categories") @RequirePermissions("qc.view", "qc.settings_manage") category(@Body() body: D.QcCategoryDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createCategory(body, user); }
   @Post("agreement-types") @RequirePermissions("qc.view", "qc.settings_manage") agreementType(@Body() body: D.QcCategoryDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createAgreementType(body, user); }
   @Post("policies") @RequirePermissions("qc.view", "qc.settings_manage") policy(@Body() body: D.QcPolicyDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createPolicy(body, user); }
+  @Patch("policies/:id") @RequirePermissions("qc.view", "qc.settings_manage") editPolicy(@Param("id", ParseUUIDPipe) id: string, @Body() body: D.QcPolicyEditDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createPolicy(body, user, { id, expectedUpdatedAt: body.expectedUpdatedAt }); }
+  @Patch("rubrics/:id") @RequirePermissions("qc.view", "qc.rubrics_manage") editRubric(@Param("id", ParseUUIDPipe) id: string, @Body() body: D.QcRubricEditDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createRubric(body, user, { id, expectedUpdatedAt: body.expectedUpdatedAt }); }
   @Post("policies/:id/publish") @RequirePermissions("qc.view", "qc.settings_manage") publishPolicy(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) { return this.qc.publish("policy", id, user); }
   @Post("rubrics") @RequirePermissions("qc.view", "qc.rubrics_manage") rubric(@Body() body: D.QcRubricDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createRubric(body, user); }
   @Post("rubrics/:id/publish") @RequirePermissions("qc.view", "qc.rubrics_manage") publishRubric(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) { return this.qc.publish("rubric", id, user); }
   @Get("reviews") @RequirePermissions("qc.view") reviews(@Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.listReviews(query, user); }
   @Post("reviews") @RequirePermissions("qc.view", "qc.view_all", "qc.reviews_assign") createReview(@Body() body: D.QcReviewDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.createReview(body, user); }
   @Post("reviews/bulk") @RequirePermissions("qc.view", "qc.view_all", "qc.reviews_bulk") bulk(@Body() body: D.QcBulkDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.bulk(body, user); }
+  @Post("reviews/bulk-assignment") @RequirePermissions("qc.view", "qc.view_all", "qc.reviews_assign") bulkAssignment(@Body() body: D.QcBulkAssignDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.bulkAssign(body, user); }
+  @Post("reviews/:id/draft") @RequirePermissions("qc.view", "qc.view_all", "qc.reviews_perform") draft(@Param("id", ParseUUIDPipe) id: string, @Body() body: D.QcScoreDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.saveDraft(id, body, user); }
+  @Get("action-page") @RequirePermissions("qc.view") actionPage(@Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.actionPage(user, query); }
+  @Get("actions/:id/history") @RequirePermissions("qc.view") actionHistory(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) { return this.qc.actionHistory(id, user); }
+  @Patch("actions/:id") @RequirePermissions("qc.view", "qc.view_all", "qc.coaching_manage") editAction(@Param("id", ParseUUIDPipe) id: string, @Body() body: D.QcActionEditDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.editAction(id, body, user); }
   @Get("reviews/:id") @RequirePermissions("qc.view") review(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) { return this.qc.review(id, user); }
   @Get("reviews/:id/evidence") @RequirePermissions("qc.view") evidence(@Param("id", ParseUUIDPipe) id: string, @Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.qc.evidence(id, user, query); }
   @Get("reviews/:id/attachments/:attachmentId") @RequirePermissions("qc.view")
@@ -97,5 +113,6 @@ export class QcController {
   @Get("deliverables") @RequirePermissions("qc.view") deliverables(@Query() query: D.QcQueryDto, @CurrentUser() user: AuthenticatedUser) { return this.work.deliverables(query, user); }
   @Post("deliverables") @RequirePermissions("qc.view", "qc.work_record") createDeliverable(@Body() body: D.QcDeliverableDto, @CurrentUser() user: AuthenticatedUser) { return this.work.createDeliverable(body, user); }
   @Get("deliverables/:id") @RequirePermissions("qc.view") deliverable(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) { return this.work.deliverable(id, user); }
+  @Patch("deliverables/:id/details") @RequirePermissions("qc.view", "qc.work_record") editDeliverable(@Param("id", ParseUUIDPipe) id: string, @Body() body: D.QcDeliverableEditDto, @CurrentUser() user: AuthenticatedUser) { return this.work.editDeliverable(id, body, user); }
   @Patch("deliverables/:id") @RequirePermissions("qc.view", "qc.work_record") updateDeliverable(@Param("id", ParseUUIDPipe) id: string, @Body() body: D.QcDeliverableUpdateDto, @CurrentUser() user: AuthenticatedUser) { return this.work.updateDeliverable(id, body, user); }
 }

@@ -122,7 +122,7 @@ export class QcService {
     requireValue(input.name.trim(), "Category name is required.");
     return this.prisma.$transaction(async tx => { const item = await tx.qcCategory.create({ data: { organizationId: user.organizationId, name: input.name.trim() } }); await this.history(tx, user, "category_created", { id: item.id }); return item; });
   }
-  async createPolicy(input: D.QcPolicyDto, user: AuthenticatedUser) {
+  async createPolicy(input: D.QcPolicyDto, user: AuthenticatedUser, draft?: { id: string; expectedUpdatedAt: string }) {
     validatePolicy(input.configuration);
     requireValue(await this.prisma.qcAgreementType.findFirst({ where: { organizationId: user.organizationId, name: input.agreementType, isActive: true } }), "Choose a configured agreement type.");
     requireValue(input.name.trim(), "Policy name is required.");
@@ -131,12 +131,30 @@ export class QcService {
     if (input.categoryId) requireValue(await this.prisma.qcCategory.findFirst({ where: { id: input.categoryId, organizationId: user.organizationId, isActive: true } }), "Category was not found.");
     requireValue(!input.effectiveUntil || new Date(input.effectiveUntil) > new Date(input.effectiveFrom), "Policy end must follow its start.");
     requireValue(await this.prisma.ticketStatusDefinition.count({ where: { id: { in: [...new Set(input.configuration.pauseStatusIds)] }, organizationId: user.organizationId, category: { in: ["WAITING_CUSTOMER", "WAITING_THIRD_PARTY"] } } }) === new Set(input.configuration.pauseStatusIds).size, "Only approved customer/vendor waiting states can pause SLA clocks.");
-    return this.prisma.$transaction(async tx => { const policy = await tx.qcPolicy.create({ data: { ...input, name: input.name.trim(), organizationId: user.organizationId, configuration: qcJson(input.configuration) } }); await this.history(tx, user, "policy_created", { id: policy.id }); return policy; });
+    return this.prisma.$transaction(async tx => {
+      const { expectedUpdatedAt: _timestamp, ...values } = input as D.QcPolicyEditDto;
+      const data = { ...values, projectId: input.projectId ?? null, categoryId: input.categoryId ?? null, effectiveUntil: input.effectiveUntil ?? null, name: input.name.trim(), configuration: qcJson(input.configuration) };
+      if (draft) {
+        const saved = await tx.qcPolicy.updateMany({ where: { id: draft.id, organizationId: user.organizationId, publishedAt: null, updatedAt: new Date(draft.expectedUpdatedAt) }, data });
+        if (saved.count !== 1) throw new ConflictException("Policy draft changed or is published. Reload before editing.");
+        await this.history(tx, user, "policy_draft_updated", { id: draft.id }); return { id: draft.id };
+      }
+      const policy = await tx.qcPolicy.create({ data: { ...data, organizationId: user.organizationId } }); await this.history(tx, user, "policy_created", { id: policy.id }); return policy;
+    });
   }
-  async createRubric(input: D.QcRubricDto, user: AuthenticatedUser) {
+  async createRubric(input: D.QcRubricDto, user: AuthenticatedUser, draft?: { id: string; expectedUpdatedAt: string }) {
     validateRubric(input.criteria, input.passThreshold, input.reinspectionCount);
     requireValue(input.name.trim(), "Rubric name is required.");
-    return this.prisma.$transaction(async tx => { const rubric = await tx.qcRubric.create({ data: { ...input, name: input.name.trim(), organizationId: user.organizationId, criteria: qcJson(input.criteria) } }); await this.history(tx, user, "rubric_created", { id: rubric.id }); return rubric; });
+    return this.prisma.$transaction(async tx => {
+      const { expectedUpdatedAt: _timestamp, ...values } = input as D.QcRubricEditDto;
+      const data = { ...values, name: input.name.trim(), criteria: qcJson(input.criteria) };
+      if (draft) {
+        const saved = await tx.qcRubric.updateMany({ where: { id: draft.id, organizationId: user.organizationId, publishedAt: null, updatedAt: new Date(draft.expectedUpdatedAt) }, data });
+        if (saved.count !== 1) throw new ConflictException("Rubric draft changed or is published. Reload before editing.");
+        await this.history(tx, user, "rubric_draft_updated", { id: draft.id }); return { id: draft.id };
+      }
+      const rubric = await tx.qcRubric.create({ data: { ...data, organizationId: user.organizationId } }); await this.history(tx, user, "rubric_created", { id: rubric.id }); return rubric;
+    });
   }
   async publish(kind: "policy" | "rubric", id: string, user: AuthenticatedUser) {
     return this.prisma.$transaction(async tx => {
@@ -159,17 +177,31 @@ export class QcService {
   }
   reviewWhere(user: AuthenticatedUser, query: D.QcQueryDto): Prisma.QcReviewWhereInput {
     if (query.ownerId && !user.permissions.includes("qc.view_all") && query.ownerId !== user.id) throw new ForbiddenException();
-    return { ...this.scope(user), ...(query.ownerId ? { ownerId: query.ownerId } : {}), ...(query.status ? { status: query.status } : {}), ...(query.clientId ? { OR: [{ ticket: { clientId: query.clientId } }, { deliverable: { project: { clientId: query.clientId } } }] } : {}), ...(query.projectId ? { deliverable: { projectId: query.projectId } } : {}), ...(query.ticketId ? { ticket: { OR: [{ ticketNumber: query.ticketId }, ...(/^[0-9a-f-]{36}$/i.test(query.ticketId) ? [{ id: query.ticketId }] : [])] } } : {}), ...(query.from || query.to ? { createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lte: new Date(query.to) } : {}) } } : {}) };
+    const filters: Prisma.QcReviewWhereInput[] = [this.scope(user)];
+    if (query.ownerId) filters.push({ ownerId: query.ownerId });
+    if (query.status) filters.push({ status: query.status });
+    if (query.reviewerId) filters.push({ reviewerId: query.reviewerId });
+    if (query.reason) filters.push({ selectionReasons: { has: query.reason } });
+    if (query.severity) filters.push({ findings: { some: { severity: query.severity, overriddenAt: null } } });
+    if (query.search?.trim()) filters.push({ OR: [{ ticket: { OR: [{ ticketNumber: { contains: query.search.trim(), mode: "insensitive" } }, { subject: { contains: query.search.trim(), mode: "insensitive" } }] } }, { deliverable: { name: { contains: query.search.trim(), mode: "insensitive" } } }] });
+    if (query.clientId) filters.push({ OR: [{ ticket: { clientId: query.clientId } }, { deliverable: { project: { clientId: query.clientId } } }] });
+    if (query.projectId) filters.push({ OR: [{ ticket: { projectWorkItems: { some: { projectId: query.projectId } } } }, { deliverable: { projectId: query.projectId } }] });
+    if (query.ticketId) filters.push({ ticket: { OR: [{ ticketNumber: query.ticketId }, ...(/^[0-9a-f-]{36}$/i.test(query.ticketId) ? [{ id: query.ticketId }] : [])] } });
+    if (query.from || query.to) filters.push({ createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lte: new Date(query.to) } : {}) } });
+    return { AND: filters };
   }
+
   async listReviews(query: D.QcQueryDto, user: AuthenticatedUser) {
     const where = this.reviewWhere(user, query); const page = query.page ?? 1; const pageSize = query.pageSize ?? 25;
-    const [items, total] = await Promise.all([this.prisma.qcReview.findMany({ where, include: qcReviewInclude, orderBy: { createdAt: "desc" }, take: pageSize, skip: (page - 1) * pageSize }), this.prisma.qcReview.count({ where })]);
+    const [items, total] = await Promise.all([this.prisma.qcReview.findMany({ where, include: qcReviewInclude, orderBy: [{ createdAt: query.order === "oldest" ? "asc" : "desc" }, { id: "asc" }], take: pageSize, skip: (page - 1) * pageSize }), this.prisma.qcReview.count({ where })]);
     return { items, total, page, pageSize };
   }
   async review(id: string, user: AuthenticatedUser) {
-    const review = await this.prisma.qcReview.findFirst({ where: { id, ...this.scope(user) }, include: { ...qcReviewInclude, actions: { orderBy: { createdAt: "asc" } }, history: { orderBy: { createdAt: "asc" }, include: { actor: { select: qcUserSelect } } } } });
+    const review = await this.prisma.qcReview.findFirst({ where: { id, ...this.scope(user) }, include: { ...qcReviewInclude, actions: { orderBy: { createdAt: "asc" }, include: { owner: { select: qcUserSelect }, finding: { select: { id: true, code: true } } } }, history: { orderBy: { createdAt: "asc" }, include: { actor: { select: qcUserSelect } } } } });
     if (!review) throw new NotFoundException("QC review was not found.");
-    return review;
+    const directive = await this.prisma.qcReinspection.findUnique({ where: { reviewId: id } });
+    const selections = directive ? await this.prisma.qcHistory.findMany({ where: { organizationId: user.organizationId, action: "reinspection_selected", metadata: { path: ["directiveId"], equals: directive.id }, review: this.scope(user) }, select: { review: { select: { id: true, status: true, score: true, finalizedAt: true, selectionReasons: true, ticket: { select: { ticketNumber: true } } } } }, orderBy: { createdAt: "asc" } }) : [];
+    return { ...review, reinspectionProgress: directive ? { remainingToSelect: directive.remaining, reviews: selections.flatMap(row => row.review ? [row.review] : []) } : null };
   }
   async evidence(id: string, user: AuthenticatedUser, query: D.QcQueryDto = {}) {
     const review = await this.review(id, user);
@@ -223,11 +255,35 @@ export class QcService {
       requireValue(review.ownerId === user.id && review.finalizedAt && !review.acknowledgedAt, "Only the reviewed technician can acknowledge a finalized review.");
       return this.changeReview(id, input.version, user, "review_acknowledged", { acknowledgedAt: new Date() });
     }
+    if (input.action === "EXCLUDE") {
+      this.requirePermission(user, "qc.view_all"); this.requirePermission(user, "qc.flags_override");
+      requireValue(["PENDING", "IN_REVIEW"].includes(review.status) && !review.finalizedAt && input.reason?.trim(), "Only an unscored review may be excluded, with a documented reason.");
+      return this.prisma.$transaction(async tx => {
+        const result = await tx.qcReview.updateMany({ where: { id, ...this.scope(user), version: input.version, finalizedAt: null }, data: { status: "EXCLUDED", version: { increment: 1 } } });
+        if (result.count !== 1) throw new ConflictException("Review changed. Reload before excluding it.");
+        await this.history(tx, user, "review_excluded", { reason: input.reason }, id); return { updated: true };
+      });
+    }
     this.requirePermission(user, "qc.reviews_perform");
+    this.requirePermission(user, "qc.view_all");
     if (input.action === "START") { requireValue(review.status === "PENDING" && (!review.reviewerId || review.reviewerId === user.id), "This review is not available to claim."); return this.changeReview(id, input.version, user, "review_started", { status: "IN_REVIEW", reviewerId: user.id }); }
     requireValue(["PASSED", "FAILED", "COACHING_ISSUED"].includes(review.status), "Finalize the inspection before closing it.");
-    requireValue(!await this.prisma.qcAction.count({ where: { reviewId: id, status: { not: "VERIFIED" }, kind: { not: "RECOGNITION" } } }), "Verify all follow-up actions before closing this review.");
-    return this.changeReview(id, input.version, user, "review_closed", { status: "CLOSED" });
+    const failed = review.selectionReasons.includes("FAILED_RESULT");
+    const consequence = review.failureConsequence ?? (review.history.find(event => event.action === "review_scored")?.metadata as { failureConsequence?: string } | undefined)?.failureConsequence;
+    return this.prisma.$transaction(async tx => {
+      // Serialize closure with action creation, reassignment and verification.
+      const reserved = await tx.qcReview.updateMany({ where: { id, ...this.scope(user), version: input.version }, data: { version: { increment: 1 } } });
+      if (reserved.count !== 1) throw new ConflictException("Review changed. Reload before closing.");
+      const followUp = await tx.qcAction.findMany({ where: { reviewId: id, kind: { not: "RECOGNITION" } } });
+      requireValue(followUp.every(action => action.status === "VERIFIED"), "Verify all follow-up actions before closing this review.");
+      if (failed && consequence !== "BILLING_HOLD" && !followUp.length) {
+        this.requirePermission(user, "qc.coaching_manage");
+        requireValue(input.reason?.trim(), "A failed review requires verified coaching or a documented follow-up exception.");
+      }
+      await tx.qcReview.update({ where: { id }, data: { status: "CLOSED" } });
+      await this.history(tx, user, "review_closed", { reason: input.reason?.trim(), followUpException: failed && !followUp.length }, id);
+      return { updated: true };
+    });
   }
   async score(id: string, input: D.QcScoreDto, user: AuthenticatedUser) {
     const review = await this.review(id, user);
@@ -239,7 +295,7 @@ export class QcService {
     requireValue(!review.rubricId || input.rubricId === review.rubricId, "Use the rubric revision assigned to this review.");
     const result = scoreReview(rubric.criteria as unknown as QcCriterion[], input.results, rubric.passThreshold);
     return this.prisma.$transaction(async tx => {
-      const changed = await tx.qcReview.updateMany({ where: { id, ...this.scope(user), version: input.version, status: "IN_REVIEW", reviewerId: user.id }, data: { ...result, billingState: result.status === "FAILED" && program.configuration.failureConsequence === "BILLING_HOLD" ? "HELD" : "NOT_HELD", selectionReasons: [...new Set([...review.selectionReasons, ...(result.status === "FAILED" ? ["FAILED_RESULT"] : [])])], rubricId: rubric.id, results: qcJson(input.results), finalizedAt: new Date(), version: { increment: 1 } } });
+      const changed = await tx.qcReview.updateMany({ where: { id, ...this.scope(user), version: input.version, status: "IN_REVIEW", reviewerId: user.id }, data: { ...result, failureConsequence: program.configuration.failureConsequence, billingState: result.status === "FAILED" && program.configuration.failureConsequence === "BILLING_HOLD" ? "HELD" : "NOT_HELD", selectionReasons: [...new Set([...review.selectionReasons, ...(result.status === "FAILED" ? ["FAILED_RESULT"] : [])])], rubricId: rubric.id, results: qcJson(input.results), finalizedAt: new Date(), version: { increment: 1 } } });
       if (changed.count !== 1) throw new ConflictException("Review changed. Reload before scoring.");
       if (result.status === "FAILED" && review.ownerId && rubric.reinspectionCount > 0) await tx.qcReinspection.create({ data: { organizationId: user.organizationId, technicianId: review.ownerId, reviewId: id, remaining: rubric.reinspectionCount } });
       await this.history(tx, user, "review_scored", { rubricId: rubric.id, configurationVersion: program.version, failureConsequence: program.configuration.failureConsequence, result, results: input.results }, id); return result;
@@ -278,7 +334,7 @@ export class QcService {
     });
   }
   async actions(user: AuthenticatedUser, query: D.QcQueryDto = {}) {
-    return this.prisma.qcAction.findMany({ where: { organizationId: user.organizationId, ...(!user.permissions.includes("qc.view_all") ? { ownerId: user.id } : {}) }, include: { owner: { select: qcUserSelect }, review: { select: { id: true, ownerId: true, ticket: { select: { ticketNumber: true } }, deliverable: { select: { name: true } } } } }, orderBy: [{ status: "asc" }, { dueAt: "asc" }, { id: "asc" }], take: query.pageSize ?? 100, skip: ((query.page ?? 1) - 1) * (query.pageSize ?? 100) });
+    return (await this.actionPage(user, { pageSize: 100, ...query })).items;
   }
   async createAction(input: D.QcActionDto, user: AuthenticatedUser) {
     const review = await this.review(input.reviewId, user);
@@ -286,12 +342,14 @@ export class QcService {
     requireValue(input.title.trim() && input.note.trim(), "Title and feedback are required.");
     requireValue(input.kind !== "CORRECTIVE" || input.dueAt, "Corrective actions require a due date.");
     await this.usersExist([input.ownerId], user.organizationId);
+    if (input.criterionId) requireValue((review.rubric?.criteria as unknown as QcCriterion[] | undefined)?.some(criterion => criterion.id === input.criterionId), "Choose a criterion from this review's rubric.");
+    if (input.findingId) requireValue(review.findings.some(finding => finding.id === input.findingId), "Choose a finding from this inspection.");
     return this.prisma.$transaction(async tx => {
       const reserved = await tx.qcReview.updateMany({ where: { id: review.id, version: review.version, status: { not: "CLOSED" } }, data: { version: { increment: 1 } } });
       if (reserved.count !== 1) throw new ConflictException("Review changed. Reload before adding an action.");
       const item = await tx.qcAction.create({ data: { ...input, organizationId: user.organizationId, status: input.kind === "RECOGNITION" ? "VERIFIED" : "OPEN" } });
       if (input.kind === "COACHING") await tx.qcReview.update({ where: { id: review.id }, data: { status: "COACHING_ISSUED", version: { increment: 1 } } });
-      await this.history(tx, user, "action_created", { id: item.id, kind: item.kind }, review.id); return item;
+      await this.history(tx, user, "action_created", { id: item.id, kind: item.kind, ownerId: item.ownerId, title: item.title, note: item.note, dueAt: item.dueAt, criterionId: item.criterionId, findingId: item.findingId }, review.id); return item;
     });
   }
   async updateAction(id: string, input: D.QcActionUpdateDto, user: AuthenticatedUser) {
@@ -299,13 +357,81 @@ export class QcService {
     if (!item) throw new NotFoundException();
     requireValue(item.version === input.version, "Action changed. Reload before continuing.");
     const data: Prisma.QcActionUpdateManyMutationInput = { version: { increment: 1 } };
-    if (input.action === "VERIFY") { this.requirePermission(user, "qc.coaching_manage"); requireValue(item.status === "COMPLETED", "Complete the action before verification."); data.status = "VERIFIED"; data.verifiedAt = new Date(); }
-    else {
+    if (input.action === "VERIFY") { this.requirePermission(user, "qc.view_all"); this.requirePermission(user, "qc.coaching_manage"); requireValue(item.status === "COMPLETED", "Complete the action before verification."); data.status = "VERIFIED"; data.verifiedAt = new Date(); }
+    else if (input.action === "RETURN") {
+      this.requirePermission(user, "qc.view_all"); this.requirePermission(user, "qc.coaching_manage");
+      requireValue(item.status === "COMPLETED" && input.evidence?.trim(), "Return a submitted action with an explanation.");
+      data.status = "ACKNOWLEDGED"; data.completedAt = null;
+    } else {
       this.requirePermission(user, "qc.actions_complete_own");
       requireValue(item.ownerId === user.id, "Only the action owner can acknowledge or complete it.");
       if (input.action === "ACKNOWLEDGE") { requireValue(item.status === "OPEN", "The action is already acknowledged."); data.status = "ACKNOWLEDGED"; data.acknowledgedAt = new Date(); }
       else { requireValue(item.status === "ACKNOWLEDGED" && input.evidence?.trim(), "Acknowledge the action and provide completion evidence."); data.status = "COMPLETED"; data.completedAt = new Date(); data.completionEvidence = input.evidence; }
     }
-    return this.prisma.$transaction(async tx => { const result = await tx.qcAction.updateMany({ where: { id, organizationId: user.organizationId, version: input.version }, data }); if (result.count !== 1) throw new ConflictException("Action changed. Reload before continuing."); await this.history(tx, user, `action_${input.action.toLowerCase()}`, { id, evidence: input.evidence }, item.reviewId); return { updated: true }; });
+    return this.prisma.$transaction(async tx => {
+      const parent = await tx.qcReview.updateMany({ where: { id: item.reviewId, organizationId: user.organizationId, status: { not: "CLOSED" } }, data: { version: { increment: 1 } } });
+      requireValue(parent.count === 1, "This inspection is closed.");
+      const result = await tx.qcAction.updateMany({ where: { id, organizationId: user.organizationId, version: input.version }, data }); if (result.count !== 1) throw new ConflictException("Action changed. Reload before continuing."); await this.history(tx, user, `action_${input.action.toLowerCase()}`, { id, evidence: input.evidence }, item.reviewId); return { updated: true }; });
   }
+  async saveDraft(id: string, input: D.QcScoreDto, user: AuthenticatedUser) {
+    const review = await this.review(id, user);
+    requireValue(review.status === "IN_REVIEW" && review.reviewerId === user.id && !review.finalizedAt, "Only the assigned reviewer can save an open inspection draft.");
+    const rubric = await this.prisma.qcRubric.findFirst({ where: { id: input.rubricId, organizationId: user.organizationId, publishedAt: { not: null }, kind: review.ticketId ? "SERVICE" : "CREATIVE" } });
+    requireValue(rubric && (!review.rubricId || review.rubricId === rubric.id), "Use the rubric assigned to this review.");
+    const criteria = rubric.criteria as unknown as QcCriterion[];
+    requireValue(new Set(input.results.map(item => item?.criterionId)).size === input.results.length, "Duplicate draft criteria.");
+    for (const item of input.results) requireValue(item && criteria.some(criterion => criterion.id === item.criterionId && (item.outcome !== "NA" || criterion.allowNotApplicable)) && (!item.outcome || ["PASS", "FAIL", "NA"].includes(item.outcome)) && typeof item.comment === "string" && item.comment.length <= 5000, "Invalid draft criterion.");
+    return this.changeReview(id, input.version, user, "review_draft_saved", { rubricId: rubric.id, results: qcJson(input.results), draftSavedAt: new Date() });
+  }
+  async actionPage(user: AuthenticatedUser, query: D.QcQueryDto = {}) {
+    if (query.ownerId && !user.permissions.includes("qc.view_all")) requireValue(query.ownerId === user.id, "Actions are restricted to your identity.");
+    const where: Prisma.QcActionWhereInput = {
+      organizationId: user.organizationId,
+      ...(!user.permissions.includes("qc.view_all") ? { ownerId: user.id } : query.ownerId ? { ownerId: query.ownerId } : {}),
+      ...(query.status ? { status: query.status } : {}), ...(query.kind ? { kind: query.kind } : {}),
+      ...(query.overdue === "true" ? { dueAt: { lt: new Date() }, NOT: { status: "VERIFIED" } } : {}),
+      ...(query.search?.trim() ? { OR: [{ title: { contains: query.search, mode: "insensitive" } }, { review: { ticket: { ticketNumber: { contains: query.search, mode: "insensitive" } } } }] } : {}),
+      ...(query.clientId ? { review: { OR: [{ ticket: { clientId: query.clientId } }, { deliverable: { project: { clientId: query.clientId } } }] } } : {})
+    };
+    const page = query.page ?? 1, pageSize = query.pageSize ?? 25;
+    const [items, total] = await Promise.all([
+      this.prisma.qcAction.findMany({ where, include: { owner: { select: qcUserSelect }, finding: { select: { id: true, code: true } }, review: { select: { id: true, ownerId: true, status: true, ticket: { select: { ticketNumber: true } }, deliverable: { select: { name: true } }, rubric: { select: { criteria: true } } } } }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }, { id: "asc" }], take: pageSize, skip: (page - 1) * pageSize }),
+      this.prisma.qcAction.count({ where })
+    ]);
+    return { items, total, page, pageSize };
+  }
+  async actionHistory(id: string, user: AuthenticatedUser) {
+    requireValue(await this.prisma.qcAction.count({ where: { id, organizationId: user.organizationId, ...(!user.permissions.includes("qc.view_all") ? { ownerId: user.id } : {}) } }), "Action is unavailable.");
+    return this.prisma.qcHistory.findMany({ where: { organizationId: user.organizationId, action: { startsWith: "action_" }, metadata: { path: ["id"], equals: id } }, include: { actor: { select: qcUserSelect } }, orderBy: { createdAt: "asc" } });
+  }
+  async editAction(id: string, input: D.QcActionEditDto, user: AuthenticatedUser) {
+    const item = await this.prisma.qcAction.findFirst({ where: { id, organizationId: user.organizationId } });
+    requireValue(item && ["OPEN", "ACKNOWLEDGED"].includes(item.status), "Only open follow-up can be edited. Return submitted work before editing it.");
+    requireValue(input.title.trim() && input.note.trim() && input.reason.trim(), "Title, feedback and change reason are required.");
+    requireValue(item.kind !== "CORRECTIVE" || input.dueAt, "Corrective actions require a deadline.");
+    await this.usersExist([input.ownerId], user.organizationId);
+    return this.prisma.$transaction(async tx => {
+      const parent = await tx.qcReview.updateMany({ where: { id: item.reviewId, organizationId: user.organizationId, status: { not: "CLOSED" } }, data: { version: { increment: 1 } } });
+      requireValue(parent.count === 1, "This inspection is closed.");
+      const changed = await tx.qcAction.updateMany({ where: { id, organizationId: user.organizationId, version: input.version }, data: { ownerId: input.ownerId, title: input.title.trim(), note: input.note.trim(), dueAt: input.dueAt ? new Date(input.dueAt) : null, ...(input.ownerId !== item.ownerId ? { status: "OPEN", acknowledgedAt: null, completedAt: null, completionEvidence: null } : {}), version: { increment: 1 } } });
+      if (changed.count !== 1) throw new ConflictException("Action changed. Reload before editing.");
+      await this.history(tx, user, "action_updated", { id, reason: input.reason, before: { ownerId: item.ownerId, title: item.title, note: item.note, dueAt: item.dueAt }, after: { ownerId: input.ownerId, title: input.title, note: input.note, dueAt: input.dueAt } }, item.reviewId);
+      return { updated: true };
+    });
+  }
+  async bulkAssign(input: D.QcBulkAssignDto, user: AuthenticatedUser) {
+    requireValue(input.items.length && input.items.every(item => item && /^[0-9a-f-]{36}$/i.test(item.id) && Number.isInteger(item.version) && item.version >= 0) && input.items.length === new Set(input.items.map(item => item.id)).size && input.reason.trim(), "Select distinct reviews and provide an assignment reason.");
+    const reviewers = (await this.lookups(user)).reviewers;
+    requireValue(reviewers.some(item => item.id === input.reviewerId), "Choose an eligible reviewer.");
+    return this.prisma.$transaction(async tx => {
+      for (const item of input.items) {
+        requireValue(/^[0-9a-f-]{36}$/i.test(item.id) && Number.isInteger(item.version), "Invalid review selection.");
+        const updated = await tx.qcReview.updateMany({ where: { id: item.id, ...this.scope(user), version: item.version, status: { in: ["PENDING", "IN_REVIEW"] } }, data: { reviewerId: input.reviewerId, version: { increment: 1 } } });
+        if (updated.count !== 1) throw new ConflictException("A review changed. No assignments were saved.");
+        await this.history(tx, user, "review_assigned", { reviewerId: input.reviewerId, reason: input.reason }, item.id);
+      }
+      return { assigned: input.items.length };
+    });
+  }
+
 }

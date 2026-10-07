@@ -1,5 +1,11 @@
 # Project Handoff
 
+## QC Operational Follow-up — 2026-10-07
+
+- Approved application work from canonical `main` at `d504932`: coaching ownership/history, reassignment and verification returns; inspection drafts and closure safeguards; reinspection traceability; filtered/bulk review management; editable unpublished definition revisions; creative follow-up; honest historical metrics and selectable PDF/Excel/CSV exports. Existing configuration, permissions and provider activation remain unchanged.
+- One additive migration preserves existing records. API/web checks and complete build passed; 298 backend tests and 39 browser cases passed, with 30 unrelated database cases skipped. All migrations and QC database/runtime tests were exercised on disposable local PostgreSQL; deployment success/recovery was simulated.
+- Publication authorized; production execution remains with the user. Use `scripts/deploy-qc-operations.sh <full-release-sha>` from the fetched revision. See [scope, limits, validation and deployment](docs/QC_OPERATIONAL_FOLLOW_UP_2026-10-07.md). Configuration review and live provider acceptance follow deployment.
+
 ## Shared Module Headers — 2026-10-01
 
 - Approved from clean local/GitHub `9396908`: authenticated topbar now carries module titles and section context; repeated generic headings are removed while record headings and operational controls remain. Dashboard spacing and chart headings are compact; saved widget behavior is preserved.

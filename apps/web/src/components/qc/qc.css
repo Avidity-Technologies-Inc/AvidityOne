@@ -65,3 +65,15 @@
 @media (max-width: 700px) { .qc-save-bar { bottom: 0; gap: 10px; } .qc-save-bar > button { width: 100%; } .qc-save-bar > div { flex-basis: 100%; } }
 @media (max-width: 700px) { .qc-card { padding: 15px; } .qc-heading h1 { font-size: 22px; } .qc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .qc-metrics strong { font-size: 21px; } .qc-inspection-columns { grid-template-columns: 1fr; } .qc-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .qc-heading > .qc-inline { width: 100%; } }
 @media (max-width: 420px) { .qc-filters { grid-template-columns: 1fr; } .qc-inline > label { flex-basis: 100%; } }
+
+/* Keep operational controls compact while allowing evidence to breathe. */
+.qc-workspace { gap: 12px; }
+.qc-workspace .qc-card { padding: 16px; }
+.qc-workspace .qc-heading { justify-content: flex-end; }
+.qc-workspace .qc-program-status { padding: 9px 14px; }
+.qc-workspace .qc-program-status details { padding: 5px 0; }
+.qc-workspace .qc-action-history { padding-left: 22px; line-height: 1.6; }
+.qc-workspace .qc-action-history li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.qc-workspace .qc-save-bar { background: var(--surface); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.qc-trend { display: block; width: 100%; max-height: 240px; color: var(--text-muted); font-size: 11px; }
+.qc-workspace details.qc-card > summary { font-weight: 600; }

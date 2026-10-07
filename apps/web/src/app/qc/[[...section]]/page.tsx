@@ -6,6 +6,6 @@ export default async function QcPage({ params, searchParams }: { params: Promise
   const { section = [] } = await params;
   if (section.length > 2 || section.length === 2 && section[0] !== "reviews" || section[0] && !["overview", "reviews", "actions", "creative", "scorecards", "clients", "deliveries", "work", "settings"].includes(section[0])) notFound();
   const query = await searchParams;
-  const filters = Object.fromEntries(["clientId", "projectId", "ticketId", "scope"].filter(key => typeof query[key] === "string").map(key => [key, query[key] as string]));
+  const filters = Object.fromEntries(["clientId", "projectId", "ticketId", "scope", "ownerId"].filter(key => typeof query[key] === "string").map(key => [key, query[key] as string]));
   return <AppShell><QcWorkspace initialFilters={filters} section={section} /></AppShell>;
 }

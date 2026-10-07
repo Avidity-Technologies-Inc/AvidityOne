@@ -44,9 +44,9 @@ export class QcNotificationsService implements OnModuleInit, OnModuleDestroy {
     if (!config.routes.length) return;
     const now = new Date();
     const [reviews, actions, deliverables, cycles] = await Promise.all([
-      this.qc.prisma.qcReview.findMany({ where: { organizationId: program.organizationId, status: { not: "CLOSED" } }, include: { findings: { where: { severity: "HIGH", overriddenAt: null } } } }),
+      this.qc.prisma.qcReview.findMany({ where: { organizationId: program.organizationId, status: { notIn: ["CLOSED", "EXCLUDED"] } }, include: { findings: { where: { severity: "HIGH", overriddenAt: null } } } }),
       this.qc.prisma.qcAction.findMany({ where: { organizationId: program.organizationId, status: { not: "VERIFIED" }, dueAt: { lt: now } } }),
-      this.qc.prisma.qcDeliverable.findMany({ where: { organizationId: program.organizationId, deliveredAt: null, dueAt: { lt: now } } }),
+      this.qc.prisma.qcDeliverable.findMany({ where: { organizationId: program.organizationId, deliveredAt: null, status: { not: "CANCELLED" }, dueAt: { lt: now } } }),
       this.qc.prisma.qcCycle.findMany({ where: { organizationId: program.organizationId, complete: true } })
     ]);
     const day = config.deliveryCalendar ? calendarPosition(now, config.deliveryCalendar.timeZone).day : now.toISOString().slice(0, 10);
@@ -106,7 +106,7 @@ export class QcNotificationsService implements OnModuleInit, OnModuleDestroy {
       const acknowledged = route?.stopOnAcknowledgment && await this.qc.prisma.qcDelivery.count({ where: { organizationId: program.organizationId, acknowledgedAt: { not: null }, AND: [{ payload: { path: ["source"], equals: payload.source } }, { payload: { path: ["event"], equals: payload.event } }] } });
       if (!route || acknowledged) { await this.qc.prisma.qcDelivery.updateMany({ where: { id: row.id, state: "PENDING" }, data: { state: "CANCELLED", errorCode: acknowledged ? "ACKNOWLEDGED_ESCALATION_STOPPED" : "ROUTE_REMOVED" } }); continue; }
       if (!isWorkingTime(now, config.deliveryCalendar) && !(payload.urgent && config.urgentOutsideHours)) continue;
-      if (payload.actionId && await this.qc.prisma.qcAction.count({ where: { id: payload.actionId, status: "VERIFIED" } }) || payload.deliverableId && await this.qc.prisma.qcDeliverable.count({ where: { id: payload.deliverableId, deliveredAt: { not: null } } }) || row.reviewId && await this.qc.prisma.qcReview.count({ where: { id: row.reviewId, status: "CLOSED" } })) { await this.qc.prisma.qcDelivery.updateMany({ where: { id: row.id, state: "PENDING" }, data: { state: "CANCELLED", errorCode: "WORK_COMPLETED" } }); continue; }
+      if (payload.actionId && await this.qc.prisma.qcAction.count({ where: { id: payload.actionId, status: "VERIFIED" } }) || payload.deliverableId && await this.qc.prisma.qcDeliverable.count({ where: { id: payload.deliverableId, OR: [{ deliveredAt: { not: null } }, { status: "CANCELLED" }] } }) || row.reviewId && await this.qc.prisma.qcReview.count({ where: { id: row.reviewId, status: { in: ["CLOSED", "EXCLUDED"] } } })) { await this.qc.prisma.qcDelivery.updateMany({ where: { id: row.id, state: "PENDING" }, data: { state: "CANCELLED", errorCode: "WORK_COMPLETED" } }); continue; }
       const claimed = await this.qc.prisma.$transaction(async tx => {
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${row.recipientId}), 71943)::text`;
         const rateCount = await tx.qcDelivery.count({ where: { organizationId: program.organizationId, recipientId: row.recipientId, OR: [{ acceptedAt: { gte: new Date(now.getTime() - 3600000) } }, { state: "PROCESSING" }] } });
@@ -122,7 +122,7 @@ export class QcNotificationsService implements OnModuleInit, OnModuleDestroy {
         const user = await this.recipient(row);
         const appUrl = this.environment.get<string>("APP_URL");
         requireValue(row.channel === "IN_APP" || appUrl && new URL(appUrl).protocol === "https:", "Configure the public application URL before delivery.");
-        const summary = ["DAILY_DIGEST", "WEEKLY_DIGEST"].includes(payload.event) ? await this.digest(user, payload.event === "WEEKLY_DIGEST") : "Open the inspection to review the current evidence and required follow-up.";
+        const summary = ["DAILY_DIGEST", "WEEKLY_DIGEST"].includes(payload.event) ? await this.digest(user, payload.event === "WEEKLY_DIGEST") : await this.notificationContext(row, payload);
         const link = `${(appUrl ?? "").replace(/\/$/, "")}/qc/${payload.actionId ? "actions" : row.reviewId ? `reviews/${row.reviewId}` : ""}`;
         if (row.channel === "IN_APP") {
           await this.qc.prisma.$transaction(async tx => { await tx.notification.create({ data: { userId: user.id, title: payload.title, body: summary, metadata: qcJson({ entityType: "QC", href: `/qc/${payload.actionId ? "actions" : row.reviewId ? `reviews/${row.reviewId}` : ""}`, qcDeliveryId: row.id }) } }); await tx.qcDelivery.update({ where: { id: row.id }, data: { state: "ACCEPTED", acceptedAt: new Date(), providerMessageId: `notification:${row.id}`, errorCode: null } }); await tx.qcDeliveryAttempt.create({ data: { deliveryId: row.id, attempt: row.attempts + 1, outcome: "ACCEPTED", providerMessageId: `notification:${row.id}` } }); });
@@ -136,7 +136,7 @@ export class QcNotificationsService implements OnModuleInit, OnModuleDestroy {
           requireValue(identity?.microsoftTenantId === mailbox.tenantId && identity.microsoftPrincipalName && !identity.microsoftPrincipalName.toLowerCase().includes("#ext#"), "An internal Microsoft-linked recipient is required; external delivery is not enabled.");
           const escape = (value: string) => value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]!));
           externalStarted = true;
-          const sent = await this.mail.sendTicketReply({ organizationId: row.organizationId, mailboxId: mailbox.id, to: [identity.microsoftPrincipalName], subject: payload.title, bodyText: `${summary}\n\n${link}`, bodyHtml: `<p>${escape(summary)}</p><p><a href="${escape(link)}">Open Quality Control</a></p>` });
+          const sent = await this.mail.sendTicketReply({ organizationId: row.organizationId, mailboxId: mailbox.id, to: [identity.microsoftPrincipalName], subject: payload.title, bodyText: `${summary}\n\n${link}`, bodyHtml: `<p>${escape(summary).replaceAll("\n", "<br>")}</p><p><a href="${escape(link)}">Open Quality Control</a></p>` });
           requireValue(sent?.providerMessageId, "The mail provider did not accept the notification."); providerMessageId = sent.providerMessageId;
         } else {
           requireValue(row.channel === "TEAMS" || row.channel === "TEAMS_DIRECT", "Unsupported QC channel.");
@@ -160,8 +160,17 @@ export class QcNotificationsService implements OnModuleInit, OnModuleDestroy {
     return `${report.quality.completedInPeriod} inspections completed in this period; ${report.quality.failedInPeriod} failed; ${pending} awaiting review across all dates; ${open} open follow-up actions; ${overdue} overdue actions; ${report.service.breachedObligations} breached SLA obligations. ${report.service.incompleteCycles} work cycles have incomplete evidence.`;
   }
   async deliveries(user: AuthenticatedUser, query: import("./dto/qc.dto").QcQueryDto = {}) {
-    return this.qc.prisma.qcDelivery.findMany({ where: { organizationId: user.organizationId, ...(!user.permissions.includes("qc.view_all") ? { recipientId: user.id } : {}) }, select: { attemptEvents: { orderBy: { createdAt: "asc" } }, id: true, reviewId: true, recipientId: true, recipient: { select: { firstName: true, lastName: true } }, channel: true, state: true, attempts: true, nextAttemptAt: true, acceptedAt: true, acknowledgedAt: true, errorCode: true, createdAt: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: query.pageSize ?? 100, skip: ((query.page ?? 1) - 1) * (query.pageSize ?? 100) });
+    const program = await this.qc.program(user);
+    const rows = await this.qc.prisma.qcDelivery.findMany({ where: { organizationId: user.organizationId, ...(!user.permissions.includes("qc.view_all") ? { recipientId: user.id } : query.recipientId ? { recipientId: query.recipientId } : {}), ...(query.channel ? { channel: query.channel } : {}), ...(query.status ? { state: query.status } : {}), ...(query.from || query.to ? { createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lte: new Date(query.to) } : {}) } } : {}) }, select: { payload: true, review: { select: { ticket: { select: { ticketNumber: true } }, deliverable: { select: { name: true } } } }, attemptEvents: { orderBy: { createdAt: "asc" } }, id: true, reviewId: true, recipientId: true, recipient: { select: { firstName: true, lastName: true } }, channel: true, state: true, attempts: true, nextAttemptAt: true, acceptedAt: true, acknowledgedAt: true, errorCode: true, createdAt: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: query.pageSize ?? 100, skip: ((query.page ?? 1) - 1) * (query.pageSize ?? 100) });
+    // Expose only presentation fields, never provider configuration or delivery payloads.
+    return rows.map(({ payload, review, ...row }) => ({ ...row, title: (payload as unknown as Notice).title, event: (payload as unknown as Notice).event, workReference: review?.ticket?.ticketNumber ?? review?.deliverable?.name ?? null, waitingReason: row.state === "PENDING" ? !program.deliveryEnabled ? "Delivery is disabled; this item has not been sent." : "Queued; delivery schedule, quiet hours and recipient limits apply." : null }));
   }
+  private async notificationContext(row: QcDelivery, payload: Notice) {
+    const review = row.reviewId ? await this.qc.prisma.qcReview.findFirst({ where: { id: row.reviewId, organizationId: row.organizationId }, select: { status: true, ticket: { select: { ticketNumber: true, subject: true, client: { select: { name: true } } } }, deliverable: { select: { name: true } }, owner: { select: { firstName: true, lastName: true } } } }) : null;
+    const action = payload.actionId ? await this.qc.prisma.qcAction.findFirst({ where: { id: payload.actionId, organizationId: row.organizationId }, select: { title: true, dueAt: true } }) : null;
+    return [payload.title, review?.ticket ? `${review.ticket.ticketNumber}: ${review.ticket.subject}` : review?.deliverable?.name, review?.ticket?.client ? `Client: ${review.ticket.client.name}` : null, review?.owner ? `Technician: ${review.owner.firstName} ${review.owner.lastName}` : null, review ? `Inspection: ${review.status.toLowerCase().replaceAll("_", " ")}` : null, action ? `Action: ${action.title}. Due: ${action.dueAt?.toISOString() ?? "not set"}` : null, "Open Quality Control to review the current evidence and next step."].filter(Boolean).join("\n");
+  }
+
   async acknowledge(id: string, user: AuthenticatedUser) {
     return this.qc.prisma.$transaction(async tx => { const changed = await tx.qcDelivery.updateMany({ where: { id, organizationId: user.organizationId, recipientId: user.id, state: "ACCEPTED", acknowledgedAt: null }, data: { acknowledgedAt: new Date() } }); requireValue(changed.count === 1, "This notification is not available for acknowledgment."); await this.qc.history(tx, user, "notification_acknowledged", { deliveryId: id }); return { acknowledged: true }; });
   }

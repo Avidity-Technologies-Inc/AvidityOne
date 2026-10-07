@@ -28,7 +28,7 @@ export class QcWorkService {
         requireValue(input.version === 0, "Reload ticket QC details.");
         await tx.qcTicketProfile.create({ data: { ticketId: id, organizationId: user.organizationId, categoryId: input.categoryId, resolutionNote: input.resolutionNote?.trim(), version: 1 } });
       }
-      await this.qc.history(tx, user, "ticket_profile_updated", { ticketId: id });
+      await this.qc.history(tx, user, "ticket_profile_updated", { ticketId: id, before: { categoryId: ticket.profile?.categoryId, resolutionNote: ticket.profile?.resolutionNote }, after: { categoryId: input.categoryId, resolutionNote: input.resolutionNote } });
       return { updated: true };
     });
   }
@@ -49,7 +49,7 @@ export class QcWorkService {
     });
   }
   async deliverables(query: D.QcQueryDto, user: AuthenticatedUser) {
-    const where: Prisma.QcDeliverableWhereInput = { organizationId: user.organizationId, ...(!user.permissions.includes("qc.view_all") ? { ownerId: user.id } : {}), ...(query.projectId ? { projectId: query.projectId } : {}), ...(query.clientId ? { project: { clientId: query.clientId } } : {}), ...(query.status ? { status: query.status } : {}) };
+    const where: Prisma.QcDeliverableWhereInput = { organizationId: user.organizationId, ...(!user.permissions.includes("qc.view_all") ? { ownerId: user.id } : query.ownerId ? { ownerId: query.ownerId } : {}), ...(query.search ? { name: { contains: query.search, mode: "insensitive" } } : {}), ...(query.projectId ? { projectId: query.projectId } : {}), ...(query.clientId ? { project: { clientId: query.clientId } } : {}), ...(query.status ? { status: query.status } : {}) };
     const page = query.page ?? 1, pageSize = query.pageSize ?? 25;
     const [items, total] = await Promise.all([this.qc.prisma.qcDeliverable.findMany({ where, take: pageSize, skip: (page - 1) * pageSize, orderBy: { dueAt: "asc" }, include: { owner: { select: qcUserSelect }, project: { select: { id: true, name: true, client: { select: { id: true, name: true } } } } } }), this.qc.prisma.qcDeliverable.count({ where })]);
     return { items, total, page, pageSize };
@@ -83,11 +83,13 @@ export class QcWorkService {
     const program = await this.qc.program(user);
     requireValue(item.version === input.version, "Deliverable changed. Reload before saving.");
     requireValue(input.note.trim(), "Record evidence for this change.");
+    requireValue(item.status !== "CANCELLED", "Cancelled deliverables retain their history and cannot advance.");
     if (input.knowledgeArticleId) {
       this.qc.requirePermission(user, "knowledge_base.view");
       requireValue(await this.qc.prisma.knowledgeArticle.findFirst({ where: { id: input.knowledgeArticleId, organizationId: user.organizationId, deletedAt: null } }), "Evidence article is unavailable.");
     }
     const data: Prisma.QcDeliverableUpdateManyMutationInput = { version: { increment: 1 } };
+    if (input.action === "CANCEL") { requireValue(item.status !== "DELIVERED", "A completed delivery cannot be cancelled."); data.status = "CANCELLED"; }
     if (input.action === "RESCHEDULE") { requireValue(input.dueAt && item.status !== "DELIVERED", "Set a due date for an undelivered item."); data.dueAt = new Date(input.dueAt); }
     if (input.action === "PROOF_SENT") { requireValue(["DRAFT", "REVISION"].includes(item.status), "The deliverable is not ready for another proof."); data.status = "PROOF_SENT"; }
     if (input.action === "APPROVED") { requireValue(item.status === "PROOF_SENT", "A proof must be recorded before approval."); data.status = "APPROVED"; }
@@ -97,8 +99,22 @@ export class QcWorkService {
       const changed = await tx.qcDeliverable.updateMany({ where: { id, organizationId: user.organizationId, version: input.version }, data });
       if (changed.count !== 1) throw new ConflictException("Deliverable changed. Reload before saving.");
       await this.qc.history(tx, user, `deliverable_${input.action.toLowerCase()}`, { note: input.note, knowledgeArticleId: input.knowledgeArticleId, previousDueAt: item.dueAt, dueAt: input.dueAt }, undefined, id);
-      if (program.configuration.creativeCheckpoints.includes(input.action as "PROOF_SENT" | "DELIVER")) await tx.qcReview.create({ data: { organizationId: user.organizationId, deliverableId: id, ownerId: item.ownerId, rubricId: program.configuration.creativeRubricId, cycleKey: `${id}:${input.action}:${input.version + 1}`, selectionReasons: ["CREATIVE_CHECKPOINT"] } });
+      if (program.captureEnabled && program.processingEnabled && program.configuration.creativeCheckpoints.includes(input.action as "PROOF_SENT" | "DELIVER")) await tx.qcReview.create({ data: { organizationId: user.organizationId, deliverableId: id, ownerId: item.ownerId, rubricId: program.configuration.creativeRubricId, cycleKey: `${id}:${input.action}:${input.version + 1}`, selectionReasons: ["CREATIVE_CHECKPOINT"] } });
       return { updated: true };
     });
+  }
+  async editDeliverable(id: string, input: D.QcDeliverableEditDto, user: AuthenticatedUser) {
+    const item = await this.deliverable(id, user);
+    requireValue(!["DELIVERED", "CANCELLED"].includes(item.status), "Completed or cancelled deliverables retain their original details.");
+    requireValue(input.name.trim() && input.kind.trim() && input.reason.trim(), "Name, type and change reason are required.");
+    requireValue(user.permissions.includes("qc.view_all") || input.ownerId === user.id, "Reassignment requires organization QC access.");
+    await this.qc.usersExist([input.ownerId], user.organizationId);
+    return this.qc.prisma.$transaction(async tx => {
+      const saved = await tx.qcDeliverable.updateMany({ where: { id, organizationId: user.organizationId, version: input.version }, data: { name: input.name.trim(), kind: input.kind.trim(), ownerId: input.ownerId, version: { increment: 1 } } });
+      if (saved.count !== 1) throw new ConflictException("Deliverable changed. Reload before editing.");
+      await this.qc.history(tx, user, "deliverable_details_updated", { reason: input.reason, before: { name: item.name, kind: item.kind, ownerId: item.ownerId }, after: { name: input.name, kind: input.kind, ownerId: input.ownerId } }, undefined, id);
+      return { updated: true };
+    });
+
   }
 }

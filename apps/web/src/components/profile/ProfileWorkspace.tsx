@@ -532,7 +532,7 @@ export function ProfileWorkspace() {
     <div className="stack profile-page">
       <div className="compact-page-header profile-page-header">
         <div>
-          <QcContextLink href="/qc/scorecards?scope=mine" label="My quality scorecard" />
+          <QcContextLink href="/qc/scorecards?scope=mine" label="My quality scorecard" /><QcContextLink href="/qc/actions?scope=mine" label="My coaching & actions" />
         </div>
       </div>
 

@@ -180,3 +180,68 @@ test("partial setup persists without invented targets or activation and guards u
   }
   await page.screenshot({ path: testInfo.outputPath("qc-setup-draft.png"), fullPage: true });
 });
+
+test("partial inspection drafts survive reload and a cancelled refresh preserves unsaved input", async ({ page }) => {
+  const id = "44444444-4444-4444-8444-444444444444";
+  const review = { id, ticketId: contextTicket.id, ticket: { ...contextTicket, client }, status: "IN_REVIEW", version: 2, ownerId: user.id, reviewerId: user.id, owner: user, reviewer: user, findings: [], selectionReasons: ["SAMPLE"], score: null, finalizedAt: null, createdAt: "2026-09-10T14:00:00Z", rubric, results: [{ criterionId: "resolution", outcome: "PASS", comment: "Saved evidence" }], draftSavedAt: "2026-10-07T14:00:00Z", actions: [], history: [], billingState: "NOT_HELD" };
+  const requests = await mount(page, `/qc/reviews/${id}`, { [`/qc/reviews/${id}`]: review, [`/qc/reviews/${id}/evidence`]: { events: [], timeEntries: [] } });
+  const comment = page.locator("fieldset").first().getByRole("textbox");
+  await expect(comment).toHaveValue("Saved evidence"); await comment.fill("Unsaved improvement");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(comment).toHaveValue("Unsaved improvement");
+  await page.getByRole("button", { name: "Save inspection draft" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).toMatchObject({ path: `/qc/reviews/${id}/draft`, body: { version: 2, rubricId: rubric.id, results: [{ criterionId: "resolution", outcome: "PASS", comment: "Unsaved improvement" }] } });
+  await expect(page.getByRole("button", { name: "Finalize inspection" })).toBeDisabled();
+});
+
+test("coaching shows its owner, filtered requests and requires a return reason", async ({ page }, testInfo) => {
+  const action = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", reviewId: "44444444-4444-4444-8444-444444444444", ownerId: user.id, owner: user, kind: "CORRECTIVE", title: "Verify resolution evidence", note: "Customer verification is required", status: "COMPLETED", version: 3, dueAt: "2026-09-10T14:00:00Z", completedAt: "2026-10-07T14:00:00Z", completionEvidence: "First evidence supplied", criterionId: "resolution", review: { ownerId: user.id, ticket: contextTicket, rubric } };
+  const urls: string[] = []; page.on("request", request => { if (request.url().includes("/qc/action-page?")) urls.push(request.url()); });
+  const requests = await mount(page, `/qc/actions?ownerId=${user.id}`, { "/qc/action-page": { items: [action], total: 1, page: 1, pageSize: 25 } });
+  await expect(page.getByText("Owner: Synthetic Reviewer", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "SYN-QC-1" })).toHaveAttribute("href", `/qc/reviews/${action.reviewId}`);
+  await expect(page.getByRole("button", { name: "Return for correction" })).toBeDisabled();
+  await page.getByRole("button", { name: "Awaiting verification" }).click();
+  await expect.poll(() => urls.some(url => url.includes("status=COMPLETED") && url.includes(`ownerId=${user.id}`))).toBe(true);
+  await page.getByLabel("Reason to return work").fill("Attach customer verification before resubmitting");
+  await page.getByRole("button", { name: "Return for correction" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).toMatchObject({ path: `/qc/actions/${action.id}/transition`, body: { version: 3, action: "RETURN", evidence: "Attach customer verification before resubmitting" } });
+  for (const width of [390, 768, 1440]) { await page.setViewportSize({ width, height: 950 }); expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false); }
+  await page.screenshot({ path: testInfo.outputPath("qc-actions.png"), fullPage: true });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  await page.screenshot({ path: testInfo.outputPath("qc-actions-dark.png"), fullPage: true, animations: "disabled" });
+});
+
+test("follow-up reassignment includes a reason and preserves the action version", async ({ page }) => {
+  const other = { id: "99999999-9999-4999-8999-999999999999", firstName: "New", lastName: "Owner" };
+  const action = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", reviewId: "44444444-4444-4444-8444-444444444444", ownerId: user.id, owner: user, kind: "COACHING", title: "Improve evidence", note: "Document the next step", status: "ACKNOWLEDGED", version: 4, dueAt: null, review: { ownerId: user.id, ticket: contextTicket } };
+  const requests = await mount(page, "/qc/actions", { "/qc/lookups": { ...lookups, users: [user, other] }, "/qc/action-page": { items: [action], total: 1, page: 1, pageSize: 25 } });
+  await page.getByRole("button", { name: "Edit / reassign" }).click(); await page.getByRole("combobox", { name: "Owner", exact: true }).selectOption(other.id);
+  await page.getByLabel("Change reason").fill("Reassign to available specialist"); await page.getByRole("button", { name: "Save action changes" }).click();
+  await expect.poll(() => requests.length).toBe(1); expect(requests[0]).toMatchObject({ path: `/qc/actions/${action.id}`, body: { version: 4, ownerId: other.id, reason: "Reassign to available specialist", dueAt: null } });
+});
+
+test("internal export respects selected format and sections", async ({ page }) => {
+  const exported: string[] = []; page.on("request", request => { if (request.url().includes("/exports/internal/file")) exported.push(request.url()); });
+  await mount(page); await page.getByText("Report export options", { exact: true }).click();
+  await page.getByLabel("File format").selectOption("xlsx"); await page.getByRole("checkbox", { name: "Creative", exact: true }).uncheck();
+  await page.getByRole("button", { name: "Internal report", exact: true }).click();
+  await expect.poll(() => exported.length).toBe(1); const query = new URL(exported[0]).searchParams;
+  expect(query.get("format")).toBe("xlsx"); expect(query.get("sections")).toBe("service,quality,technicians,trends");
+});
+
+test("copying a published rubric prepares an editable next revision without changing the active one", async ({ page }) => {
+  const requests = await mount(page, "/qc/settings");
+  await page.getByRole("button", { name: "Rubrics", exact: true }).click();
+  await page.getByRole("button", { name: "Create next revision" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Revision", exact: true })).toHaveValue("2");
+  await expect(page.getByRole("spinbutton", { name: "Pass threshold (%)", exact: true })).toHaveValue("90");
+  await expect(page.getByRole("textbox", { name: "Criterion", exact: true }).first()).toHaveValue("Resolution evidence");
+  await page.getByRole("button", { name: "Save rubric draft", exact: true }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).toMatchObject({ path: "/qc/rubrics", body: { revision: 2, name: rubric.name, criteria: rubric.criteria } });
+  expect(requests.some(request => request.path.includes("publish") || request.path === "/qc/settings")).toBe(false);
+});
