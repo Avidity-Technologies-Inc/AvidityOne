@@ -4,6 +4,7 @@ set -Eeuo pipefail
 umask 077
 app=/opt/avidity/app
 base=489792fff703ed916dc90c27b1542a01955c9857
+recovered_release=14ade61657bd5f0f7a5057c48efa47e139fcaad1
 release=${1:-}
 [[ $EUID -eq 0 ]] || { echo 'Run as root (sudo).'; exit 1; }
 [[ $release =~ ^[0-9a-f]{40}$ ]] || { echo 'Supply the full published release SHA.'; exit 1; }
@@ -13,14 +14,22 @@ for command in runuser node npm systemctl curl tar sha256sum du df; do command -
 as_app() { runuser -u avidity -- "$@"; }
 [[ $(as_app git rev-parse --show-toplevel) == "$app" ]]
 [[ $(as_app git branch --show-current) == main ]] || { echo 'Expected main; stop and inspect.'; exit 1; }
-[[ -z $(as_app git status --porcelain) ]] || { echo 'Preserve and review local server changes before deploying.'; exit 1; }
 remote=$(as_app git remote get-url origin)
 [[ $remote == git@github.com:Avidity-Technologies-Inc/AvidityOne.git || $remote == https://github.com/Avidity-Technologies-Inc/AvidityOne.git ]] || { echo 'Unexpected origin; stop and inspect.'; exit 1; }
 previous=$(as_app git rev-parse HEAD)
-[[ $previous == "$base" || $previous == "$release" ]] || { echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1; }
+[[ $previous == "$base" || $previous == "$recovered_release" || $previous == "$release" ]] || { echo "Unreviewed server revision: $previous. Stop and inspect."; exit 1; }
 as_app git cat-file -e "$release^{commit}"
 as_app git merge-base --is-ancestor "$base" "$release"
 as_app git merge-base --is-ancestor "$release" origin/main
+generated_recovery=0
+working_changes=$(as_app git status --porcelain)
+if [[ -n $working_changes ]]; then
+  # Recover only the exact Next-generated change verified after the previous rollback.
+  # Any other local edit, index change or untracked file still blocks deployment.
+  [[ $previous == "$recovered_release" && $working_changes == ' M apps/web/next-env.d.ts' ]] || { echo 'Preserve and review local server changes before deploying.'; exit 1; }
+  cmp -s apps/web/next-env.d.ts <(as_app git show "$release:apps/web/next-env.d.ts") || { echo 'Unexpected Next declaration contents; stop and inspect.'; exit 1; }
+  generated_recovery=1
+fi
 [[ -z $(as_app git diff --name-only "$base" "$release" -- prisma/schema.prisma prisma/migrations) ]] || { echo 'This dependency deployment cannot apply schema changes.'; exit 1; }
 # The patched HTML parser requires Node >=22.12. Check before stopping services.
 as_app node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 12)) { console.error("Node >=22.12 is required. Stop and plan a runtime update first."); process.exit(1); }'
@@ -55,6 +64,11 @@ backup=$(mktemp -d /opt/avidity/security-dependencies-backup.XXXXXXXX)
 chown avidity:avidity "$backup"
 printf '%s\n' "$previous" > "$backup/previous-checkout.txt"
 as_app git archive HEAD > "$backup/source.tar"
+if [[ $generated_recovery == 1 ]]; then
+  cp -p apps/web/next-env.d.ts "$backup/next-env.generated.d.ts"
+  as_app git diff -- apps/web/next-env.d.ts > "$backup/next-env.generated.patch"
+  as_app git restore --source=HEAD --worktree -- apps/web/next-env.d.ts
+fi
 echo "Recovery directory: $backup"
 stopped=0
 saved=0
@@ -62,7 +76,7 @@ recover() {
   code=$?
   trap - ERR INT TERM
   set +e
-  echo "Deployment interrupted. Recovery directory: $backup"
+  echo "Deployment interrupted at line ${1:-unknown}. Recovery directory: $backup"
   if [[ $stopped == 1 ]]; then
     systemctl stop avidity-web avidity-api || { echo 'Cannot stop services for recovery.'; exit 1; }
     if [[ $saved == 1 ]]; then
@@ -81,7 +95,7 @@ recover() {
   fi
   exit "$code"
 }
-trap recover ERR
+trap 'recover "$LINENO"' ERR
 trap 'false' INT TERM
 stopped=1
 systemctl stop avidity-web avidity-api
@@ -108,7 +122,7 @@ done
 systemctl is-active --quiet avidity-api
 systemctl is-active --quiet avidity-web
 [[ $(as_app git rev-parse HEAD) == "$release" ]]
-[[ -z $(as_app git status --porcelain) ]]
+[[ -z $(as_app git status --porcelain) ]] || { echo 'Unexpected working-tree change after build:'; as_app git status --short; false; }
 trap - ERR INT TERM
 printf 'Deployment complete: %s\nRecovery directory: %s\n' "$release" "$backup"
 echo 'No database migrations, operating-system packages, service definitions, or environment settings were changed.'

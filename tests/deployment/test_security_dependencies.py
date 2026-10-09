@@ -8,6 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = '489792fff703ed916dc90c27b1542a01955c9857'
+RECOVERED = '14ade61657bd5f0f7a5057c48efa47e139fcaad1'
 STUB = r'''#!/usr/bin/env python3
 import json, os, pathlib, shutil, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
@@ -29,7 +30,15 @@ elif name == 'git':
     elif args[0] == 'remote': print('git@github.com:Avidity-Technologies-Inc/AvidityOne.git')
     elif args[0] == 'archive': print('synthetic source backup')
     elif args[0] == 'diff' and failure == 'schema': print('prisma/schema.prisma')
-    elif args[0] == 'merge': state['head'] = args[-1]; save()
+    elif args[0] == 'show': print((root / 'target-next-env').read_text(), end='')
+    elif args[0] == 'restore': write('apps/web/next-env.d.ts', state['declaration'])
+    elif args[0] == 'status':
+        if (app / 'apps/web/next-env.d.ts').read_text() != state['declaration']: print(' M apps/web/next-env.d.ts')
+        if failure == 'dirty' or (state.get('built') and failure == 'build-dirty'): print(' M package.json')
+    elif args[0] == 'merge':
+        state['head'] = args[-1]
+        state['declaration'] = (root / 'target-next-env').read_text()
+        write('apps/web/next-env.d.ts', state['declaration']); save()
 elif name == 'systemctl':
     services = [x for x in args[1:] if not x.startswith('-')]
     if args[0] == 'stop':
@@ -67,6 +76,9 @@ elif name == 'node':
     elif 'build' in step:
         write('apps/api/dist/main.js', 'new runtime')
         write('apps/web/.next/BUILD_ID', 'new web')
+        declaration = (app / 'apps/web/next-env.d.ts').read_text()
+        if 'root-params.d.ts' not in declaration:
+            write('apps/web/next-env.d.ts', declaration + 'import "./.next/types/root-params.d.ts";\n')
         state['built'] = True; save()
         if failure == 'build': sys.exit(9)
 elif name == 'curl':
@@ -80,7 +92,7 @@ else: raise RuntimeError(name)
 
 
 class SecurityDependencyDeploymentTests(unittest.TestCase):
-    def run_deployment(self, failure=''):
+    def run_deployment(self, failure='', recovered=False):
         with tempfile.TemporaryDirectory(prefix='avidity-security-deploy-test-') as directory:
             root = Path(directory)
             app = root / 'app'
@@ -100,7 +112,13 @@ class SecurityDependencyDeploymentTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text)
             state_file = root / 'state.json'
-            state_file.write_text(json.dumps({'head': BASE, 'avidity-api': True, 'avidity-web': True}))
+            declaration = (ROOT / 'apps/web/next-env.d.ts').read_text()
+            old_declaration = declaration.replace('import "./.next/types/root-params.d.ts";\n', '')
+            (root / 'target-next-env').write_text(declaration)
+            (app / 'apps/web/next-env.d.ts').write_text(declaration if recovered else old_declaration)
+            if failure == 'unexpected-declaration':
+                (app / 'apps/web/next-env.d.ts').write_text('unreviewed user changes\n')
+            state_file.write_text(json.dumps({'head': RECOVERED if recovered else BASE, 'declaration': old_declaration, 'avidity-api': True, 'avidity-web': True}))
             bins = root / 'bin'
             bins.mkdir()
             for name in ('hostname', 'runuser', 'chown', 'git', 'systemctl', 'node', 'curl', 'sleep', 'npm'):
@@ -128,13 +146,25 @@ class SecurityDependencyDeploymentTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, evidence)
                 self.assertEqual((app / 'node_modules/version').read_text(), 'new dependencies', evidence)
                 self.assertEqual((app / 'apps/api/dist/main.js').read_text(), 'new runtime', evidence)
+            if recovered and not failure:
+                backups = list(root.glob('backup.*/next-env.generated.d.ts'))
+                self.assertEqual(len(backups), 1, evidence)
+                self.assertEqual(backups[0].read_text(), declaration, evidence)
             return state
 
     def test_success(self):
         self.assertEqual(self.run_deployment()['head'], 'a' * 40)
 
+    def test_recovery_preserves_exact_generated_file_before_cleaning(self):
+        self.assertEqual(self.run_deployment(recovered=True)['head'], 'a' * 40)
+
+    def test_recovery_rejects_unreviewed_local_contents(self):
+        state = self.run_deployment('unexpected-declaration', recovered=True)
+        self.assertEqual(state['head'], RECOVERED)
+        self.assertFalse(state.get('stopped'))
+
     def test_preflight_leaves_services_and_checkout_untouched(self):
-        for failure in ('engine', 'schema', 'pending-migration'):
+        for failure in ('engine', 'schema', 'pending-migration', 'dirty'):
             with self.subTest(failure=failure):
                 state = self.run_deployment(failure)
                 self.assertFalse(state.get('stopped'))
@@ -142,7 +172,7 @@ class SecurityDependencyDeploymentTests(unittest.TestCase):
                 self.assertEqual(state['head'], BASE)
 
     def test_failed_update_restores_all_runtime_dependencies(self):
-        for failure in ('install', 'gate', 'build', 'health'):
+        for failure in ('install', 'gate', 'build', 'health', 'build-dirty'):
             with self.subTest(failure=failure):
                 self.assertEqual(self.run_deployment(failure)['head'], 'a' * 40)
 

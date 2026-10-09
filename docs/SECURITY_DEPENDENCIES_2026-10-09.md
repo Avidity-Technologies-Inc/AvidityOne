@@ -49,7 +49,7 @@ Security evidence combines the patched advisory ranges, actual installed/native 
 Use `scripts/deploy-security-dependencies.sh <full-published-sha>` from the fetched release, without pulling the server checkout first. The helper requires:
 
 - Host `avidityhelpdesk`, root execution and clean canonical `main`.
-- Existing checkout `489792fff703ed916dc90c27b1542a01955c9857`, or the requested release for a retry. If the previous Devices release has not been deployed, stop and complete that deployment first; this helper does not apply its migration.
+- Existing checkout `489792fff703ed916dc90c27b1542a01955c9857`, reviewed recovered checkout `14ade61657bd5f0f7a5057c48efa47e139fcaad1`, or the requested release for a retry. If the previous Devices release has not been deployed, stop and complete that deployment first; this helper does not apply its migration.
 - Node >=22.12, both services active, existing build/dependency artifacts, no pending migrations, and enough disk space for recovery.
 
 The helper backs up tracked source, API/web/shared builds, root `node_modules`, and existing nested workspace dependencies. It stops both dependent services, fast-forwards to the exact release, runs a clean install including build tools, checks patched versions/native libraries, regenerates Prisma, builds, performs the existing read-only device schema check, then starts and checks `avidity-api` and `avidity-web` plus local/public endpoints. Expect a maintenance interruption during installation and build.
@@ -57,3 +57,9 @@ The helper backs up tracked source, API/web/shared builds, root `node_modules`, 
 Failure after services stop restores the previous complete runtime and dependencies and restarts both services. Newly introduced nested dependency directories are moved aside as well. The reported recovery directory retains failed artifacts; Git remains at the attempted revision, so inspect health and the failure before retrying. No migration or database rollback is performed. `.env.production` is checksummed and is not changed; no operating-system package, systemd, Nginx or credential update is included.
 
 After deployment, confirm login, a ticket's messages/signature, a small attachment upload, a PDF/Excel export, Devices and both public portals. OS/runtime/package inventory and any further server security updates belong to the separate server review requested by the owner.
+
+## Recovered deployment follow-up
+
+Production inspection found that the original deployment passed the endpoint checks but then restored the old runtime because Next 16.3.8 added `root-params.d.ts` to `next-env.d.ts`. Git revision alone therefore did not establish the running dependency versions. The expected generated import is now tracked. Only the byte-identical generated change on the reviewed recovered revision is eligible for backup and normalization; unrelated changes still block deployment. Failures report their script line and unexpected source changes explicitly.
+
+Regression simulations cover the generated file, preservation of its recovery copy, rejection of unrelated/unreviewed changes, and rollback after an unexpected post-build edit. A real complete build and both type checks passed; no additional declaration change was produced. The complete backend run passed 296 cases with 79 database-gated cases skipped in this follow-up, while the earlier full dependency validation above used all isolated databases. All 28 focused System Health cases passed. These tests do not substitute for the separately recorded live acceptance.

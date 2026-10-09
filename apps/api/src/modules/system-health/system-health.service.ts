@@ -147,8 +147,8 @@ export class SystemHealthService implements OnModuleInit, OnModuleDestroy {
       ["antivirus", () => this.checkAntivirus(organizationId)], ["audit_logs", () => this.checkAuditLogs(organizationId)],
       ["devices", async () => {
         if (!settings) return buildComponent("devices", componentNames.devices, "unknown", "RMM settings are unavailable.");
-        const health = rmmHealth(settings);
         const latest = await this.prisma.systemHealthSnapshot.findFirst({where: {organizationId, component: "devices", source: {in: ["rmm_auto", "rmm_manual"]}}, orderBy: {checkedAt: "desc"}, select: {checkedAt: true, metadata: true, source: true}});
+        const health = rmmHealth(settings, new Date(), latest);
         return buildComponent("devices", componentNames.devices, health.status, health.message, {...health.metadata, latestOutcome: latest ? {...latest, checkedAt: latest.checkedAt.toISOString()} : null});
       }]
     ];

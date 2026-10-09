@@ -16,7 +16,7 @@ describe("System Health evidence", () => {
     [{remoteAccessAutoSyncEnabled:false},"disabled","manual"],
     [{remoteAccessLastSyncStatus:"error"},"error","error"],
     [{remoteAccessLastSyncStatus:"deferred"},"warning","deferred"],
-    [{remoteAccessLastSyncStatus:"warning"},"warning","partial"],
+    [{remoteAccessLastSyncStatus:"warning"},"warning","warning"],
     [{remoteAccessLastSyncAt:null},"unknown","never"],
     [{remoteAccessNextAutoSyncAt:null},"warning","unscheduled"],
     [{remoteAccessNextAutoSyncAt:new Date("2026-10-01T14:00:00Z")},"warning","overdue"],
@@ -25,6 +25,28 @@ describe("System Health evidence", () => {
     [{remoteAccessAutoSyncLockedAt:new Date("2026-10-01T14:00:00Z")},"warning","stalled"]
   ])("classifies RMM evidence %j", (override, status, state) => {
     expect(rmmHealth({...settings,...override},now)).toMatchObject({status,metadata:{state}});
+  });
+  it.each([
+    [{pending:3,detailFailures:0}, "identity_review", "3 pending identity reviews"],
+    [{pending:0,detailFailures:2}, "partial", "2 device detail failures"],
+    [{pending:3,detailFailures:2}, "partial_identity_review", "2 device detail failures and 3 pending identity reviews"],
+    [{pending:0,detailFailures:0}, "warning", "completed with warnings"],
+    [{pending:-1,detailFailures:"2"}, "warning", "completed with warnings"],
+    [null, "warning", "completed with warnings"]
+  ])("explains the actual synchronization warning %j", (metadata, state, message) => {
+    const result = rmmHealth({...settings,remoteAccessLastSyncStatus:"warning"}, now, {checkedAt:now,metadata});
+    expect(result).toMatchObject({status:"warning",metadata:{state}});
+    expect(result.message).toContain(message);
+  });
+  it("does not attribute a previous outcome to the latest attempt", () => {
+    expect(rmmHealth({...settings,remoteAccessLastSyncStatus:"warning"}, now, {
+      checkedAt:new Date("2026-10-01T14:00:00Z"),metadata:{pending:3,detailFailures:0}
+    })).toMatchObject({metadata:{state:"warning"}});
+  });
+  it("prioritizes scheduler delays over identity review warnings", () => {
+    expect(rmmHealth({...settings,remoteAccessLastSyncStatus:"warning",remoteAccessNextAutoSyncAt:new Date("2026-10-01T14:00:00Z")}, now, {
+      checkedAt:now,metadata:{pending:3,detailFailures:0}
+    })).toMatchObject({metadata:{state:"overdue"}});
   });
   it("reports low coverage instead of implying a full day of monitoring", async () => {
     const service = create({$queryRaw:jest.fn().mockResolvedValue([{component:"devices",bucket:1,status:"ok",count:1n}])});

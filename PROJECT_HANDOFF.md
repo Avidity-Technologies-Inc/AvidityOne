@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Production Maintenance Follow-up — 2026-10-09
+
+- Follow-up to `14ade61`: the server had rolled back its runtime after a successful build because Next generated an additional tracked declaration. The expected declaration is now committed. The deployment helper accepts the reviewed recovery revision, backs up and normalizes only that exact generated change, and still rejects all other dirty work or unexpected post-build edits.
+- System Health distinguishes pending device identity reviews from failed detail refreshes using the latest organization-scoped synchronization evidence. Missing or stale evidence produces a generic warning rather than an invented cause. Scheduler failures retain priority.
+- API/web type checks, full production build, 296 backend tests (79 database-gated cases skipped), 28 focused health cases and deployment/recovery simulations passed. The real Next build preserves the expected declaration. No schema, permissions or product configuration changes.
+- Production maintenance is authorized and in progress. Database/configuration/LVM metadata backups were verified on the host. Root storage was expanded online from 19 to 29 GiB using existing free extents, preserving 9 GiB unallocated. Final runtime, package, reboot and identity reconciliation acceptance will be recorded after verification.
+
 ## Security Dependency Update — 2026-10-09
 
 - Authorized from canonical `main` at `489792f`: patched Next, Sharp/native image libraries, HTML sanitization, multipart handling and reviewed transitive dependencies. No workflow, permission, schema, saved configuration or server/OS changes. Node >=22.12 is required; the deployment helper checks before stopping services.
