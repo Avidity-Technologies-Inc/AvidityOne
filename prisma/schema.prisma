@@ -341,6 +341,7 @@ enum EventServiceFieldType {
 }
 
 model Organization {
+  deviceInstallations DeviceInstallation[]
   healthSnapshots SystemHealthSnapshot[]
   qcAttachments QcAttachment[]
   qcRmmEvidence QcRmmEvidence[]
@@ -557,6 +558,8 @@ model SystemSetting {
   remoteAccessLastSyncAt     DateTime?
   remoteAccessLastSyncStatus String?
   remoteAccessLastSyncMessage String?
+  remoteAccessIdentityAutoLink Boolean @default(false)
+  remoteAccessIdentityInactiveDays Int @default(7)
   remoteAccessAutoSyncEnabled Boolean @default(false)
   remoteAccessAutoSyncIntervalMinutes Int?
   remoteAccessNextAutoSyncAt DateTime?
@@ -902,6 +905,7 @@ model RolePermission {
 }
 
 model Client {
+  deviceInstallations DeviceInstallation[]
   qcPolicies QcPolicy[] @relation("QcPolicy_client")
   id                  String       @id @default(uuid()) @db.Uuid
   organizationId      String       @db.Uuid
@@ -2064,6 +2068,8 @@ model ReportSchedule {
 }
 
 model Device {
+  installations DeviceInstallation[]
+  previousHostnames String[] @default([])
   qcRmmTickets QcTicketProfile[]
   qcRmmEvidence QcRmmEvidence[]
   id                   String               @id @default(uuid()) @db.Uuid
@@ -3276,4 +3282,35 @@ model TicketEmailEvent {
   processedAt DateTime?
   @@index([processedAt, createdAt])
   @@map("ticket_email_events")
+}
+
+// Agent installations are separate from the durable equipment record.
+model DeviceInstallation {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  clientId String @db.Uuid
+  deviceId String? @db.Uuid
+  provider RemoteAccessProvider @default(TACTICAL_RMM)
+  remoteIdentifier String
+  state String @default("PENDING")
+  hostname String
+  serialNumber String?
+  hardwareUuid String?
+  manufacturer String?
+  model String?
+  lastSeenAt DateTime?
+  observedAt DateTime @default(now())
+  present Boolean @default(true)
+  reviewReason String?
+  snapshot Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, provider, remoteIdentifier])
+  @@index([organizationId, state])
+  @@index([deviceId])
+  @@map("device_installations")
 }

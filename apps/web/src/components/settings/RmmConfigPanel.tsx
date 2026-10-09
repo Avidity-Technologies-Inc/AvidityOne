@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
 interface RmmSettings {
+  identityAutoLink: boolean;
+  identityInactiveDays: number;
   enabled: boolean;
   providerName: string;
   apiBaseUrl: string | null;
@@ -24,6 +26,8 @@ interface RmmSettings {
 }
 
 const defaultDraft = {
+  identityAutoLink: false,
+  identityInactiveDays: 7,
   enabled: false,
   providerName: "Tactical RMM",
   apiBaseUrl: "https://api-rmm.aviditytechnologies.com",
@@ -51,6 +55,8 @@ export function RmmConfigPanel() {
       const response = await apiFetch<RmmSettings>("/devices/rmm-settings");
       setSettings(response);
       setDraft({
+        identityAutoLink: response.identityAutoLink ?? false,
+        identityInactiveDays: response.identityInactiveDays ?? 7,
         enabled: response.enabled,
         providerName: response.providerName || defaultDraft.providerName,
         apiBaseUrl: response.apiBaseUrl || defaultDraft.apiBaseUrl,
@@ -129,6 +135,13 @@ export function RmmConfigPanel() {
       {error ? <div className="error-banner">{error}</div> : null}
       {notice ? <div className="success-banner">{notice}</div> : null}
 
+      <fieldset className="device-identity-case">
+        <legend>Equipment identity and reinstallations</legend>
+        <label className="checkbox-row"><input type="checkbox" checked={draft.identityAutoLink} onChange={e=>setDraft(value=>({...value,identityAutoLink:e.target.checked}))}/>Automatically link strongly verified reinstallations</label>
+        <p className="muted">Requires matching hardware in the same client, one unambiguous equipment record and an inactive older installation. Names and MAC addresses alone never authorize linking. Virtual machines and conflicting identifiers require review. Tactical records are never deleted.</p>
+        <label>Minimum inactivity of the older installation (days)<input className="input" type="number" min={1} max={365} value={draft.identityInactiveDays} onChange={e=>setDraft(value=>({...value,identityInactiveDays:Number(e.target.value)}))}/></label>
+        <p className="muted">When disabled, review matching installations in Devices → Identity review. Save settings below to apply this policy.</p>
+      </fieldset>
       <div className="rmm-settings-grid">
         <label className="checkbox-row full-span">
           <input

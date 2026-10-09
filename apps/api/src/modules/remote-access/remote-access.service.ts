@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
@@ -15,7 +15,7 @@ export class RemoteAccessService {
   async auditConnectionAttempt(deviceId: string, user: AuthenticatedUser, mode: RemoteAccessAttemptMode = "control") {
     const profile = await this.prisma.remoteAccessProfile.findUnique({
       where: { deviceId },
-      include: { device: { include: { client: true } } }
+      include: { device: { include: { client: true, installations: {where:{state:"CURRENT"},select:{reviewReason:true}} } } }
     });
 
     if (!profile) {
@@ -24,6 +24,8 @@ export class RemoteAccessService {
     if (profile.device.client.organizationId !== user.organizationId) {
       throw new NotFoundException("Remote access profile was not found.");
     }
+
+    if (profile.device.deletedAt || profile.device.installations?.some(row=>row.reviewReason)) throw new BadRequestException("Review this device identity before connecting.");
 
     const settings = await this.prisma.systemSetting.findUnique({ where: { organizationId: user.organizationId } });
     const attemptedAt = new Date();

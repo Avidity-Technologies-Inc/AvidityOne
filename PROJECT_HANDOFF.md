@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Device Identity and Installation History — 2026-10-09
+
+- Approved from canonical local/GitHub and read-only verified production `6db6232`. Exact provider installation IDs replace hostname-based overwrites; persistent equipment IDs retain relationships, current names and historical installations. Hardware evidence supports an audited review workflow and an optional strict automatic policy (off by default).
+- Read-only inspection of all six agents in the three suspected pairs confirmed matching serial/model evidence and different last-seen observations. No Tactical mutation or production consolidation was performed. After deployment, use Devices > Identity review to retain the verified current installation and link the older one as historical; existing equipment remains intact.
+- One additive migration adds the installation registry, hostname history and configurable policy. API/web checks, full build, 290 backend tests and 27 browser cases passed; 67 unrelated database-gated cases skipped. Local PostgreSQL migration/integration checks and deployment success/recovery simulations passed.
+- Publication authorized; production execution remains with the user. Use `scripts/deploy-device-identity.sh <full-release-sha>` from the fetched revision. See [behavior, three-pair review workflow, validation and deployment](docs/DEVICE_IDENTITY_2026-10-09.md).
+
 ## QC Operational Follow-up — 2026-10-07
 
 - Approved application work from canonical `main` at `d504932`: coaching ownership/history, reassignment and verification returns; inspection drafts and closure safeguards; reinspection traceability; filtered/bulk review management; editable unpublished definition revisions; creative follow-up; honest historical metrics and selectable PDF/Excel/CSV exports. Existing configuration, permissions and provider activation remain unchanged.

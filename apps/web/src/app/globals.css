@@ -16775,3 +16775,14 @@ button.ticket-workflow-toggle { border: 0; cursor: pointer; }
 .settings-page .health-workspace .table-scroll { display: block; width: 100%; overflow-x: auto; }
 .health-workspace .system-health-table { min-width: 700px; }
 @media (max-width: 600px) { .health-workspace #health-history > .section-heading { align-items: stretch; flex-direction: column; } }
+
+/* Identity evidence stays compact, while long provider IDs remain readable. */
+.device-identity-panel { margin-block: 12px; }
+.device-identity-case { padding: 12px; margin-block: 10px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.device-identity-evidence { display: grid; gap: 4px; font-size: 12px; margin-block: 8px; overflow-wrap: anywhere; }
+.device-identity-evidence code { white-space: normal; overflow-wrap: anywhere; }
+.device-identity-candidates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 10px; }
+.device-identity-candidate { border-inline-start: 3px solid var(--line); padding-inline-start: 10px; }
+.device-identity-decision { display: grid; gap: 10px; margin-top: 12px; }
+.device-identity-decision label { display: grid; gap: 4px; }
+.device-identity-decision .button { justify-self: start; }

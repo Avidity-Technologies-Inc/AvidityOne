@@ -8,11 +8,23 @@ import { DeviceQueryDto } from "./dto/device-query.dto";
 import { UpdateRmmSettingsDto } from "./dto/update-rmm-settings.dto";
 import { UpsertDeviceViewDto } from "./dto/upsert-device-view.dto";
 import { DevicesService } from "./devices.service";
+import { DeviceIdentityService } from "./device-identity.service";
+import { ResolveDeviceIdentityDto } from "./dto/resolve-device-identity.dto";
 
 @Controller("devices")
 @UseGuards(SessionAuthGuard, PermissionsGuard)
 export class DevicesController {
-  constructor(private readonly devicesService: DevicesService) {}
+  constructor(private readonly devicesService: DevicesService, private readonly identity: DeviceIdentityService) {}
+
+  @Get("identity-review")
+  @RequirePermissions("devices.view")
+  reviewIdentity(@CurrentUser() user: AuthenticatedUser) { return this.identity.review(user); }
+
+  @Post("identity-review/:installationId")
+  @RequirePermissions("remote_access.configure")
+  resolveIdentity(@CurrentUser() user: AuthenticatedUser, @Param("installationId") id: string, @Body() body: ResolveDeviceIdentityDto) {
+    return this.identity.resolve(user, id, body);
+  }
 
   @Get()
   @RequirePermissions("devices.view")

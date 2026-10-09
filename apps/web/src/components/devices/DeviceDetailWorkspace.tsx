@@ -10,6 +10,7 @@ interface DeviceRecord {
   id: string;
   name: string;
   hostname: string | null;
+  previousHostnames?: string[];
   deviceGroupId: string | null;
   type: string;
   operatingSystem: string | null;
@@ -80,6 +81,7 @@ interface RemoteAccessDetails {
 }
 
 interface DeviceDetailResponse {
+  installations?: Array<{id:string;remoteIdentifier:string;state:string;hostname:string;serialNumber:string|null;hardwareUuid:string|null;lastSeenAt:string|null;present:boolean;reviewReason:string|null}>;
   device: DeviceRecord;
   remoteAccess: {
     enabled: boolean;
@@ -235,6 +237,11 @@ export function DeviceDetailWorkspace({ deviceId }: { deviceId: string }) {
             <DetailItem label="Updated" value={formatDate(device.updatedAt)} />
           </div>
 
+          <details className="device-identity-case"><summary>Identity and installation history ({data?.installations?.length ?? 0})</summary>
+            <p>Previous names: {device.previousHostnames?.join(", ") || "None recorded"}</p>
+            <p className="muted">Only the current installation supplies the equipment name and remote actions. Historical installations are retained without deleting anything in Tactical.</p>
+            {data?.installations?.map(row=><div className="device-identity-evidence" key={row.id}><strong>{row.state} · {row.hostname}</strong><code>{row.remoteIdentifier}</code><span>Serial: {row.serialNumber ?? "Not reported"} · Hardware UUID: {row.hardwareUuid ?? "Not reported"}</span><span>Last seen: {formatDate(row.lastSeenAt)} · {row.present ? "In last inventory" : "Absent from last inventory"}</span>{row.reviewReason && <span role="alert">{row.reviewReason}</span>}</div>)}
+          </details>
           <RemoteAccessDetailsPanel details={device.remoteAccessDetails} detailSyncedAt={device.remoteAccessProfile?.detailSyncedAt ?? null} />
         </section>
       ) : null}

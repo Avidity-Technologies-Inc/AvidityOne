@@ -27,6 +27,7 @@ import {
 import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { DeviceIdentityReview } from "./DeviceIdentityReview";
 import { apiFetch } from "@/lib/api";
 
 type DeviceView = "table" | "cards" | "tree";
@@ -75,6 +76,8 @@ interface DeviceRecord {
 }
 
 interface DevicesResponse {
+  canManageIdentity?: boolean;
+  identitySummary?: {observedAgents:number;historicalInstallations:number;pendingReviews:number;trackedInstallations:number};
   devices: DeviceRecord[];
   totalDevices: number;
   filteredTotal: number;
@@ -149,6 +152,7 @@ export function DevicesWorkspace() {
   const [viewName, setViewName] = useState("");
   const [viewScope, setViewScope] = useState<"PRIVATE" | "ADMINISTRATORS">("PRIVATE");
   const [viewIsDefault, setViewIsDefault] = useState(false);
+  const [identityOpen, setIdentityOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [syncDetailsOpen, setSyncDetailsOpen] = useState(false);
   const optionsMenu = useRef<HTMLDetailsElement>(null);
@@ -436,6 +440,8 @@ export function DevicesWorkspace() {
         <div className="device-page-heading">
           <div className="device-header-summary" aria-label="Device inventory summary">
             <span><strong>{totalDeviceCount}</strong> devices</span>
+            {data?.identitySummary && data.identitySummary.trackedInstallations > 0 && <span>{data.identitySummary.observedAgents} RMM agents · {data.identitySummary.historicalInstallations} historical installations</span>}
+            <button className="button secondary compact" type="button" onClick={()=>setIdentityOpen(value=>!value)} aria-expanded={identityOpen}>Identity review{data?.identitySummary?.pendingReviews ? ` (${data.identitySummary.pendingReviews})` : ""}</button>
             <span><strong>{loading ? "…" : filteredTotal}</strong> in this view</span>
             <button type="button" className="device-sync-status" onClick={() => setSyncDetailsOpen(value => !value)} aria-expanded={syncDetailsOpen} aria-controls="device-sync-details">
               Sync: {data?.remoteAccess.lastSyncStatus ?? "Not checked"} · {data?.remoteAccess.autoSyncEnabled ? `Every ${data.remoteAccess.autoSyncIntervalMinutes ?? "—"} min` : "Auto sync off"}
@@ -458,6 +464,7 @@ export function DevicesWorkspace() {
         </div>
       </div>
 
+      {identityOpen && <DeviceIdentityReview canManage={Boolean(data?.canManageIdentity)} onChange={()=>{void loadDevices();}}/>}
       {syncDetailsOpen ? <section className="panel device-sync-details" id="device-sync-details" aria-label="Synchronization details">
         <span><strong>Last attempt:</strong> {formatDate(data?.remoteAccess.lastSyncAt ?? null)}</span>
         <span><strong>Next automatic sync:</strong> {formatDate(data?.remoteAccess.nextAutoSyncAt ?? null)}</span>

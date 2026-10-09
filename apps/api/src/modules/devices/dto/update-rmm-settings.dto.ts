@@ -1,6 +1,16 @@
 import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 
 export class UpdateRmmSettingsDto {
+  @IsOptional()
+  @IsBoolean()
+  identityAutoLink?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  identityInactiveDays?: number;
+
   @IsBoolean()
   enabled!: boolean;
 

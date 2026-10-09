@@ -5,6 +5,8 @@ import { AuditLogsService } from "../audit-logs/audit-logs.service";
 import { AuthenticatedUser } from "../auth/auth.types";
 import { validateIntegrationUrl } from "../../common/integration-url-policy";
 import { PrismaService } from "../prisma/prisma.service";
+import { DeviceIdentityService } from "./device-identity.service";
+import { extractHardwareIdentity } from "./device-identity";
 import { inventoryNetwork, selectInventory } from "./device-inventory";
 import { DeviceQueryDto } from "./dto/device-query.dto";
 import { UpdateRmmSettingsDto } from "./dto/update-rmm-settings.dto";
@@ -12,7 +14,7 @@ import { UpsertDeviceViewDto } from "./dto/upsert-device-view.dto";
 
 type RmmAgentRecord = Record<string, unknown>;
 
-interface NormalizedRmmAgent {
+export interface NormalizedRmmAgent {
   remoteIdentifier: string;
   remoteIdentifiers: string[];
   name: string;
@@ -50,6 +52,7 @@ interface RemoteAccessDetailSnapshot {
     memory: string | null;
     video: string | null;
     serialNumber: string | null;
+    hardwareUuid?: string | null;
   };
   network: {
     publicIp: string | null;
@@ -88,13 +91,15 @@ type RmmSettingsRecord = {
   remoteAccessLastSyncAt: Date | null;
   remoteAccessLastSyncStatus: string | null;
   remoteAccessLastSyncMessage: string | null;
+  remoteAccessIdentityAutoLink?: boolean;
+  remoteAccessIdentityInactiveDays?: number;
   remoteAccessAutoSyncEnabled: boolean;
   remoteAccessAutoSyncIntervalMinutes: number | null;
   remoteAccessNextAutoSyncAt: Date | null;
   remoteAccessAutoSyncLockedAt: Date | null;
 };
 
-type DeviceWithRemoteProfile = Prisma.DeviceGetPayload<{
+type DeviceWithRemoteProfile = {installations?: Array<{reviewReason: string | null}>} & Prisma.DeviceGetPayload<{
   include: {
     client: { select: { id: true; name: true; shortName: true } };
     remoteAccessProfile: true;
@@ -130,7 +135,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly auditLogs: AuditLogsService
+    private readonly auditLogs: AuditLogsService,
+    private readonly identity: DeviceIdentityService = new DeviceIdentityService(prisma)
   ) {}
 
   onModuleInit() {
@@ -205,6 +211,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       include: {
         client: { select: { id: true, name: true, shortName: true } },
         remoteAccessProfile: true,
+        installations: {where:{state:"CURRENT"},select:{reviewReason:true}},
         favorites: { where: { userId: user.id }, select: { userId: true } }
       }
     }) : [];
@@ -216,6 +223,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         ? inventoryNetwork(candidate).filter(value => value.toLowerCase().includes(query.search!.trim().toLowerCase())) : [] }];
     });
     return {
+      canManageIdentity: user.permissions.includes("remote_access.configure"),
+      identitySummary: await this.identity.summary(user.organizationId),
       devices, totalDevices, filteredTotal: selected.length, page, pageSize, totalPages,
       categoryCounts: counts, clients, sites: sites.flatMap(site => site.deviceGroupId ? [site.deviceGroupId] : []),
       remoteAccess: this.toRmmSettingsResponse(settings)
@@ -233,6 +242,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         include: {
           client: { select: { id: true, name: true, shortName: true } },
           remoteAccessProfile: true,
+          installations: {where:{state:"CURRENT"},select:{reviewReason:true}},
           favorites: { where: { userId: user.id }, select: { userId: true } }
         }
       }),
@@ -244,6 +254,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     }
 
     return {
+      installations: await this.prisma.deviceInstallation.findMany({where:{deviceId,organizationId:user.organizationId},select:{id:true,remoteIdentifier:true,state:true,hostname:true,serialNumber:true,hardwareUuid:true,manufacturer:true,model:true,lastSeenAt:true,observedAt:true,present:true,reviewReason:true},orderBy:{createdAt:"desc"}}),
       device: this.toDeviceResponse(device, settings),
       remoteAccess: this.toRmmSettingsResponse(settings)
     };
@@ -414,6 +425,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     const settings = await this.prisma.systemSetting.update({
       where: { organizationId: user.organizationId },
       data: {
+        remoteAccessIdentityAutoLink: input.identityAutoLink ?? currentSettings.remoteAccessIdentityAutoLink,
+        remoteAccessIdentityInactiveDays: input.identityInactiveDays ?? currentSettings.remoteAccessIdentityInactiveDays,
         remoteAccessProviderEnabled: input.enabled,
         remoteAccessProviderName: this.optionalTrim(input.providerName) ?? "Tactical RMM",
         remoteAccessApiBaseUrl: apiBaseUrl,
@@ -445,6 +458,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         apiBaseUrl: settings.remoteAccessApiBaseUrl,
         agentsPath: settings.remoteAccessAgentsPath,
         hasApiKeyReference: Boolean(settings.remoteAccessApiKeyReference),
+        identityAutoLink: settings.remoteAccessIdentityAutoLink,
+        identityInactiveDays: settings.remoteAccessIdentityInactiveDays,
         autoSyncEnabled: settings.remoteAccessAutoSyncEnabled,
         autoSyncIntervalMinutes: settings.remoteAccessAutoSyncIntervalMinutes
       }
@@ -481,11 +496,12 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       let detailsRefreshed = 0;
       let detailFailures = 0;
 
+      const known = new Set((await this.prisma.deviceInstallation.findMany({where:{organizationId:context.organizationId},select:{remoteIdentifier:true}})).map(row=>row.remoteIdentifier));
       for (const record of records) {
         const normalized = this.normalizeAgent(record, settings);
-        if (!normalized) continue;
+        if (!normalized) throw new Error("RMM inventory contains an agent without a usable identifier. Inventory was not applied.");
 
-        const enriched = context.refreshDetails
+        const enriched = context.refreshDetails || !known.has(normalized.remoteIdentifier)
           ? await this.enrichRemoteAccessAgentDetails(normalized, record, settings, apiBaseUrl, apiKey)
           : { agent: normalized, refreshed: false, failed: false };
         agents.push(enriched.agent);
@@ -493,98 +509,25 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         if (enriched.failed) detailFailures += 1;
       }
 
-      let created = 0;
-      let updated = 0;
-
-      for (const agent of agents) {
+      const uniqueAgents = [...new Map(agents.map(agent => [agent.remoteIdentifier, agent])).values()];
+      const entries = [];
+      for (const agent of uniqueAgents) {
         const client = await this.findOrCreateClient(context, agent.clientName);
-        const identifierMatches: Prisma.DeviceWhereInput[] = [
-          { remoteAccessId: { in: agent.remoteIdentifiers } },
-          { remoteAccessProfile: { is: { provider: RemoteAccessProvider.TACTICAL_RMM, remoteIdentifier: { in: agent.remoteIdentifiers } } } }
-        ];
-        if (agent.hostname) {
-          identifierMatches.push({
-            clientId: client.id,
-            hostname: { equals: agent.hostname, mode: "insensitive" }
-          });
-        }
-
-        const existingDevice = await this.prisma.device.findFirst({
-          where: {
-            client: { organizationId: context.organizationId },
-            remoteAccessProvider: RemoteAccessProvider.TACTICAL_RMM,
-            deletedAt: null,
-            OR: identifierMatches
-          },
-          include: { remoteAccessProfile: true }
-        });
-
-        const data = {
-          clientId: client.id,
-          deviceGroupId: agent.siteName,
-          name: agent.name,
-          hostname: agent.hostname,
-          type: agent.type,
-          operatingSystem: agent.operatingSystem,
-          osVersion: agent.osVersion,
-          serialNumber: agent.serialNumber,
-          assetTag: agent.assetTag,
-          primaryUser: agent.primaryUser,
-          remoteAccessProvider: RemoteAccessProvider.TACTICAL_RMM,
-          remoteAccessId: agent.remoteIdentifier,
-          lastSeenAt: agent.lastSeenAt,
-          status: agent.status
-        };
-
-        const device = existingDevice
-          ? await this.prisma.device.update({ where: { id: existingDevice.id }, data })
-          : await this.prisma.device.create({ data });
-
-        const detailSnapshot = this.pickBestRemoteAccessDetailSnapshot(
-          agent.detailSnapshot,
-          existingDevice?.remoteAccessProfile?.detailSnapshot
-        );
-        const detailSyncedAt =
-          detailSnapshot === agent.detailSnapshot
-            ? new Date(agent.detailSnapshot.syncedAt)
-            : (existingDevice?.remoteAccessProfile?.detailSyncedAt ?? new Date(agent.detailSnapshot.syncedAt));
-
-        await this.prisma.remoteAccessProfile.upsert({
-          where: { deviceId: device.id },
-          update: {
-            provider: RemoteAccessProvider.TACTICAL_RMM,
-            remoteIdentifier: agent.remoteIdentifier,
-            connectionUrl: agent.controlUrl ?? agent.systemInfoUrl,
-            notes: agent.siteName ? `Site: ${agent.siteName}` : null,
-            detailSnapshot: detailSnapshot as unknown as Prisma.InputJsonValue,
-            detailSyncedAt
-          },
-          create: {
-            deviceId: device.id,
-            provider: RemoteAccessProvider.TACTICAL_RMM,
-            remoteIdentifier: agent.remoteIdentifier,
-            connectionUrl: agent.controlUrl ?? agent.systemInfoUrl,
-            notes: agent.siteName ? `Site: ${agent.siteName}` : null,
-            detailSnapshot: detailSnapshot as unknown as Prisma.InputJsonValue,
-            detailSyncedAt
-          }
-        });
-
-        if (existingDevice) updated += 1;
-        else created += 1;
+        entries.push({agent, clientId:client.id});
       }
-
+      const {created, updated, pending, historical} = await this.identity.ingest(context, entries, true,
+        settings.remoteAccessIdentityAutoLink, settings.remoteAccessIdentityInactiveDays);
       const detailMessage =
         detailsRefreshed > 0 || detailFailures > 0
           ? ` Refreshed details for ${detailsRefreshed} device${detailsRefreshed === 1 ? "" : "s"}${detailFailures > 0 ? `; ${detailFailures} detail refresh failed` : ""}.`
           : "";
-      const message = `Synced ${agents.length} RMM device${agents.length === 1 ? "" : "s"} (${created} created, ${updated} updated).${detailMessage}`;
+      const message = `Observed ${uniqueAgents.length} unique RMM agents; ${created} equipment records created, ${updated} updated; ${historical} historical installations; ${pending} identity reviews pending.${detailMessage}`;
       const updatedSettings = await this.prisma.systemSetting.update({
         where: { organizationId: context.organizationId },
         data: {
           remoteAccessLastSyncAt: new Date(),
           remoteAccessLastSuccessAt: new Date(),
-          remoteAccessLastSyncStatus: detailFailures > 0 ? "warning" : "success",
+          remoteAccessLastSyncStatus: detailFailures > 0 || pending > 0 ? "warning" : "success",
           remoteAccessLastSyncMessage: message,
           ...(context.trigger === "auto"
             ? {
@@ -603,12 +546,12 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         userId: context.userId,
         entityType: "Device",
         action: "remote_access.devices_synced",
-        metadata: { provider: "TACTICAL_RMM", trigger: context.trigger, total: agents.length, created, updated, detailsRefreshed, detailFailures }
+        metadata: { provider: "TACTICAL_RMM", trigger: context.trigger, total: uniqueAgents.length, pending, historical, created, updated, detailsRefreshed, detailFailures }
       });
 
-      await this.recordSyncHealth(context.organizationId, `rmm_${context.trigger}`, detailFailures > 0 ? "warning" : "ok", message, {total: agents.length, created, updated, detailsRefreshed, detailFailures, durationMs: Date.now() - startedAt.getTime()});
+      await this.recordSyncHealth(context.organizationId, `rmm_${context.trigger}`, detailFailures > 0 || pending > 0 ? "warning" : "ok", message, {total: uniqueAgents.length, pending, historical, created, updated, detailsRefreshed, detailFailures, durationMs: Date.now() - startedAt.getTime()});
 
-      return { created, updated, total: agents.length, settings: this.toRmmSettingsResponse(updatedSettings) };
+      return { created, updated, pending, historical, total: uniqueAgents.length, settings: this.toRmmSettingsResponse(updatedSettings) };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown RMM sync failure.";
       await this.prisma.systemSetting.update({
@@ -640,6 +583,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
         include: {
           client: { select: { id: true, name: true, shortName: true } },
           remoteAccessProfile: true,
+          installations: {where:{state:"CURRENT"},select:{reviewReason:true}},
           favorites: { where: { userId: user.id }, select: { userId: true } }
         }
       }),
@@ -670,41 +614,10 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     const normalized = this.normalizeAgent(record, settings);
     const snapshot = this.buildRemoteAccessDetailSnapshot(record, normalized);
 
-    const updateData: Prisma.DeviceUpdateInput = {
-      hostname: normalized?.hostname ?? device.hostname,
-      type: normalized?.type ?? device.type,
-      operatingSystem: normalized?.operatingSystem ?? device.operatingSystem,
-      osVersion: normalized?.osVersion ?? device.osVersion,
-      serialNumber: normalized?.serialNumber ?? device.serialNumber,
-      assetTag: normalized?.assetTag ?? device.assetTag,
-      primaryUser: normalized?.primaryUser ?? device.primaryUser,
-      remoteAccessProvider: RemoteAccessProvider.TACTICAL_RMM,
-      remoteAccessId: normalized?.remoteIdentifier ?? remoteIdentifier,
-      lastSeenAt: normalized?.lastSeenAt ?? device.lastSeenAt,
-      status: normalized?.status ?? device.status
-    };
-
-    await this.prisma.$transaction([
-      this.prisma.device.update({ where: { id: device.id }, data: updateData }),
-      this.prisma.remoteAccessProfile.upsert({
-        where: { deviceId: device.id },
-        update: {
-          provider: RemoteAccessProvider.TACTICAL_RMM,
-          remoteIdentifier: normalized?.remoteIdentifier ?? remoteIdentifier,
-          connectionUrl: normalized?.controlUrl ?? normalized?.systemInfoUrl ?? device.remoteAccessProfile?.connectionUrl,
-          detailSnapshot: snapshot as unknown as Prisma.InputJsonValue,
-          detailSyncedAt: new Date(snapshot.syncedAt)
-        },
-        create: {
-          deviceId: device.id,
-          provider: RemoteAccessProvider.TACTICAL_RMM,
-          remoteIdentifier: normalized?.remoteIdentifier ?? remoteIdentifier,
-          connectionUrl: normalized?.controlUrl ?? normalized?.systemInfoUrl,
-          detailSnapshot: snapshot as unknown as Prisma.InputJsonValue,
-          detailSyncedAt: new Date(snapshot.syncedAt)
-        }
-      })
-    ]);
+    if (!normalized || normalized.remoteIdentifier !== remoteIdentifier) throw new BadRequestException("RMM returned a different agent identity. Run inventory sync and review identities.");
+    normalized.detailSnapshot = snapshot;
+    const sourceClient = await this.findOrCreateClient({organizationId:user.organizationId,userId:user.id}, normalized.clientName);
+    await this.identity.ingest({organizationId:user.organizationId,userId:user.id}, [{agent:normalized,clientId:sourceClient.id}], false, false, settings.remoteAccessIdentityInactiveDays);
 
     await this.auditLogs.create({
       userId: user.id,
@@ -719,10 +632,11 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
 
   async qcObservation(user: AuthenticatedUser, deviceId: string, alertReference: string) {
     const [device, settings] = await Promise.all([
-      this.prisma.device.findFirst({ where: { id: deviceId, deletedAt: null, client: { organizationId: user.organizationId } }, include: { remoteAccessProfile: true } }),
+      this.prisma.device.findFirst({ where: { id: deviceId, deletedAt: null, client: { organizationId: user.organizationId } }, include: { remoteAccessProfile: true, installations: { where: { state: "CURRENT" }, select: { reviewReason: true } } } }),
       this.getSettingsRecord(user.organizationId)
     ]);
     if (!device || !settings.remoteAccessProviderEnabled) throw new BadRequestException("The RMM device or integration is unavailable.");
+    if (device.installations?.some(installation => installation.reviewReason)) throw new BadRequestException("Review the device identity before verifying QC evidence.");
     const identifier = device.remoteAccessProfile?.remoteIdentifier ?? device.remoteAccessId;
     const apiKey = this.resolveSecret(settings.remoteAccessApiKeyReference);
     if (!identifier || !apiKey || !settings.remoteAccessApiBaseUrl) throw new BadRequestException("Configure RMM before verifying QC evidence.");
@@ -756,7 +670,12 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     }
 
     const payload = (await response.json()) as unknown;
-    return this.extractAgentRecords(payload);
+    const records = this.extractAgentRecords(payload);
+    const valid = Array.isArray(payload) || (this.isRecord(payload) && ["results", "data", "agents", "devices"].some(key=>Array.isArray(payload[key])));
+    if (!valid || (this.isRecord(payload) && (payload.next || (typeof payload.count === "number" && payload.count > records.length)))) {
+      throw new Error("RMM did not return a complete inventory. Check the configured agents endpoint; no identities were changed.");
+    }
+    return records;
   }
 
   private async fetchAgentDetail(apiBaseUrl: string, agentsPath: string, remoteIdentifier: string, apiKey: string) {
@@ -792,6 +711,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     try {
       const detailRecord = await this.fetchAgentDetail(apiBaseUrl, settings.remoteAccessAgentsPath, agent.remoteIdentifier, apiKey);
       const normalizedDetail = this.normalizeAgent(detailRecord, settings);
+      if (normalizedDetail && normalizedDetail.remoteIdentifier !== agent.remoteIdentifier) throw new Error("RMM detail returned a different agent ID.");
       const mergedAgent = normalizedDetail
         ? {
             ...agent,
@@ -872,7 +792,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     const online = this.pickBoolean(record, ["online", "is_online", "isOnline"]);
     const status = online === true || (online === null && /^(online|active|ok)$/i.test(statusSource.trim())) ? DeviceStatus.ACTIVE : DeviceStatus.INACTIVE;
     const lastSeenAt = this.pickDate(record, ["last_seen", "lastSeen", "last_checkin", "lastCheckin", "updated_at", "updatedAt"]);
-    const serialNumber = this.pickString(record, ["serial_number", "serialNumber", "serial"]);
+    const serialNumber = extractHardwareIdentity(record).serialNumber;
     const assetTag = this.pickString(record, ["asset_tag", "assetTag", "asset"]);
     const primaryUser = this.pickString(record, ["logged_in_user", "loggedInUser", "primary_user", "primaryUser", "last_user"]);
     const urlTokens = {
@@ -1073,6 +993,8 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
       lastSyncAt: settings.remoteAccessLastSyncAt,
       lastSyncStatus: settings.remoteAccessLastSyncStatus,
       lastSyncMessage: settings.remoteAccessLastSyncMessage,
+      identityAutoLink: settings.remoteAccessIdentityAutoLink ?? false,
+      identityInactiveDays: settings.remoteAccessIdentityInactiveDays ?? 7,
       autoSyncEnabled: settings.remoteAccessAutoSyncEnabled,
       autoSyncIntervalMinutes: settings.remoteAccessAutoSyncIntervalMinutes,
       nextAutoSyncAt: settings.remoteAccessNextAutoSyncAt
@@ -1103,6 +1025,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildDeviceActionUrls(device: DeviceWithRemoteProfile, settings: RmmSettingsRecord): DeviceActionUrls {
+    if (device.installations?.some(row=>row.reviewReason)) return {systemInfoUrl:null,controlUrl:null,remoteBackgroundUrl:null};
     const remoteIdentifier = device.remoteAccessProfile?.remoteIdentifier ?? device.remoteAccessId ?? device.id;
     const tokens = {
       agentId: remoteIdentifier,
@@ -1191,12 +1114,6 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
     return {
       syncedAt: new Date().toISOString(),
       hardware: {
-        manufacturer:
-          this.pickString(record, ["make", "manufacturer", "vendor"]) ??
-          this.pickString(hardwareRecord ?? {}, ["make", "manufacturer", "vendor"]),
-        model:
-          this.pickString(record, ["model", "make_model", "makeModel", "product_name", "productName"]) ??
-          this.pickString(hardwareRecord ?? {}, ["model", "make_model", "makeModel", "product_name", "productName"]),
         cpu,
         cpuCores:
           this.pickString(record, ["total_cores", "totalCores", "cores", "cpu_cores", "cpuCores"]) ??
@@ -1212,7 +1129,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
           this.pickString(record, ["video", "gpu", "graphics", "display_adapter", "displayAdapter"]) ??
           this.pickString(hardwareRecord ?? {}, ["video", "gpu", "graphics", "display_adapter", "displayAdapter"]) ??
           this.pickString(wmiGraphicsRecord ?? {}, ["Name", "name", "Caption", "caption", "VideoProcessor", "videoProcessor"]),
-        serialNumber: normalized?.serialNumber ?? this.pickString(record, ["serial_number", "serialNumber", "serial"])
+        ...extractHardwareIdentity(record)
       },
       network: {
         publicIp: this.pickString(record, ["public_ip", "publicIp", "wan_ip", "wanIp"]) ?? this.pickString(networkRecord ?? {}, ["public_ip", "publicIp", "wan_ip", "wanIp"]),

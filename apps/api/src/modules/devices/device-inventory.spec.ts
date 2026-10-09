@@ -53,6 +53,7 @@ describe("DevicesService complete inventory pagination", () => {
   const setup = () => {
     const rows = Array.from({length: 525}, (_, index) => device(index + 1));
     const prisma = {
+      deviceInstallation: {findMany:jest.fn().mockResolvedValue([])},
       device: { count: jest.fn().mockResolvedValue(rows.length), findMany: jest.fn().mockImplementation(async args => {
         if (args.distinct) return [{deviceGroupId:"Main office"}];
         if (args.include) return rows.filter(row => args.where.id.in.includes(row.id));
