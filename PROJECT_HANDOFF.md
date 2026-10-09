@@ -1,5 +1,12 @@
 # Project Handoff
 
+## Security Dependency Update — 2026-10-09
+
+- Authorized from canonical `main` at `489792f`: patched Next, Sharp/native image libraries, HTML sanitization, multipart handling and reviewed transitive dependencies. No workflow, permission, schema, saved configuration or server/OS changes. Node >=22.12 is required; the deployment helper checks before stopping services.
+- Clean-install verification, API/web type checks, full build, 366 backend cases with all isolated databases and 270 browser cases passed. Real Next/Nest routing, public portals and image optimization checks passed. Focused file/HTML/report/native-image compatibility and complete dependency rollback simulations passed; independent review found no concrete regression.
+- Production dependency audit reports zero vulnerabilities. Two unpatched development-tool advisories remain (braces and sprintf-js), with 34 affected dependency entries; they are explicitly documented, not dismissed.
+- Publication authorized; production execution remains with the user. Use `scripts/deploy-security-dependencies.sh <full-release-sha>` from the fetched revision. It backs up/restores builds and all root/workspace dependencies. See [versions, validation, remaining advisories and deployment](docs/SECURITY_DEPENDENCIES_2026-10-09.md). Server OS/package audit is a separate subsequent task.
+
 ## Device Identity and Installation History — 2026-10-09
 
 - Approved from canonical local/GitHub and read-only verified production `6db6232`. Exact provider installation IDs replace hostname-based overwrites; persistent equipment IDs retain relationships, current names and historical installations. Hardware evidence supports an audited review workflow and an optional strict automatic policy (off by default).

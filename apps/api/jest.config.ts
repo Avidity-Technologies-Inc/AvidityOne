@@ -5,8 +5,10 @@ const config: Config = {
   rootDir: ".",
   testRegex: ".*\\.spec\\.ts$",
   transform: {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "^.+\\.ts$": "ts-jest",
+    "^.+\\.js$": "<rootDir>/jest-esm-transform.cjs"
   },
+  transformIgnorePatterns: ["/node_modules/(?!.*(?:htmlparser2|domhandler|domutils|domelementtype|dom-serializer|entities|launder)/)"],
   collectCoverageFrom: ["src/**/*.(t|j)s"],
   coverageDirectory: "coverage",
   testEnvironment: "node"
